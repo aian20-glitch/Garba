@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
+import 'package:socket_io_client/socket_io_client.dart' as io;
 
 const apiBase = 'http://10.0.2.2:3000';
 
@@ -53,6 +54,54 @@ String fmtDelta(int value) => value > 0 ? '+${fmtCoins(value)}' : fmtCoins(value
 
 bool isRedSuit(String suit) =>
     suit == 'hearts' || suit == 'diamonds' || suit == '♥' || suit == '♦';
+
+// Живые обновления комнаты по Socket.IO (этап 8).
+//
+// Сервер после каждого действия сам присылает свежее состояние комнаты ('room'),
+// поэтому экранам не нужно спрашивать его раз в секунду. Действия по-прежнему
+// отправляются обычными HTTP-запросами.
+//
+// Если соединение пропало, экраны временно возвращаются к опросу (см. [connected]) —
+// так игра не зависает, пока Socket.IO переподключается сам.
+class RoomLink {
+  RoomLink({
+    required this.roomCode,
+    required this.playerId,
+    required this.onRoom,
+  }) {
+    _socket = io.io(
+      apiBase,
+      io.OptionBuilder()
+          .setTransports(['websocket'])
+          // Каждому экрану — своё соединение: иначе библиотека вернёт из кэша
+          // сокет, который прошлый экран уже закрыл.
+          .enableForceNew()
+          .disableAutoConnect()
+          .build(),
+    );
+
+    // Подписываемся при каждом подключении — в том числе после обрыва.
+    _socket.onConnect((_) {
+      _socket.emit('watch', {'roomId': roomCode, 'playerId': playerId});
+    });
+    _socket.on('room', (data) {
+      if (data is Map) onRoom(Map<String, dynamic>.from(data));
+    });
+    _socket.connect();
+  }
+
+  final String roomCode;
+  final String playerId;
+  final void Function(Map<String, dynamic> room) onRoom;
+  late final io.Socket _socket;
+
+  bool get connected => _socket.connected;
+
+  void dispose() => _socket.dispose();
+}
+
+// Пока сокет подключён, опрос не нужен. Если отвалился — раз в столько опрашиваем сервер.
+const fallbackPollInterval = Duration(seconds: 3);
 
 void main() => runApp(const GarbaApp());
 
@@ -491,6 +540,7 @@ class LobbyScreen extends StatefulWidget {
 
 class _LobbyScreenState extends State<LobbyScreen> {
   Timer? timer;
+  late final RoomLink link;
   Map<String, dynamic>? room;
   bool starting = false;
   bool firstLoad = true;
@@ -499,11 +549,16 @@ class _LobbyScreenState extends State<LobbyScreen> {
   @override
   void initState() {
     super.initState();
-    refreshRoom();
-    timer = Timer.periodic(
-      const Duration(seconds: 1),
-      (_) => refreshRoom(),
+    // Обновления приходят сами по сокету; опрос — только пока сокет отвалился.
+    link = RoomLink(
+      roomCode: widget.roomCode,
+      playerId: widget.currentPlayerId,
+      onRoom: applyRoom,
     );
+    refreshRoom();
+    timer = Timer.periodic(fallbackPollInterval, (_) {
+      if (!link.connected) refreshRoom();
+    });
   }
 
   String roomUrl() =>
@@ -512,41 +567,43 @@ class _LobbyScreenState extends State<LobbyScreen> {
   Future<void> refreshRoom() async {
     try {
       final response = await http.get(Uri.parse(roomUrl()));
-
       if (response.statusCode == 200) {
-        final data = jsonDecode(response.body) as Map<String, dynamic>;
-
-        if (!mounted) return;
-
-        setState(() {
-          room = data;
-          firstLoad = false;
-        });
-
-        if (data['status']?.toString() == 'started' &&
-            data['game'] is Map &&
-            !moved) {
-          moved = true;
-          timer?.cancel();
-
-          WidgetsBinding.instance.addPostFrameCallback((_) {
-            if (!mounted) return;
-            Navigator.pushReplacement(
-              context,
-              MaterialPageRoute(
-                builder: (_) => DealerSelectionScreen(
-                  roomCode: widget.roomCode,
-                  currentPlayerId: widget.currentPlayerId,
-                ),
-              ),
-            );
-          });
-        }
+        applyRoom(jsonDecode(response.body) as Map<String, dynamic>);
       }
     } catch (_) {
       if (mounted && firstLoad) {
         setState(() => firstLoad = false);
       }
+    }
+  }
+
+  // Свежее состояние комнаты — по сокету или по HTTP.
+  void applyRoom(Map<String, dynamic> data) {
+    if (!mounted) return;
+
+    setState(() {
+      room = data;
+      firstLoad = false;
+    });
+
+    if (data['status']?.toString() == 'started' &&
+        data['game'] is Map &&
+        !moved) {
+      moved = true;
+      timer?.cancel();
+
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted) return;
+        Navigator.pushReplacement(
+          context,
+          MaterialPageRoute(
+            builder: (_) => DealerSelectionScreen(
+              roomCode: widget.roomCode,
+              currentPlayerId: widget.currentPlayerId,
+            ),
+          ),
+        );
+      });
     }
   }
 
@@ -579,6 +636,7 @@ class _LobbyScreenState extends State<LobbyScreen> {
   @override
   void dispose() {
     timer?.cancel();
+    link.dispose();
     super.dispose();
   }
 
@@ -695,6 +753,7 @@ class DealerSelectionScreen extends StatefulWidget {
 class _DealerSelectionScreenState extends State<DealerSelectionScreen> {
   Timer? pollTimer;
   Timer? revealTimer;
+  late final RoomLink link;
   Map<String, dynamic>? room;
   int visibleCount = 0;
   bool continuing = false;
@@ -703,11 +762,16 @@ class _DealerSelectionScreenState extends State<DealerSelectionScreen> {
   @override
   void initState() {
     super.initState();
-    refreshRoom();
-    pollTimer = Timer.periodic(
-      const Duration(seconds: 1),
-      (_) => refreshRoom(),
+    // Обновления приходят сами по сокету; опрос — только пока сокет отвалился.
+    link = RoomLink(
+      roomCode: widget.roomCode,
+      playerId: widget.currentPlayerId,
+      onRoom: applyRoom,
     );
+    refreshRoom();
+    pollTimer = Timer.periodic(fallbackPollInterval, (_) {
+      if (!link.connected) refreshRoom();
+    });
   }
 
   String roomUrl() =>
@@ -717,8 +781,13 @@ class _DealerSelectionScreenState extends State<DealerSelectionScreen> {
     try {
       final response = await http.get(Uri.parse(roomUrl()));
       if (response.statusCode != 200) return;
+      applyRoom(jsonDecode(response.body) as Map<String, dynamic>);
+    } catch (_) {}
+  }
 
-      final data = jsonDecode(response.body) as Map<String, dynamic>;
+  // Свежее состояние комнаты — по сокету или по HTTP.
+  void applyRoom(Map<String, dynamic> data) {
+    {
       if (!mounted) return;
 
       setState(() => room = data);
@@ -772,7 +841,7 @@ class _DealerSelectionScreenState extends State<DealerSelectionScreen> {
           });
         }
       }
-    } catch (_) {}
+    }
   }
 
   Future<void> continueGame() async {
@@ -807,6 +876,7 @@ class _DealerSelectionScreenState extends State<DealerSelectionScreen> {
   void dispose() {
     pollTimer?.cancel();
     revealTimer?.cancel();
+    link.dispose();
     super.dispose();
   }
 
@@ -969,14 +1039,21 @@ class _GameTableScreenState extends State<GameTableScreen> {
   bool choosingKonTrump = false;
   bool sendingSpecial = false;
 
+  late final RoomLink link;
+
   @override
   void initState() {
     super.initState();
-    refreshRoom();
-    timer = Timer.periodic(
-      const Duration(seconds: 1),
-      (_) => refreshRoom(),
+    // Обновления приходят сами по сокету; опрос — только пока сокет отвалился.
+    link = RoomLink(
+      roomCode: widget.roomCode,
+      playerId: widget.currentPlayerId,
+      onRoom: applyRoom,
     );
+    refreshRoom();
+    timer = Timer.periodic(fallbackPollInterval, (_) {
+      if (!link.connected) refreshRoom();
+    });
   }
 
   String roomUrl() =>
@@ -985,12 +1062,16 @@ class _GameTableScreenState extends State<GameTableScreen> {
   Future<void> refreshRoom() async {
     try {
       final response = await http.get(Uri.parse(roomUrl()));
-      if (response.statusCode == 200 && mounted) {
-        setState(() {
-          room = jsonDecode(response.body) as Map<String, dynamic>;
-        });
+      if (response.statusCode == 200) {
+        applyRoom(jsonDecode(response.body) as Map<String, dynamic>);
       }
     } catch (_) {}
+  }
+
+  // Свежее состояние комнаты — по сокету или по HTTP.
+  void applyRoom(Map<String, dynamic> data) {
+    if (!mounted) return;
+    setState(() => room = data);
   }
 
   // suit — масть для ДВА при 6 и 7 игроках (RULES.md §6.3).
@@ -1027,6 +1108,7 @@ class _GameTableScreenState extends State<GameTableScreen> {
   @override
   void dispose() {
     timer?.cancel();
+    link.dispose();
     super.dispose();
   }
 

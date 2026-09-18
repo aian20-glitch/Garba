@@ -1,5 +1,7 @@
 import express from 'express';
 import cors from 'cors';
+import { createServer } from 'node:http';
+import { Server as SocketServer } from 'socket.io';
 
 import { STARTING_COINS } from './config.js';
 import { createDeck, shuffle } from './deck.js';
@@ -239,11 +241,76 @@ type Room = {
 };
 
 const app = express();
-const PORT = 3000;
+// Порт можно переопределить — это нужно проверке сокетов (tests/live-socket.ts),
+// чтобы поднять отдельный сервер и не мешать тому, что работает на 3000.
+const PORT = Number(process.env.PORT ?? 3000);
 const rooms = new Map<string, Room>();
 
 app.use(cors());
 app.use(express.json());
+
+// --- Живые обновления через Socket.IO (этап 8) ---
+//
+// Действия по-прежнему идут обычными HTTP-запросами — контракт API не меняется.
+// Новое: после каждого действия сервер сам рассылает свежее состояние комнаты всем,
+// кто за ней следит. Каждому — своё: publicRoom(room, его playerId), то есть со своей
+// рукой, чужие карты не уходят никому. Клиенту больше не нужно спрашивать раз в секунду.
+//
+// Протокол:
+//   клиент → 'watch' { roomId, playerId }   начать следить за комнатой
+//   сервер → 'room'  publicRoom(...)         сразу после watch и после каждого действия
+//   сервер → 'room_error' { error }          комнаты нет
+const httpServer = createServer(app);
+const io = new SocketServer(httpServer, { cors: { origin: '*' } });
+
+io.on('connection', (socket) => {
+  socket.on('watch', (payload: { roomId?: unknown; playerId?: unknown }) => {
+    const roomId = String(payload?.roomId ?? '');
+    const playerId = String(payload?.playerId ?? '');
+    const room = rooms.get(roomId);
+
+    if (!room) {
+      socket.emit('room_error', { error: 'room not found' });
+      return;
+    }
+
+    // Один сокет — одна комната: при повторном watch уходим из прежней.
+    for (const joined of socket.rooms) {
+      if (joined !== socket.id) socket.leave(joined);
+    }
+
+    socket.data.playerId = playerId;
+    socket.join(roomId);
+    socket.emit('room', publicRoom(room, playerId));
+  });
+});
+
+// Разослать состояние комнаты всем, кто за ней следит, — каждому со своей рукой.
+async function broadcastRoom(roomId: string) {
+  const room = rooms.get(roomId);
+  if (!room) return;
+
+  const sockets = await io.in(roomId).fetchSockets();
+  for (const s of sockets) {
+    const viewer = typeof s.data.playerId === 'string' ? s.data.playerId : undefined;
+    s.emit('room', publicRoom(room, viewer));
+  }
+}
+
+// После любого действия с комнатой (POST /rooms/:id/...) — рассылка.
+// Рассылаем и после отказа: состояние не изменилось, лишнее сообщение безвредно,
+// а разбирать, какой ответ что поменял, — лишнее место для ошибок.
+app.use('/rooms/:id', (req, res, next) => {
+  if (req.method === 'POST') {
+    const roomId = req.params.id;
+    res.on('finish', () => {
+      broadcastRoom(roomId).catch((e) =>
+        console.error(`[ROOM ${roomId}] broadcast failed:`, e),
+      );
+    });
+  }
+  next();
+});
 
 function makeRoomId(): string {
   let id = '';
@@ -1602,6 +1669,7 @@ app.post('/rooms/:id/vote', (req, res) => {
   return res.json(publicRoom(room, String(playerId)));
 });
 
-app.listen(PORT, '0.0.0.0', () => {
-  console.log(`GARBA backend running on :${PORT}`);
+// HTTP и Socket.IO слушают один и тот же порт.
+httpServer.listen(PORT, '0.0.0.0', () => {
+  console.log(`GARBA backend running on :${PORT} (HTTP + Socket.IO)`);
 });
