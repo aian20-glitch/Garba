@@ -104,6 +104,10 @@ cd ~/Garba/mobile && flutter analyze
   `adb shell am start -n com.example.garba_mobile/.MainActivity`.
 - Первая сборка APK — около 7 минут (Gradle докачивает NDK, CMake, Platform 35), дальше быстрее.
 - Нажатия: `adb shell input tap X Y` в пикселях экрана 1080×2400.
+- **Клавиатура.** AVD из `avdmanager` создаётся с `hw.keyboard=no` — клавиатура Mac в эмулятор
+  не идёт, а Gboard уходит в «плавающий» режим. В `~/.android/avd/Pixel_8.avd/config.ini`
+  выставлено `hw.keyboard=yes` (действует после перезапуска эмулятора). Кириллицу с клавиатуры
+  Mac эмулятор не переводит — русское имя набирать на экранной Gboard (добавить русский язык).
 - `npm install` пишет «install scripts not covered by allowScripts: esbuild» — это не мешает,
   `tsx` работает.
 
