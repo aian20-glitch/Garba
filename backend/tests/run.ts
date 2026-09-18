@@ -4,6 +4,7 @@
 import './bidding.test.js';
 import './deal.test.js';
 import './garba-kon.test.js';
+import './special.test.js';
 import './play.test.js';
 import './money.test.js';
 import './vote.test.js';

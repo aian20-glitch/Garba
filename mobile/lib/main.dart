@@ -25,6 +25,17 @@ const _suitNames = <String, String>{
 
 String suitName(String suit) => _suitNames[suit] ?? suit;
 
+// Названия спецкарт (RULES.md §7).
+const _specialNames = <String, String>{
+  'A': 'ТУЗ',
+  'K': 'КОРОЛЬ',
+  'Q': 'ДАМА',
+  '6': 'ШЕСТЁРКА',
+  '10': 'ДЕСЯТКА',
+};
+
+String specialName(String kind) => _specialNames[kind] ?? kind;
+
 // 12500 → «12 500».
 String fmtCoins(int value) {
   final negative = value < 0;
@@ -956,6 +967,7 @@ class _GameTableScreenState extends State<GameTableScreen> {
   bool sendingCard = false;
   bool voting = false;
   bool choosingKonTrump = false;
+  bool sendingSpecial = false;
 
   @override
   void initState() {
@@ -1126,6 +1138,34 @@ class _GameTableScreenState extends State<GameTableScreen> {
     );
 
     if (suit != null) await sendBid('ДВА', suit: suit);
+  }
+
+  // Спецкарта (RULES.md §7): взять за множитель, пасовать, или сбросить карту.
+  // Всё проверяет сервер — клиент только отправляет выбор.
+  Future<void> sendSpecial(String path, Map<String, dynamic> body) async {
+    if (sendingSpecial) return;
+    setState(() => sendingSpecial = true);
+
+    try {
+      final response = await http.post(
+        Uri.parse('$apiBase/rooms/${widget.roomCode}/$path'),
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode({'playerId': widget.currentPlayerId, ...body}),
+      );
+
+      if (response.statusCode < 200 || response.statusCode >= 300) {
+        throw Exception(response.body);
+      }
+
+      await refreshRoom();
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Ошибка: $e')),
+      );
+    } finally {
+      if (mounted) setState(() => sendingSpecial = false);
+    }
   }
 
   // Выигравший КОН называет козырь (RULES.md §6.7).
@@ -1376,6 +1416,23 @@ class _GameTableScreenState extends State<GameTableScreen> {
     final myKonTrumpOptions = ((game['myKonTrumpOptions'] as List?) ?? const [])
         .map((e) => Map<String, dynamic>.from(e as Map))
         .toList();
+    // Спецкарта и борьба за неё (RULES.md §7).
+    final specialRaw = game['special'];
+    final special =
+        specialRaw is Map ? Map<String, dynamic>.from(specialRaw) : null;
+    final isSpecial = stage == 'special' && special != null;
+    final isDiscard = stage == 'special_discard';
+    final mySpecialRisks = ((game['mySpecialRisks'] as List?) ?? const [])
+        .map((e) => (e as num).toInt())
+        .toList();
+    final myDiscardOptions = ((game['myDiscardOptions'] as List?) ?? const [])
+        .map((e) => e.toString())
+        .toSet();
+    // Во что превратилась спецкарта: у кого и на каком риске (или никто не взял).
+    final specialOutcomeRaw = special?['outcome'];
+    final specialOutcome = specialOutcomeRaw is Map
+        ? Map<String, dynamic>.from(specialOutcomeRaw)
+        : null;
     final konBefore = (game['konBeforeSettlement'] as num?)?.toInt();
     final closing = game['closing'] == true;
     final isRoomDone = stage == 'room_done';
@@ -1401,8 +1458,13 @@ class _GameTableScreenState extends State<GameTableScreen> {
         lastVoteRaw is Map ? Map<String, dynamic>.from(lastVoteRaw) : null;
 
     // Чей сейчас ход: в торгах — кто говорит, в розыгрыше — кто кладёт карту.
-    final actorId = isPlaying ? turnPlayerId : activeBidderId;
-    final myTurn = (stage == 'bidding' || isPlaying) &&
+    // В борьбе за спецкарту — тот, кого сейчас спрашивают.
+    final actorId = isSpecial
+        ? special['activeId']?.toString()
+        : isPlaying
+            ? turnPlayerId
+            : activeBidderId;
+    final myTurn = (stage == 'bidding' || isPlaying || isSpecial) &&
         actorId == widget.currentPlayerId;
 
     String activeName = '';
@@ -1420,6 +1482,10 @@ class _GameTableScreenState extends State<GameTableScreen> {
       headline = 'Голосование';
     } else if (stage == 'kon_trump') {
       headline = 'КОН называет козырь';
+    } else if (isSpecial) {
+      headline = myTurn ? 'ВАШ ХОД' : 'Ход: $activeName';
+    } else if (isDiscard) {
+      headline = 'Сброс карты';
     } else if (stage == 'awaiting_deal') {
       headline = 'Пересдача';
     } else if (isRoundDone) {
@@ -1515,6 +1581,72 @@ class _GameTableScreenState extends State<GameTableScreen> {
           }),
         ],
       );
+    } else if (isSpecial) {
+      // Борьба за спецкарту (RULES.md §7): что открылось, у кого карта, кто выбыл.
+      final kind = special['kind'].toString();
+      final card = Map<String, dynamic>.from(special['card'] as Map);
+      final blind = special['phase'] == 'blind';
+      final holderName = special['holderName']?.toString();
+      final risk = (special['risk'] as num?)?.toInt() ?? 0;
+      final passedIds = ((special['passedIds'] as List?) ?? const [])
+          .map((e) => e.toString())
+          .toSet();
+      final passedNames = players
+          .where((p) => passedIds.contains(p['id'].toString()))
+          .map((p) => p['name'].toString())
+          .join(', ');
+      footer = Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Row(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              SmallTrumpCard(
+                rank: card['rank'].toString(),
+                suit: card['suit'].toString(),
+              ),
+              const SizedBox(width: 12),
+              Text(
+                specialName(kind),
+                style: const TextStyle(
+                  fontSize: 24,
+                  fontWeight: FontWeight.w900,
+                  color: Color(0xFFD4A94F),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 8),
+          Text(
+            blind
+                ? 'Слепой круг: забрать туза можно только сейчас, не глядя в карты, за ×1'
+                : holderName != null
+                    ? 'Карта у $holderName на ×$risk'
+                    : 'Кто заберёт карту? Кто забрал — главный, торгов не будет',
+            textAlign: TextAlign.center,
+            style: const TextStyle(fontWeight: FontWeight.w700),
+          ),
+          if (passedNames.isNotEmpty) ...[
+            const SizedBox(height: 4),
+            Text(
+              'Выбыли: $passedNames',
+              textAlign: TextAlign.center,
+              style: const TextStyle(color: Colors.white54, fontSize: 12),
+            ),
+          ],
+        ],
+      );
+    } else if (isDiscard) {
+      // Владелец спецкарты взял её в руку и сбрасывает одну свою карту (RULES.md §7.5).
+      final owner = mains.isNotEmpty ? mains.first['playerName'].toString() : '';
+      final risk = (specialOutcome?['risk'] as num?)?.toInt() ?? 1;
+      footer = Text(
+        myDiscardOptions.isNotEmpty
+            ? 'Спецкарта ваша на ×$risk.\nСбросьте одну свою карту — её никто не увидит.'
+            : '$owner забрал спецкарту на ×$risk и сбрасывает одну карту',
+        textAlign: TextAlign.center,
+        style: const TextStyle(fontWeight: FontWeight.w700),
+      );
     } else if (isVote && vote != null) {
       final votedIds = ((vote['votedIds'] as List?) ?? const [])
           .map((e) => e.toString())
@@ -1603,7 +1735,12 @@ class _GameTableScreenState extends State<GameTableScreen> {
       // У КОНА видно, как он назвал козырь: «КОН по ДВА».
       final names = mains.map((m) {
         final d = m['declaration'].toString();
-        final label = d == 'КОН' && konAs != null ? 'КОН по $konAs' : d;
+        // Главный спецраздачи: «ТУЗ ×3»; КОН: «КОН по ДВА».
+        final label = specialOutcome != null && special != null
+            ? '${specialName(special['kind'].toString())} ×${specialOutcome['risk']}'
+            : d == 'КОН' && konAs != null
+                ? 'КОН по $konAs'
+                : d;
         return '${m['playerName']} ($label)';
       }).join(' и ');
       footer = Column(
@@ -1991,6 +2128,24 @@ class _GameTableScreenState extends State<GameTableScreen> {
 
                           final card = hand[index];
                           final cardId = card['id'].toString();
+
+                          // Сброс после спецкарты: нажатием выбираем карту (RULES.md §7.5).
+                          if (isDiscard && myDiscardOptions.isNotEmpty) {
+                            final canDiscard = myDiscardOptions.contains(cardId);
+                            return Opacity(
+                              opacity: canDiscard ? 1 : 0.35,
+                              child: GestureDetector(
+                                onTap: canDiscard && !sendingSpecial
+                                    ? () => sendSpecial('discard', {'cardId': cardId})
+                                    : null,
+                                child: SmallCard(
+                                  rank: card['rank'].toString(),
+                                  suit: card['suit'].toString(),
+                                ),
+                              ),
+                            );
+                          }
+
                           final myPlayTurn = isPlaying && myTurn;
                           final canPlay = myPlayTurn &&
                               myPlayable.contains(cardId) &&
@@ -2086,6 +2241,63 @@ class _GameTableScreenState extends State<GameTableScreen> {
                   style: TextStyle(
                     fontWeight: FontWeight.w800,
                     color: myTurn ? Colors.greenAccent : Colors.white60,
+                  ),
+                )
+              else if (isSpecial)
+                // Борьба за спецкарту: множители, которые можно назвать (с учётом
+                // баланса, решает сервер), и пас — окончательный выход (RULES.md §7.4).
+                myTurn
+                    ? Wrap(
+                        alignment: WrapAlignment.center,
+                        spacing: 8,
+                        runSpacing: 8,
+                        children: [
+                          ...mySpecialRisks.map(
+                            (r) => FilledButton(
+                              onPressed: sendingSpecial
+                                  ? null
+                                  : () => sendSpecial(
+                                        'special',
+                                        {'action': 'take', 'risk': r},
+                                      ),
+                              child: Text(
+                                special['phase'] == 'blind'
+                                    ? 'ВЗЯТЬ ВСЛЕПУЮ ×$r'
+                                    : 'ВЗЯТЬ ×$r',
+                              ),
+                            ),
+                          ),
+                          OutlinedButton(
+                            onPressed: sendingSpecial
+                                ? null
+                                : () => sendSpecial('special', {'action': 'pass'}),
+                            child: Text(
+                              special['phase'] == 'blind' ? 'НЕ БРАТЬ' : 'ПАС',
+                            ),
+                          ),
+                          if (mySpecialRisks.isEmpty)
+                            const Text(
+                              'Монет не хватает ни на один множитель',
+                              style: TextStyle(color: Colors.white60),
+                            ),
+                        ],
+                      )
+                    : Text(
+                        'Решает $activeName',
+                        textAlign: TextAlign.center,
+                        style: const TextStyle(color: Colors.white60),
+                      )
+              else if (isDiscard)
+                Text(
+                  myDiscardOptions.isNotEmpty
+                      ? 'Нажмите на карту, которую сбросить'
+                      : 'Ждём, пока сбросят карту',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(
+                    fontWeight: FontWeight.w800,
+                    color: myDiscardOptions.isNotEmpty
+                        ? Colors.greenAccent
+                        : Colors.white60,
                   ),
                 )
               else if (stage == 'kon_trump')

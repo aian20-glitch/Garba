@@ -15,10 +15,13 @@
 #   .\tools\garba.ps1 vote    -Room 12345 -Choice split      все боты голосуют (continue | split)
 #   .\tools\garba.ps1 bid     -Room 12345 -Bid КОН -Bot 1    КОН (когда кон дорос до порога)
 #   .\tools\garba.ps1 kontrump -Room 12345 -Suit diamonds    бот, выигравший КОН, называет козырь
+#   .\tools\garba.ps1 special -Room 12345 -Risk 2            бот, чья очередь, берёт спецкарту за ×2
+#   .\tools\garba.ps1 special -Room 12345                    бот, чья очередь, пасует
+#   .\tools\garba.ps1 discard -Room 12345                    бот-владелец спецкарты сбрасывает карту
 
 param(
     [Parameter(Mandatory = $true, Position = 0)]
-    [ValidateSet('join', 'state', 'deal', 'bid', 'passall', 'playall', 'vote', 'kontrump')]
+    [ValidateSet('join', 'state', 'deal', 'bid', 'passall', 'playall', 'vote', 'kontrump', 'special', 'discard')]
     [string]$Command,
 
     [Parameter(Mandatory = $true)]
@@ -33,7 +36,11 @@ param(
 
     # Масть для ДВА при 6 и 7 игроках (RULES.md §6.3). При 5 не нужна.
     [ValidateSet('', 'hearts', 'diamonds', 'clubs', 'spades')]
-    [string]$Suit = ''
+    [string]$Suit = '',
+
+    # Множитель для спецкарты (RULES.md §7). 0 — пас.
+    [ValidateRange(0, 5)]
+    [int]$Risk = 0
 )
 
 $ErrorActionPreference = 'Stop'
@@ -76,6 +83,17 @@ function Show-State {
     Write-Host "Кон: $($g.kon) (базовый $($g.baseKon)) | РАЗ стоит $($g.razStake), ДВА стоит $($g.dvaStake)"
     if ($g.konAvailable) {
         Write-Host "КОН открыт (с $($g.konUnlockAt)), стоит $($g.konStake)"
+    }
+    if ($g.special) {
+        $sp = $g.special
+        Write-Host "СПЕЦКАРТА: $($sp.card.rank) $($sp.card.suit) ($($sp.kind)), фаза $($sp.phase)"
+        if ($sp.holderName) { Write-Host "  у $($sp.holderName) на x$($sp.risk)" }
+        if ($sp.activeId) { Write-Host "  решает: $($sp.activeId)" }
+        if ($sp.passedIds.Count -gt 0) { Write-Host "  выбыли: $($sp.passedIds -join ', ')" }
+        if ($sp.outcome -eq 'nobody') { Write-Host "  не взял никто — обычные торги" }
+    }
+    if ($g.stage -eq 'special_discard') {
+        Write-Host "Владелец спецкарты $($g.mains[0].playerName) сбрасывает одну карту"
     }
     if ($g.stage -eq 'kon_trump') {
         Write-Host "КОН выиграл $($g.mains[0].playerName) — ждём, какой козырь он назовёт"
@@ -291,6 +309,49 @@ switch ($Command) {
         Show-State
     }
 
+    'special' {
+        # Бот, чья очередь в борьбе за спецкарту: -Risk N — взять за ×N, без -Risk — пас.
+        $r = Get-RoomState $null
+        if (-not $r.game -or $r.game.stage -ne 'special') {
+            Write-Host "Борьбы за спецкарту нет, стадия: $($r.game.stage)"
+            break
+        }
+        $activeId = $r.game.special.activeId
+        $b = $bots | Where-Object { $_.id -eq $activeId }
+        if (-not $b) {
+            Write-Host "Сейчас решает живой игрок. Жми в приложении."
+            break
+        }
+        if ($Risk -gt 0) {
+            Send-Json "$base/rooms/$Room/special" @{ playerId = $b.id; action = 'take'; risk = $Risk } | Out-Null
+            Write-Host "$($b.name) берёт спецкарту за x$Risk"
+        } else {
+            Send-Json "$base/rooms/$Room/special" @{ playerId = $b.id; action = 'pass' } | Out-Null
+            Write-Host "$($b.name) пасует"
+        }
+        Show-State
+    }
+
+    'discard' {
+        # Бот-владелец спецкарты сбрасывает первую разрешённую карту.
+        $r = Get-RoomState $null
+        if (-not $r.game -or $r.game.stage -ne 'special_discard') {
+            Write-Host "Сейчас никто не сбрасывает, стадия: $($r.game.stage)"
+            break
+        }
+        $ownerId = $r.game.mains[0].playerId
+        $b = $bots | Where-Object { $_.id -eq $ownerId }
+        if (-not $b) {
+            Write-Host "Спецкарта у живого игрока. Сбрасывай в приложении."
+            break
+        }
+        $view = Get-RoomState $b.id
+        $cardId = @($view.game.myDiscardOptions)[0]
+        Send-Json "$base/rooms/$Room/discard" @{ playerId = $b.id; cardId = $cardId } | Out-Null
+        Write-Host "$($b.name) сбросил карту (её никто не видит)"
+        Show-State
+    }
+
     'kontrump' {
         # Бот, выигравший КОН, называет козырь. -Suit не задан — берёт масть РАЗ.
         $r = Get-RoomState $null
@@ -331,6 +392,7 @@ switch ($Command) {
         Show-State
     }
 }
+
 
 
 

@@ -42,6 +42,18 @@ import {
 } from './bidding.js';
 import { dealsUntilNextVote, tallyVote, type VoteChoice } from './vote.js';
 import {
+  contestResult,
+  nextActor,
+  passCard,
+  riskOptions,
+  specialKindOf,
+  specialLeader,
+  startContest,
+  takeCard,
+  type Contest,
+  type SpecialKind,
+} from './special.js';
+import {
   firstLeader,
   countsAsGarba,
   instantWinIndex,
@@ -85,12 +97,16 @@ type RevealCard = Card & {
 // playing       — главный определён, идёт розыгрыш 5 взяток
 // round_done    — раздача сыграна, деньги посчитаны, следующий раздающий должен раздать
 // awaiting_deal — пересдача: все спасовали, новый раздающий должен раздать
+// special       — открылась спецкарта: слепой круг туза или окно борьбы за карту (§7)
+// special_discard — спецкарту забрали: владелец сбрасывает одну свою карту (§7.5)
 // kon_trump     — торги выиграл КОН, он называет козырь: РАЗ или ДВА (§6.7)
 // vote          — кон не по карману никому: голосуем, продолжаем или делим (§12.2)
 // room_done     — комната закрыта: кон забрали (§12.1) или поделили по голосованию (§12.2)
 type Stage =
   | 'dealer_found'
   | 'bidding'
+  | 'special'
+  | 'special_discard'
   | 'kon_trump'
   | 'playing'
   | 'round_done'
@@ -152,6 +168,16 @@ type GameState = {
   dvaSuit: Suit | null;
   // Выиграл КОН — как он назвал козырь: по РАЗ (масть РАЗ) или по ДВА (§6.7).
   konAs: 'РАЗ' | 'ДВА' | null;
+  // Спецкарта этой раздачи и борьба за неё (§7). null — открылась обычная карта.
+  special: {
+    kind: SpecialKind;
+    card: Card;
+    contest: Contest;
+    // Итог борьбы: у кого карта и на каком риске; 'nobody' — не взял никто.
+    outcome: { holderId: string; risk: number } | 'nobody' | null;
+  } | null;
+  // Сброшенная владельцем спецкарты карта. СКРЫТА от всех (§7.5), наружу не отдаётся.
+  discardedCard: Card | null;
 
   // Розыгрыш.
   turnPlayerId: string | null;
@@ -264,6 +290,8 @@ function makeDealerSelection(room: Room): GameState {
     izzhoga: [],
     dvaSuit: null,
     konAs: null,
+    special: null,
+    discardedCard: null,
     ...emptyPlayState(),
     hands: {},
     bids: [],
@@ -448,6 +476,8 @@ function beginBidding(room: Room) {
   game.izzhoga = [];
   game.dvaSuit = null;
   game.konAs = null;
+  game.special = null;
+  game.discardedCard = null;
   Object.assign(game, emptyPlayState());
   game.konBeforeSettlement = null;
 
@@ -521,6 +551,60 @@ function beginBidding(room: Room) {
   game.bidOrder = bidOrder;
   game.bidIndex = 0;
   game.activeBidderId = bidOrder[0] ?? null;
+
+  // Открылась спецкарта — вместо торгов борьба за неё (§7). Карты уже лежат в руках,
+  // но до конца борьбы игроки видят только часть: при слепом круге туза — ничего,
+  // в окне — первую карту. Остальные 4 «дораздаются молча» (§7.2, §7.3).
+  const kind = specialKindOf(room.capacity, opening.openCard);
+  if (kind) {
+    game.special = {
+      kind,
+      card: opening.openCard,
+      contest: startContest(kind, room.players.map((p) => p.id), game.dealerId),
+      outcome: null,
+    };
+    game.stage = 'special';
+    game.activeBidderId = null;
+  }
+}
+
+// Сколько своих карт игрок видит прямо сейчас. null — все.
+// Во время борьбы за спецкарту карты раздаются по одной (§7.2, §7.3).
+function visibleCardCount(game: GameState): number | null {
+  if (game.stage !== 'special' || !game.special) return null;
+  return game.special.contest.phase === 'blind' ? 0 : 1;
+}
+
+// Хватает ли игроку денег взять спецкарту на этом риске: проигрыш — кон × риск (§11.7).
+function canAffordSpecial(room: Room, playerId: string, risk: number): boolean {
+  const player = room.players.find((p) => p.id === playerId);
+  return !!player && player.balance >= room.game!.kon * risk;
+}
+
+// Борьба за спецкарту окончена.
+function finishSpecial(room: Room) {
+  const game = room.game!;
+  const special = game.special!;
+  const result = contestResult(special.contest);
+
+  // Не взял никто — карта просто лежит козырем, идут обычные торги с риском ×1 (§7.2, §7.3).
+  if (!result) {
+    special.outcome = 'nobody';
+    game.stage = 'bidding';
+    game.activeBidderId = game.bidOrder[0] ?? null;
+    return;
+  }
+
+  // Взявший — главный, обычных торгов нет. Играет как РАЗ на весь кон, проигрыш × риск.
+  const holder = room.players.find((p) => p.id === result.holderId)!;
+  special.outcome = result;
+  game.mains = [{ playerId: holder.id, playerName: holder.name, declaration: 'РАЗ' }];
+  game.trumpSuit = game.razSuit;
+  game.emptyStreak = 0;
+
+  // Спецкарта идёт ему в руку — теперь у него 6 карт, одну он должен сбросить (§7.5).
+  game.hands[holder.id] = [...game.hands[holder.id], special.card];
+  game.stage = 'special_discard';
 }
 
 // Пустая раздача: никто не играет — все спасовали (§6.5) или три ИЗЖОГИ подряд (§5.2).
@@ -544,6 +628,8 @@ function emptyRound(room: Room, reason: EmptyRoundReason) {
   game.trumpSuit = null;
   game.dvaSuit = null;
   game.konAs = null;
+  game.special = null;
+  game.discardedCard = null;
   game.mains = [];
   game.hands = {};
   game.bids = [];
@@ -587,7 +673,12 @@ function startPlay(room: Room) {
 
   game.stage = 'playing';
   game.trickNumber = 1;
-  game.turnPlayerId = firstLeader(seatIds, game.mains[0].playerId);
+  // В спецраздаче первый ход особый: при 6 главный ходит сам, при 10 — последним (§10.4).
+  const specialOutcome = game.special?.outcome;
+  game.turnPlayerId =
+    game.special && specialOutcome && specialOutcome !== 'nobody'
+      ? specialLeader(game.special.kind, seatIds, game.mains[0].playerId)
+      : firstLeader(seatIds, game.mains[0].playerId);
 }
 
 // Торги закончились: либо определился главный, либо все спасовали.
@@ -701,13 +792,15 @@ function finishRound(room: Room, won: boolean[], instantIndex = -1) {
   const game = room.game!;
   const base = roomBaseKon(room);
 
-  // Риск пока всегда ×1 — спецкарты появятся на этапе 7.
+  // Риск — множитель, на котором главный забрал спецкарту (§7, §11.7); иначе ×1.
+  const outcome = game.special?.outcome;
+  const risk = outcome && outcome !== 'nobody' ? outcome.risk : 1;
   const settlement = settleRound(
     game.mains.map((m, i) => ({
       playerId: m.playerId,
       declaration: m.declaration,
       won: won[i],
-      risk: 1,
+      risk,
     })),
     game.kon,
     base,
@@ -877,16 +970,57 @@ function publicRoom(room: Room, viewerId?: string) {
       bidOrder: room.game.bidOrder,
       bidIndex: room.game.bidIndex,
       activeBidderId: room.game.activeBidderId,
+      // Во время борьбы за спецкарту видна только часть руки (§7.2, §7.3).
       hand:
         viewerId && room.game.hands[viewerId]
-          ? room.game.hands[viewerId]
+          ? room.game.hands[viewerId].slice(
+              0,
+              visibleCardCount(room.game) ?? undefined,
+            )
           : [],
       handCounts: Object.fromEntries(
         Object.entries(room.game.hands).map(([playerId, cards]) => [
           playerId,
-          cards.length,
+          Math.min(cards.length, visibleCardCount(room.game!) ?? cards.length),
         ]),
       ),
+      // Спецкарта и борьба за неё (§7). Кто что сказал — открыто всем.
+      special: room.game.special
+        ? {
+            kind: room.game.special.kind,
+            card: room.game.special.card,
+            phase: room.game.special.contest.phase,
+            holderId: room.game.special.contest.holderId,
+            holderName:
+              room.players.find((p) => p.id === room.game!.special!.contest.holderId)
+                ?.name ?? null,
+            risk: room.game.special.contest.risk,
+            passedIds: room.game.special.contest.passed,
+            activeId:
+              room.game.stage === 'special' ? nextActor(room.game.special.contest) : null,
+            outcome: room.game.special.outcome,
+          }
+        : null,
+      // Какие множители может назвать запросивший, если сейчас его очередь (с учётом баланса).
+      mySpecialRisks:
+        room.game.stage === 'special' &&
+        room.game.special &&
+        viewerId !== undefined &&
+        nextActor(room.game.special.contest) === viewerId
+          ? riskOptions(room.game.special.contest).filter((r) =>
+              canAffordSpecial(room, viewerId, r),
+            )
+          : [],
+      // Владелец спецкарты сбрасывает одну свою карту — кроме самой спецкарты (§7.5).
+      myDiscardOptions:
+        room.game.stage === 'special_discard' &&
+        viewerId !== undefined &&
+        viewerId === room.game.mains[0]?.playerId &&
+        room.game.special
+          ? room.game.hands[viewerId]
+              .filter((c) => c.id !== room.game!.special!.card.id)
+              .map((c) => c.id)
+          : [],
     };
   }
 
@@ -1311,6 +1445,88 @@ app.post('/rooms/:id/play', (req, res) => {
       .join(', ');
     console.log(`[ROOM ${room.id}] round done: ${summary}`);
   }
+
+  return res.json(publicRoom(room, String(playerId)));
+});
+
+// Борьба за спецкарту: взять за множитель или пасовать (RULES.md §7).
+app.post('/rooms/:id/special', (req, res) => {
+  const room = rooms.get(req.params.id);
+
+  if (!room || !room.game) {
+    return res.status(404).json({ error: 'room/game not found' });
+  }
+
+  const game = room.game;
+  const { playerId, action, risk } = req.body ?? {};
+
+  if (game.stage !== 'special' || !game.special) {
+    return res.status(409).json({ error: 'no special card contest', stage: game.stage });
+  }
+
+  const contest = game.special.contest;
+  if (nextActor(contest) !== String(playerId)) {
+    return res.status(409).json({ error: 'not your turn', activeId: nextActor(contest) });
+  }
+
+  if (action === 'pass') {
+    game.special.contest = passCard(contest, String(playerId));
+  } else if (action === 'take') {
+    const value = Number(risk);
+    if (!riskOptions(contest).includes(value)) {
+      return res.status(400).json({ error: 'risk is not allowed', riskOptions: riskOptions(contest) });
+    }
+    // Проигрыш на спецкарте — кон × риск; денег должно хватать заранее (§6.6, §11.7).
+    if (!canAffordSpecial(room, String(playerId), value)) {
+      return res.status(400).json({ error: 'not enough coins for this risk', need: game.kon * value });
+    }
+    game.special.contest = takeCard(contest, String(playerId), value);
+  } else {
+    return res.status(400).json({ error: 'action must be take or pass' });
+  }
+
+  if (nextActor(game.special.contest) === null) {
+    finishSpecial(room);
+    const outcome = game.special.outcome;
+    console.log(
+      outcome === 'nobody'
+        ? `[ROOM ${room.id}] спецкарту ${game.special.kind} не взял никто — обычные торги`
+        : `[ROOM ${room.id}] спецкарта ${game.special.kind} у ${game.mains[0].playerName} на ×${(outcome as { risk: number }).risk}`,
+    );
+  }
+
+  return res.json(publicRoom(room, String(playerId)));
+});
+
+// Владелец спецкарты сбрасывает одну свою карту — после этого начинается розыгрыш (§7.5).
+app.post('/rooms/:id/discard', (req, res) => {
+  const room = rooms.get(req.params.id);
+
+  if (!room || !room.game) {
+    return res.status(404).json({ error: 'room/game not found' });
+  }
+
+  const game = room.game;
+  const { playerId, cardId } = req.body ?? {};
+
+  if (game.stage !== 'special_discard' || !game.special) {
+    return res.status(409).json({ error: 'nothing to discard', stage: game.stage });
+  }
+
+  if (game.mains[0]?.playerId !== String(playerId)) {
+    return res.status(403).json({ error: 'only the special card holder discards' });
+  }
+
+  const hand = game.hands[String(playerId)];
+  const card = hand.find((c) => c.id === String(cardId));
+
+  if (!card || card.id === game.special.card.id) {
+    return res.status(400).json({ error: 'discard one of your own cards, not the special card' });
+  }
+
+  game.hands[String(playerId)] = hand.filter((c) => c.id !== card.id);
+  game.discardedCard = card;
+  startPlay(room);
 
   return res.json(publicRoom(room, String(playerId)));
 });
