@@ -1391,6 +1391,10 @@ class _GameTableScreenState extends State<GameTableScreen> {
   bool voting = false;
   bool choosingKonTrump = false;
   bool sendingSpecial = false;
+  // Пауза из-за отключения (RULES.md §13): когда пришло последнее состояние паузы —
+  // от него на экране идёт обратный отсчёт, раз в секунду.
+  DateTime pauseReceivedAt = DateTime.now();
+  Timer? pauseTicker;
 
   late final RoomLink link;
 
@@ -1423,7 +1427,20 @@ class _GameTableScreenState extends State<GameTableScreen> {
   // Свежее состояние комнаты — по сокету или по HTTP.
   void applyRoom(Map<String, dynamic> data) {
     if (!mounted) return;
-    setState(() => room = data);
+    setState(() {
+      room = data;
+      pauseReceivedAt = DateTime.now();
+    });
+
+    // Пока пауза — перерисовываем раз в секунду, чтобы шёл обратный отсчёт.
+    if (data['pause'] is Map) {
+      pauseTicker ??= Timer.periodic(const Duration(seconds: 1), (_) {
+        if (mounted) setState(() {});
+      });
+    } else {
+      pauseTicker?.cancel();
+      pauseTicker = null;
+    }
   }
 
   // suit — масть для ДВА при 6 и 7 игроках (RULES.md §6.3).
@@ -1459,6 +1476,7 @@ class _GameTableScreenState extends State<GameTableScreen> {
   @override
   void dispose() {
     timer?.cancel();
+    pauseTicker?.cancel();
     link.dispose();
     super.dispose();
   }
@@ -1895,8 +1913,24 @@ class _GameTableScreenState extends State<GameTableScreen> {
         : isPlaying
             ? turnPlayerId
             : activeBidderId;
+    // Пауза: кто-то отключился, ходы сервер не принимает (RULES.md §13).
+    final pauseRaw = data['pause'];
+    final pausedPlayers = pauseRaw is Map
+        ? ((pauseRaw['players'] as List?) ?? const [])
+            .map((e) => Map<String, dynamic>.from(e as Map))
+            .toList()
+        : <Map<String, dynamic>>[];
+    final paused = pausedPlayers.isNotEmpty;
+    final pauseElapsed = DateTime.now().difference(pauseReceivedAt).inSeconds;
+    String countdown(Map<String, dynamic> p) {
+      final left = ((p['secondsLeft'] as num?)?.toInt() ?? 0) - pauseElapsed;
+      final safe = left < 0 ? 0 : left;
+      return '${safe ~/ 60}:${(safe % 60).toString().padLeft(2, '0')}';
+    }
+
     final myTurn = (stage == 'bidding' || isPlaying || isSpecial) &&
-        actorId == widget.currentPlayerId;
+        actorId == widget.currentPlayerId &&
+        !paused;
 
     String activeName = '';
     if (actorId != null) {
@@ -1909,6 +1943,8 @@ class _GameTableScreenState extends State<GameTableScreen> {
     final String headline;
     if (isRoomDone) {
       headline = 'Комната закрыта';
+    } else if (paused) {
+      headline = 'ПАУЗА';
     } else if (isVote) {
       headline = 'Голосование';
     } else if (stage == 'kon_trump') {
@@ -1973,6 +2009,35 @@ class _GameTableScreenState extends State<GameTableScreen> {
                 child: Text(
                   'Кон ${fmtCoins(splitKon)} не по карману никому — '
                   'поделили поровну: по ${fmtCoins(perPlayer)}'
+                  '${remainder > 0 ? ', остаток ${fmtCoins(remainder)} — $remainderName' : ''}',
+                  textAlign: TextAlign.center,
+                  style: const TextStyle(color: Colors.white70, fontSize: 13),
+                ),
+              );
+            }),
+          // Игрок отключился и не вернулся за 5 минут — кон поделили
+          // между оставшимися (RULES.md §13).
+          if (game['closeReason'] == 'player_left' && game['split'] is Map)
+            Builder(builder: (_) {
+              final split = Map<String, dynamic>.from(game['split'] as Map);
+              final leftIds = ((game['leftPlayerIds'] as List?) ?? const [])
+                  .map((e) => e.toString())
+                  .toSet();
+              final leftNames = players
+                  .where((p) => leftIds.contains(p['id'].toString()))
+                  .map((p) => p['name'].toString())
+                  .join(', ');
+              final remainder = (split['remainder'] as num).toInt();
+              final remainderName = players
+                  .where((p) => p['id'].toString() == split['remainderTo']?.toString())
+                  .map((p) => p['name'].toString())
+                  .join();
+              return Padding(
+                padding: const EdgeInsets.only(top: 6),
+                child: Text(
+                  '$leftNames не вернулся за 5 минут — игра прекращена. '
+                  'Кон ${fmtCoins((split['kon'] as num).toInt())} поделили между оставшимися: '
+                  'по ${fmtCoins((split['perPlayer'] as num).toInt())}'
                   '${remainder > 0 ? ', остаток ${fmtCoins(remainder)} — $remainderName' : ''}',
                   textAlign: TextAlign.center,
                   style: const TextStyle(color: Colors.white70, fontSize: 13),
@@ -2339,6 +2404,22 @@ class _GameTableScreenState extends State<GameTableScreen> {
                   ),
                 ],
               ),
+              if (paused && !isRoomDone)
+                Container(
+                  margin: const EdgeInsets.only(top: 6),
+                  padding: const EdgeInsets.all(8),
+                  decoration: BoxDecoration(
+                    color: Colors.orange.withValues(alpha: 0.15),
+                    borderRadius: BorderRadius.circular(8),
+                    border: Border.all(color: Colors.orangeAccent),
+                  ),
+                  child: Text(
+                    '${pausedPlayers.map((p) => '${p['name']} отключился — ждём ${countdown(p)}').join('\n')}\n'
+                    'Не вернётся — игра прекращается, кон делится поровну между оставшимися.',
+                    textAlign: TextAlign.center,
+                    style: const TextStyle(color: Colors.orangeAccent, fontSize: 13),
+                  ),
+                ),
               if (closing && !isRoomDone)
                 Padding(
                   padding: const EdgeInsets.only(top: 6),
@@ -2652,7 +2733,7 @@ class _GameTableScreenState extends State<GameTableScreen> {
                 )
               else if (stage == 'awaiting_deal' || isRoundDone)
                 FilledButton(
-                  onPressed: isDealer && !dealing ? dealCards : null,
+                  onPressed: isDealer && !dealing && !paused ? dealCards : null,
                   child: Text(
                     dealing
                         ? 'РАЗДАЁМ...'

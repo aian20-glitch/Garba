@@ -10,11 +10,19 @@ import {
   createAccount,
   findAccountByToken,
   openDb,
-  setBalance,
   tokenFromHeader,
   type Account,
 } from './accounts.js';
 import { createDeck, shuffle } from './deck.js';
+import { loadUnfinishedRooms, roomIdTaken, saveRoom } from './roomDb.js';
+import {
+  DISCONNECT_TIMEOUT_MS,
+  OFFLINE_GRACE_MS,
+  presenceStep,
+  secondsLeft,
+  touch,
+  type PresenceState,
+} from './presence.js';
 import { openTrump } from './deal.js';
 import type { Card, Suit } from './types.js';
 import {
@@ -83,7 +91,7 @@ type Player = {
   ready: boolean;
   joinedAt: number;
   // Баланс аккаунта. Пока игрок в комнате, деньги считаются здесь, а после каждого
-  // действия записываются обратно в базу (syncBalances).
+  // действия записываются обратно в базу (persistRoom).
   balance: number;
   // Баланс при входе в комнату — от него считается, кто больше всех проиграл (§12.2).
   startBalance: number;
@@ -212,9 +220,11 @@ type GameState = {
   lastAnte: AnteRecord | null;
   // Кто-то опустился ниже базового кона — доигрываем, пока кон не заберут (§12.1).
   closing: boolean;
-  // Почему закрылась комната: кон забрали (§12.1) или кон никто не может взять
-  // и его поделили поровну (§12.2).
-  closeReason: 'kon_taken' | 'nobody_can_play' | null;
+  // Почему закрылась комната: кон забрали (§12.1), кон никто не может взять
+  // и его поделили поровну (§12.2) или игрок отключился и не вернулся за 5 минут (§13).
+  closeReason: 'kon_taken' | 'nobody_can_play' | 'player_left' | null;
+  // Кто не вернулся за 5 минут — ему доля кона не положена (§13).
+  leftPlayerIds?: string[];
   // Идущее голосование. resumeStage — куда вернуться, если решат продолжать.
   vote: {
     votes: Record<string, VoteChoice>;
@@ -260,14 +270,17 @@ const rooms = new Map<string, Room>();
 app.use(cors());
 app.use(express.json());
 
-// --- Аккаунты (этап 9.1) ---
+// --- Аккаунты (этап 9.1) и сохранение комнат (этап 9.2) ---
 //
 // Файл базы — backend/data/garba.db, путь можно сменить переменной GARBA_DB
-// (':memory:' — база в памяти, для проверок). Комнаты пока живут в памяти
-// и при перезапуске сервера пропадают — сохранение комнат будет на этапе 9.2.
+// (':memory:' — база в памяти, для проверок). В базе аккаунты и комнаты:
+// после перезапуска сервера недоигранные комнаты поднимаются обратно.
 const DB_FILE = process.env.GARBA_DB ?? 'data/garba.db';
 if (DB_FILE !== ':memory:') mkdirSync(dirname(DB_FILE), { recursive: true });
 const db = openDb(DB_FILE);
+
+for (const room of loadUnfinishedRooms<Room>(db)) rooms.set(room.id, room);
+if (rooms.size > 0) console.log(`[DB] restored ${rooms.size} unfinished room(s)`);
 
 // Незаконченная комната игрока. Играть можно только в одной комнате за раз:
 // баланс аккаунта один, и пока игрок за столом, его деньги считаются там.
@@ -280,9 +293,9 @@ function activeRoomOf(accountId: string): Room | undefined {
   return undefined;
 }
 
-// Записать балансы игроков комнаты в базу.
-function syncBalances(room: Room) {
-  for (const p of room.players) setBalance(db, p.id, p.balance);
+// Сохранить комнату и балансы её игроков — одной транзакцией.
+function persistRoom(room: Room) {
+  saveRoom(db, room);
 }
 
 // Новый аккаунт: имя → id, токен, стартовые 10 000. Токен приходит один раз,
@@ -387,13 +400,13 @@ async function broadcastRoom(roomId: string) {
 // После любого действия с комнатой (POST /rooms/:id/...) — рассылка.
 // Рассылаем и после отказа: состояние не изменилось, лишнее сообщение безвредно,
 // а разбирать, какой ответ что поменял, — лишнее место для ошибок.
-// Здесь же балансы записываются в базу — деньги переживают перезапуск сервера.
+// Здесь же комната и балансы записываются в базу — переживают перезапуск сервера.
 app.use('/rooms/:id', (req, res, next) => {
   if (req.method === 'POST') {
     const roomId = req.params.id;
     res.on('finish', () => {
       const room = rooms.get(roomId);
-      if (room) syncBalances(room);
+      if (room) persistRoom(room);
       broadcastRoom(roomId).catch((e) =>
         console.error(`[ROOM ${roomId}] broadcast failed:`, e),
       );
@@ -402,11 +415,145 @@ app.use('/rooms/:id', (req, res, next) => {
   next();
 });
 
+// --- Отключение игрока (RULES.md §13, этап 9.2) ---
+//
+// Раз в секунду смотрим, у кого из игроков начатых комнат открыт сокет. Пропал
+// дольше отсрочки — игра на паузе, у него 5 минут. Вернулся — играем дальше.
+// Не вернулся — игра прекращается, кон делится поровну между оставшимися.
+// Присутствие живёт только в памяти: после перезапуска сервера всем даётся
+// отсрочка на переподключение, таймеры начинаются заново.
+// Время можно сократить переменными окружения — это нужно живой проверке.
+const presenceOpts = {
+  graceMs: Number(process.env.GARBA_GRACE_MS ?? OFFLINE_GRACE_MS),
+  timeoutMs: Number(process.env.GARBA_DISCONNECT_MS ?? DISCONNECT_TIMEOUT_MS),
+};
+const presence = new Map<string, PresenceState>();
+
+function presenceOf(roomId: string): PresenceState {
+  return presence.get(roomId) ?? { lastSeen: {}, disconnectedAt: {} };
+}
+
+// Присутствие считается только за столом: в лобби игры ещё нет, после конца — уже нет.
+function tracksPresence(room: Room): boolean {
+  return room.status === 'started' && !!room.game && room.game.stage !== 'room_done';
+}
+
+function isPaused(room: Room): boolean {
+  return tracksPresence(room) && Object.keys(presenceOf(room.id).disconnectedAt).length > 0;
+}
+
+// У кого сейчас открыт сокет к комнате.
+function connectedPlayerIds(roomId: string): string[] {
+  const ids: string[] = [];
+  for (const socketId of io.sockets.adapter.rooms.get(roomId) ?? []) {
+    const playerId = io.sockets.sockets.get(socketId)?.data.playerId;
+    if (typeof playerId === 'string') ids.push(playerId);
+  }
+  return ids;
+}
+
+// Не вернулся за 5 минут: игра прекращается, кон поровну между оставшимися,
+// остаток — тому из них, кто за эту игру проиграл больше всех (§13).
+function closeByDisconnect(room: Room, leftIds: string[]) {
+  const game = room.game!;
+  const remaining = room.players.filter((p) => !leftIds.includes(p.id));
+  const { shares, perPlayer, remainder, remainderTo } = splitKon(
+    game.kon,
+    remaining.map((p) => ({ id: p.id, lost: p.startBalance - p.balance })),
+  );
+
+  for (const p of remaining) p.balance += shares[p.id];
+
+  game.split = { kon: game.kon, perPlayer, remainder, remainderTo };
+  game.kon = 0;
+  game.stage = 'room_done';
+  game.closeReason = 'player_left';
+  game.leftPlayerIds = leftIds;
+  game.activeBidderId = null;
+  game.turnPlayerId = null;
+  game.vote = null;
+  room.status = 'finished';
+  presence.delete(room.id);
+
+  const names = room.players.filter((p) => leftIds.includes(p.id)).map((p) => p.name);
+  console.log(
+    `[ROOM ${room.id}] ${names.join(', ')} did not return in time — kon ${game.split.kon} split: ${perPlayer} each`,
+  );
+}
+
+function sweepPresence() {
+  const now = Date.now();
+  for (const room of rooms.values()) {
+    if (!tracksPresence(room)) continue;
+
+    const step = presenceStep(
+      room.players.map((p) => p.id),
+      connectedPlayerIds(room.id),
+      presenceOf(room.id),
+      now,
+      presenceOpts,
+    );
+    presence.set(room.id, { lastSeen: step.lastSeen, disconnectedAt: step.disconnectedAt });
+
+    if (step.expired.length > 0) {
+      closeByDisconnect(room, step.expired);
+    } else if (step.changed) {
+      const off = room.players.filter((p) => step.disconnectedAt[p.id] !== undefined);
+      console.log(
+        off.length > 0
+          ? `[ROOM ${room.id}] paused, disconnected: ${off.map((p) => p.name).join(', ')}`
+          : `[ROOM ${room.id}] everyone is back, game resumed`,
+      );
+    } else {
+      continue;
+    }
+
+    persistRoom(room);
+    broadcastRoom(room.id).catch((e) => console.error(`[ROOM ${room.id}] broadcast failed:`, e));
+  }
+}
+
+setInterval(sweepPresence, 1000);
+
+// Запрос игрока к своей комнате — тоже знак, что он на месте (приложение без сокета
+// опрашивает сервер). На паузе ходы не принимаются: ждём отключившегося.
+const LOBBY_ACTIONS = ['/join', '/leave', '/start'];
+app.use('/rooms/:id', (req, res, next) => {
+  const room = rooms.get(req.params.id);
+  if (!room || !tracksPresence(room)) return next();
+
+  const playerId = me(res).id;
+  if (room.players.some((p) => p.id === playerId)) {
+    presence.set(room.id, touch(presenceOf(room.id), playerId, Date.now()));
+  }
+
+  if (req.method === 'POST' && !LOBBY_ACTIONS.includes(req.path) && isPaused(room)) {
+    return res.status(409).json({ error: 'game paused', pause: publicPause(room) });
+  }
+  next();
+});
+
+// Пауза для экрана: кто отключился и сколько секунд у него осталось.
+function publicPause(room: Room) {
+  if (!isPaused(room)) return null;
+  const now = Date.now();
+  const { disconnectedAt } = presenceOf(room.id);
+  return {
+    players: room.players
+      .filter((p) => disconnectedAt[p.id] !== undefined)
+      .map((p) => ({
+        id: p.id,
+        name: p.name,
+        secondsLeft: secondsLeft(disconnectedAt[p.id], now, presenceOpts.timeoutMs),
+      })),
+  };
+}
+
 function makeRoomId(): string {
   let id = '';
   do {
     id = String(Math.floor(10000 + Math.random() * 90000));
-  } while (rooms.has(id));
+  } while (rooms.has(id) || roomIdTaken(db, id));
   return id;
 }
 
@@ -1077,6 +1224,7 @@ function publicRoom(room: Room, viewerId?: string) {
       lastAnte: room.game.lastAnte,
       closing: room.game.closing,
       closeReason: room.game.closeReason,
+      leftPlayerIds: room.game.leftPlayerIds ?? [],
       split: room.game.split,
       // Голосование «продолжаем или делим» (§12.2): сколько за что и кто уже голосовал.
       vote: room.game.vote
@@ -1188,6 +1336,8 @@ function publicRoom(room: Room, viewerId?: string) {
     settings: room.settings,
     players: room.players,
     status: room.status,
+    // Пауза из-за отключения (§13): кто отключился и сколько секунд у него осталось.
+    pause: publicPause(room),
     createdAt: room.createdAt,
     game,
   };
@@ -1304,6 +1454,7 @@ app.post('/rooms', (req, res) => {
   };
 
   rooms.set(id, room);
+  persistRoom(room);
   console.log(`[ROOM ${id}] created ${room.players.length}/${room.capacity}`);
 
   return res.status(201).json(publicRoom(room, String(playerId)));

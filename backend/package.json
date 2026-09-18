@@ -8,7 +8,8 @@
     "build": "tsc",
     "start": "node dist/index.js",
     "test": "tsc --noEmit && tsx tests/run.ts",
-    "test:live": "tsx tests/live-socket.ts"
+    "test:live": "tsx tests/live-socket.ts && tsx tests/live-restart.ts",
+    "bots": "tsx scripts/bots-online.ts"
   },
   "dependencies": {
     "cors": "^2.8.5",

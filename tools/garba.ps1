@@ -125,6 +125,10 @@ function Show-State {
 
     $g = $r.game
     Write-Host "Раздающий: $($g.dealerName) | стадия: $($g.stage)"
+    if ($r.pause) {
+        $off = $r.pause.players | ForEach-Object { "$($_.name) (осталось $($_.secondsLeft) с)" }
+        Write-Host "ПАУЗА — отключился: $($off -join ', ')"
+    }
     Write-Host "Кон: $($g.kon) (базовый $($g.baseKon)) | РАЗ стоит $($g.razStake), ДВА стоит $($g.dvaStake)"
     if ($g.konAvailable) {
         Write-Host "КОН открыт (с $($g.konUnlockAt)), стоит $($g.konStake)"
@@ -229,6 +233,10 @@ function Show-State {
         if ($g.closeReason -eq 'nobody_can_play') {
             Write-Host "Кон $($g.split.kon) не по карману никому — поделили по $($g.split.perPlayer), остаток $($g.split.remainder)"
         }
+        if ($g.closeReason -eq 'player_left') {
+            $left = $r.players | Where-Object { $g.leftPlayerIds -contains $_.id } | ForEach-Object { $_.name }
+            Write-Host "Не вернулся за 5 минут: $($left -join ', '). Кон $($g.split.kon) поделили между оставшимися по $($g.split.perPlayer), остаток $($g.split.remainder)"
+        }
         foreach ($p in $r.players) {
             Write-Host ("   {0,-10} {1} -> {2}  ({3})" -f $p.name, $p.startBalance, $p.balance, ($p.balance - $p.startBalance))
         }
@@ -261,6 +269,12 @@ switch ($Command) {
             $res = Send-Json "$base/rooms/$Room/join" @{} $b.token
             Write-Host "$($b.name) вошёл: $($res.players.Count)/$($res.capacity)"
         }
+
+        # С этапа 9.2 игрок без соединения через 10 секунд считается отключившимся
+        # и игра встаёт на паузу. Держим ботам соединение в отдельном свёрнутом окне.
+        $backend = Join-Path $PSScriptRoot '..\backend'
+        Start-Process -FilePath 'cmd.exe' -ArgumentList '/c', "npm run bots -- $Room" -WorkingDirectory $backend -WindowStyle Minimized
+        Write-Host "Боты на связи: свёрнутое окно 'npm run bots'. Закроешь его — боты «отключатся»."
 
         Show-State
     }

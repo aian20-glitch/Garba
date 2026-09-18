@@ -10,6 +10,7 @@
 import { DatabaseSync } from 'node:sqlite';
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { STARTING_COINS } from './config.js';
+import { ensureRoomTable } from './roomDb.js';
 
 export type Account = {
   id: string;
@@ -32,6 +33,7 @@ export function openDb(file: string): DatabaseSync {
       created_at  INTEGER NOT NULL
     )
   `);
+  ensureRoomTable(db); // комнаты — этап 9.2
   return db;
 }
 
