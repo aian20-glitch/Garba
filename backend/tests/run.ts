@@ -8,6 +8,7 @@ import './special.test.js';
 import './play.test.js';
 import './money.test.js';
 import './vote.test.js';
+import './accounts.test.js';
 import { summary } from './check.js';
 
 process.exit(summary() === 0 ? 0 : 1);

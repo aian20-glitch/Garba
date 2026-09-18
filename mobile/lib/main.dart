@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:socket_io_client/socket_io_client.dart' as io;
 
 const apiBase = 'http://10.0.2.2:3000';
@@ -66,7 +67,6 @@ bool isRedSuit(String suit) =>
 class RoomLink {
   RoomLink({
     required this.roomCode,
-    required this.playerId,
     required this.onRoom,
   }) {
     _socket = io.io(
@@ -82,7 +82,8 @@ class RoomLink {
 
     // Подписываемся при каждом подключении — в том числе после обрыва.
     _socket.onConnect((_) {
-      _socket.emit('watch', {'roomId': roomCode, 'playerId': playerId});
+      // Кто смотрит, сервер узнаёт по токену — чужую руку так не получить.
+      _socket.emit('watch', {'roomId': roomCode, 'token': Session.token});
     });
     _socket.on('room', (data) {
       if (data is Map) onRoom(Map<String, dynamic>.from(data));
@@ -91,7 +92,6 @@ class RoomLink {
   }
 
   final String roomCode;
-  final String playerId;
   final void Function(Map<String, dynamic> room) onRoom;
   late final io.Socket _socket;
 
@@ -102,6 +102,71 @@ class RoomLink {
 
 // Пока сокет подключён, опрос не нужен. Если отвалился — раз в столько опрашиваем сервер.
 const fallbackPollInterval = Duration(seconds: 3);
+
+// Аккаунт игрока на этом телефоне (этап 9.1).
+//
+// При первом запуске игрок вводит имя, сервер создаёт аккаунт и выдаёт токен.
+// Токен хранится на телефоне (shared_preferences) и уходит в каждом запросе —
+// по нему сервер узнаёт игрока. Свой playerId приложение больше не придумывает.
+class Session {
+  static String id = '';
+  static String name = '';
+  static String token = '';
+
+  static const _keyId = 'account.id';
+  static const _keyName = 'account.name';
+  static const _keyToken = 'account.token';
+
+  static Future<void> load() async {
+    final prefs = await SharedPreferences.getInstance();
+    id = prefs.getString(_keyId) ?? '';
+    name = prefs.getString(_keyName) ?? '';
+    token = prefs.getString(_keyToken) ?? '';
+  }
+
+  static Future<void> save(Map<String, dynamic> account) async {
+    id = account['id'].toString();
+    name = account['name'].toString();
+    token = account['token'].toString();
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(_keyId, id);
+    await prefs.setString(_keyName, name);
+    await prefs.setString(_keyToken, token);
+  }
+
+  // Сервер не знает этот токен (например, базу стёрли) — заводим аккаунт заново.
+  static Future<void> clear() async {
+    id = '';
+    name = '';
+    token = '';
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.remove(_keyId);
+    await prefs.remove(_keyName);
+    await prefs.remove(_keyToken);
+  }
+}
+
+// Заголовки для запросов к серверу: JSON и токен.
+Map<String, String> authHeaders() => {
+      'Content-Type': 'application/json',
+      'Authorization': 'Bearer ${Session.token}',
+    };
+
+// Текст ошибки «уже играешь в другой комнате» — или null, если ошибка другая.
+String? busyInRoomMessage(http.Response response) {
+  if (response.statusCode != 409) return null;
+  try {
+    final err = jsonDecode(response.body);
+    if (err is Map && err['error'] == 'already in another room') {
+      return 'Вы уже в комнате #${err['roomId']}. Играть можно только в одной — '
+          'вернитесь в неё с главного экрана.';
+    }
+  } catch (_) {}
+  return null;
+}
+
+// Главный экран обновляет баланс, когда на него возвращаются.
+final routeObserver = RouteObserver<ModalRoute<void>>();
 
 void main() => runApp(const GarbaApp());
 
@@ -122,13 +187,111 @@ class GarbaApp extends StatelessWidget {
           brightness: Brightness.dark,
         ),
       ),
-      home: const HomeScreen(),
+      navigatorObservers: [routeObserver],
+      home: const StartScreen(),
     );
   }
 }
 
-class HomeScreen extends StatelessWidget {
-  const HomeScreen({super.key});
+// Первый экран: есть ли на телефоне аккаунт. Нет — спрашиваем имя и заводим.
+// Есть — проверяем токен на сервере и идём на главный экран.
+class StartScreen extends StatefulWidget {
+  const StartScreen({super.key});
+
+  @override
+  State<StartScreen> createState() => _StartScreenState();
+}
+
+class _StartScreenState extends State<StartScreen> {
+  final nameController = TextEditingController();
+  // checking — проверяем сохранённый аккаунт; needName — аккаунта нет, нужно имя.
+  bool checking = true;
+  bool needName = false;
+  bool creating = false;
+  String? error;
+
+  @override
+  void initState() {
+    super.initState();
+    checkAccount();
+  }
+
+  @override
+  void dispose() {
+    nameController.dispose();
+    super.dispose();
+  }
+
+  Future<void> checkAccount() async {
+    setState(() {
+      checking = true;
+      error = null;
+    });
+
+    await Session.load();
+    if (Session.token.isEmpty) {
+      setState(() {
+        checking = false;
+        needName = true;
+      });
+      return;
+    }
+
+    try {
+      final response = await http.get(Uri.parse('$apiBase/me'), headers: authHeaders());
+      if (response.statusCode == 401) {
+        // Сервер не знает этот аккаунт — заводим новый.
+        await Session.clear();
+        setState(() {
+          checking = false;
+          needName = true;
+        });
+        return;
+      }
+      if (response.statusCode != 200) throw Exception(response.body);
+      openHome();
+    } catch (_) {
+      // Сеть недоступна — токен НЕ стираем, просто предлагаем повторить.
+      if (!mounted) return;
+      setState(() {
+        checking = false;
+        error = 'Нет связи с сервером';
+      });
+    }
+  }
+
+  Future<void> createAccount() async {
+    final name = nameController.text.trim();
+    if (name.isEmpty || creating) return;
+    setState(() {
+      creating = true;
+      error = null;
+    });
+
+    try {
+      final response = await http.post(
+        Uri.parse('$apiBase/accounts'),
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode({'name': name}),
+      );
+      if (response.statusCode != 201) throw Exception(response.body);
+      await Session.save(jsonDecode(response.body) as Map<String, dynamic>);
+      openHome();
+    } catch (e) {
+      if (!mounted) return;
+      setState(() => error = 'Не удалось создать аккаунт: $e');
+    } finally {
+      if (mounted) setState(() => creating = false);
+    }
+  }
+
+  void openHome() {
+    if (!mounted) return;
+    Navigator.pushReplacement(
+      context,
+      MaterialPageRoute(builder: (_) => const HomeScreen()),
+    );
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -139,10 +302,126 @@ class HomeScreen extends StatelessWidget {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              const Row(
+              const Text(
+                'ГАРБА',
+                style: TextStyle(
+                  fontSize: 38,
+                  fontWeight: FontWeight.w800,
+                  color: Color(0xFFD4A94F),
+                ),
+              ),
+              const Spacer(),
+              if (checking)
+                const Center(child: CircularProgressIndicator())
+              else if (needName) ...[
+                const Text(
+                  'Как вас зовут?',
+                  style: TextStyle(fontSize: 24, fontWeight: FontWeight.w800),
+                ),
+                const SizedBox(height: 8),
+                const Text(
+                  'Это имя увидят другие игроки за столом.',
+                  style: TextStyle(color: Colors.white70),
+                ),
+                const SizedBox(height: 16),
+                TextField(
+                  controller: nameController,
+                  maxLength: 20,
+                  textCapitalization: TextCapitalization.words,
+                  decoration: const InputDecoration(
+                    labelText: 'Имя игрока',
+                    border: OutlineInputBorder(),
+                  ),
+                  onSubmitted: (_) => createAccount(),
+                ),
+              ],
+              if (error != null) ...[
+                const SizedBox(height: 12),
+                Text(
+                  error!,
+                  textAlign: TextAlign.center,
+                  style: const TextStyle(color: Colors.redAccent),
+                ),
+              ],
+              const Spacer(),
+              if (!checking && needName)
+                GarbaButton(
+                  label: creating ? 'СОЗДАЁМ...' : 'НАЧАТЬ',
+                  onTap: createAccount,
+                )
+              else if (!checking && error != null)
+                GarbaButton(label: 'ПОВТОРИТЬ', onTap: checkAccount),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class HomeScreen extends StatefulWidget {
+  const HomeScreen({super.key});
+
+  @override
+  State<HomeScreen> createState() => _HomeScreenState();
+}
+
+class _HomeScreenState extends State<HomeScreen> with RouteAware {
+  // Баланс и незаконченная комната — с сервера (GET /me).
+  int? balance;
+  String? roomId;
+
+  @override
+  void initState() {
+    super.initState();
+    refreshMe();
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    final route = ModalRoute.of(context);
+    if (route != null) routeObserver.subscribe(this, route);
+  }
+
+  @override
+  void dispose() {
+    routeObserver.unsubscribe(this);
+    super.dispose();
+  }
+
+  // Вернулись на главный экран — баланс мог измениться.
+  @override
+  void didPopNext() => refreshMe();
+
+  Future<void> refreshMe() async {
+    try {
+      final response = await http.get(Uri.parse('$apiBase/me'), headers: authHeaders());
+      if (response.statusCode != 200) return;
+      final me = jsonDecode(response.body) as Map<String, dynamic>;
+      if (!mounted) return;
+      setState(() {
+        balance = (me['balance'] as num).toInt();
+        roomId = me['roomId']?.toString();
+      });
+    } catch (_) {
+      // Нет связи — оставляем то, что уже показано.
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      body: SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.all(20),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Row(
                 mainAxisAlignment: MainAxisAlignment.spaceBetween,
                 children: [
-                  Text(
+                  const Text(
                     'ГАРБА',
                     style: TextStyle(
                       fontSize: 38,
@@ -151,17 +430,37 @@ class HomeScreen extends StatelessWidget {
                     ),
                   ),
                   Text(
-                    '🪙 10 000',
-                    style: TextStyle(fontSize: 20, fontWeight: FontWeight.w700),
+                    balance == null ? '🪙 …' : '🪙 ${fmtCoins(balance!)}',
+                    style: const TextStyle(fontSize: 20, fontWeight: FontWeight.w700),
                   ),
                 ],
               ),
               const SizedBox(height: 8),
+              Text(
+                Session.name,
+                style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w700),
+              ),
               const Text(
                 'Казахская карточная онлайн-игра',
                 style: TextStyle(color: Colors.white70),
               ),
               const Spacer(),
+              // Игрок уже сидит в комнате — туда и возвращаемся, новую не начать.
+              if (roomId != null) ...[
+                GarbaButton(
+                  label: 'ВЕРНУТЬСЯ В КОМНАТУ #$roomId',
+                  onTap: () => Navigator.push(
+                    context,
+                    MaterialPageRoute(
+                      builder: (_) => LobbyScreen(
+                        roomCode: roomId!,
+                        currentPlayerId: Session.id,
+                      ),
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 14),
+              ],
               GarbaButton(
                 label: 'СОЗДАТЬ КОМНАТУ',
                 onTap: () => Navigator.push(
@@ -227,15 +526,11 @@ class _CreateRoomScreenState extends State<CreateRoomScreen> {
     if (loading) return;
     setState(() => loading = true);
 
-    const playerId = 'player-serik';
-
     try {
       final response = await http.post(
         Uri.parse('$apiBase/rooms'),
-        headers: {'Content-Type': 'application/json'},
+        headers: authHeaders(),
         body: jsonEncode({
-          'playerId': playerId,
-          'name': 'Серик',
           'capacity': capacity,
           'ante': ante,
           'emptyLimit': emptyLimit,
@@ -243,6 +538,19 @@ class _CreateRoomScreenState extends State<CreateRoomScreen> {
           'minBalance': minBalance,
         }),
       );
+
+      final busy = busyInRoomMessage(response);
+      if (busy != null) throw Exception(busy);
+
+      if (response.statusCode == 403) {
+        final err = jsonDecode(response.body);
+        if (err is Map && err['error'] == 'not enough coins to enter') {
+          throw Exception(
+            'Недостаточно монет: минимум комнаты ${fmtCoins((err['minBalance'] as num).toInt())}, '
+            'у вас ${fmtCoins((err['balance'] as num).toInt())}',
+          );
+        }
+      }
 
       if (response.statusCode < 200 || response.statusCode >= 300) {
         throw Exception(response.body);
@@ -256,7 +564,7 @@ class _CreateRoomScreenState extends State<CreateRoomScreen> {
         MaterialPageRoute(
           builder: (_) => LobbyScreen(
             roomCode: data['id'].toString(),
-            currentPlayerId: playerId,
+            currentPlayerId: Session.id,
           ),
         ),
       );
@@ -423,27 +731,25 @@ class JoinRoomScreen extends StatefulWidget {
 
 class _JoinRoomScreenState extends State<JoinRoomScreen> {
   final roomController = TextEditingController();
-  final nameController = TextEditingController(text: 'Игрок 2');
   bool loading = false;
 
   Future<void> joinRoom() async {
     final roomId = roomController.text.trim();
-    final name = nameController.text.trim();
 
-    if (roomId.isEmpty || name.isEmpty || loading) return;
+    if (roomId.isEmpty || loading) return;
 
     setState(() => loading = true);
-    final playerId = 'player-${DateTime.now().millisecondsSinceEpoch}';
 
     try {
+      // Кто входит — сервер знает по токену, имя берётся из аккаунта.
       final response = await http.post(
         Uri.parse('$apiBase/rooms/$roomId/join'),
-        headers: {'Content-Type': 'application/json'},
-        body: jsonEncode({
-          'playerId': playerId,
-          'name': name,
-        }),
+        headers: authHeaders(),
+        body: jsonEncode({}),
       );
+
+      final busy = busyInRoomMessage(response);
+      if (busy != null) throw Exception(busy);
 
       // Не хватает монет на минимум комнаты (RULES.md §9.1a) — говорим прямо.
       if (response.statusCode == 403) {
@@ -466,7 +772,7 @@ class _JoinRoomScreenState extends State<JoinRoomScreen> {
         MaterialPageRoute(
           builder: (_) => LobbyScreen(
             roomCode: roomId,
-            currentPlayerId: playerId,
+            currentPlayerId: Session.id,
           ),
         ),
       );
@@ -483,7 +789,6 @@ class _JoinRoomScreenState extends State<JoinRoomScreen> {
   @override
   void dispose() {
     roomController.dispose();
-    nameController.dispose();
     super.dispose();
   }
 
@@ -505,12 +810,9 @@ class _JoinRoomScreenState extends State<JoinRoomScreen> {
               ),
             ),
             const SizedBox(height: 16),
-            TextField(
-              controller: nameController,
-              decoration: const InputDecoration(
-                labelText: 'Имя игрока',
-                border: OutlineInputBorder(),
-              ),
+            Text(
+              'Вы войдёте как ${Session.name}',
+              style: const TextStyle(color: Colors.white70),
             ),
             const Spacer(),
             GarbaButton(
@@ -552,7 +854,6 @@ class _LobbyScreenState extends State<LobbyScreen> {
     // Обновления приходят сами по сокету; опрос — только пока сокет отвалился.
     link = RoomLink(
       roomCode: widget.roomCode,
-      playerId: widget.currentPlayerId,
       onRoom: applyRoom,
     );
     refreshRoom();
@@ -562,11 +863,11 @@ class _LobbyScreenState extends State<LobbyScreen> {
   }
 
   String roomUrl() =>
-      '$apiBase/rooms/${widget.roomCode}?playerId=${Uri.encodeComponent(widget.currentPlayerId)}';
+      '$apiBase/rooms/${widget.roomCode}';
 
   Future<void> refreshRoom() async {
     try {
-      final response = await http.get(Uri.parse(roomUrl()));
+      final response = await http.get(Uri.parse(roomUrl()), headers: authHeaders());
       if (response.statusCode == 200) {
         applyRoom(jsonDecode(response.body) as Map<String, dynamic>);
       }
@@ -614,8 +915,8 @@ class _LobbyScreenState extends State<LobbyScreen> {
     try {
       final response = await http.post(
         Uri.parse('$apiBase/rooms/${widget.roomCode}/start'),
-        headers: {'Content-Type': 'application/json'},
-        body: jsonEncode({'playerId': widget.currentPlayerId}),
+        headers: authHeaders(),
+        body: jsonEncode({}),
       );
 
       if (response.statusCode < 200 || response.statusCode >= 300) {
@@ -630,6 +931,28 @@ class _LobbyScreenState extends State<LobbyScreen> {
       );
     } finally {
       if (mounted) setState(() => starting = false);
+    }
+  }
+
+  // Выйти из комнаты, пока игра не началась. Если выходит создатель —
+  // сервер закрывает комнату для всех.
+  Future<void> leaveRoom() async {
+    try {
+      final response = await http.post(
+        Uri.parse('$apiBase/rooms/${widget.roomCode}/leave'),
+        headers: authHeaders(),
+        body: jsonEncode({}),
+      );
+      if (response.statusCode < 200 || response.statusCode >= 300) {
+        throw Exception(response.body);
+      }
+      if (!mounted) return;
+      Navigator.pop(context);
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Не удалось выйти: $e')),
+      );
     }
   }
 
@@ -649,6 +972,32 @@ class _LobbyScreenState extends State<LobbyScreen> {
           child: firstLoad
               ? const CircularProgressIndicator()
               : const Text('Нет связи с сервером'),
+        ),
+      );
+    }
+
+    // Создатель вышел до начала игры — комнаты больше нет.
+    if (room!['status']?.toString() == 'finished' && room!['game'] == null) {
+      return Scaffold(
+        appBar: AppBar(title: Text('Комната #${widget.roomCode}')),
+        body: Padding(
+          padding: const EdgeInsets.all(20),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              const Spacer(),
+              const Text(
+                'Создатель закрыл комнату',
+                textAlign: TextAlign.center,
+                style: TextStyle(fontSize: 22, fontWeight: FontWeight.w800),
+              ),
+              const Spacer(),
+              GarbaButton(
+                label: 'В ГЛАВНОЕ МЕНЮ',
+                onTap: () => Navigator.pop(context),
+              ),
+            ],
+          ),
         ),
       );
     }
@@ -728,6 +1077,11 @@ class _LobbyScreenState extends State<LobbyScreen> {
               icon: const Icon(Icons.play_arrow),
               label: Text(starting ? 'ЗАПУСК...' : 'НАЧАТЬ ИГРУ'),
             ),
+            const SizedBox(height: 12),
+            TextButton(
+              onPressed: leaveRoom,
+              child: Text(isCreator ? 'ЗАКРЫТЬ КОМНАТУ' : 'ВЫЙТИ ИЗ КОМНАТЫ'),
+            ),
           ],
         ),
       ),
@@ -765,7 +1119,6 @@ class _DealerSelectionScreenState extends State<DealerSelectionScreen> {
     // Обновления приходят сами по сокету; опрос — только пока сокет отвалился.
     link = RoomLink(
       roomCode: widget.roomCode,
-      playerId: widget.currentPlayerId,
       onRoom: applyRoom,
     );
     refreshRoom();
@@ -775,11 +1128,11 @@ class _DealerSelectionScreenState extends State<DealerSelectionScreen> {
   }
 
   String roomUrl() =>
-      '$apiBase/rooms/${widget.roomCode}?playerId=${Uri.encodeComponent(widget.currentPlayerId)}';
+      '$apiBase/rooms/${widget.roomCode}';
 
   Future<void> refreshRoom() async {
     try {
-      final response = await http.get(Uri.parse(roomUrl()));
+      final response = await http.get(Uri.parse(roomUrl()), headers: authHeaders());
       if (response.statusCode != 200) return;
       applyRoom(jsonDecode(response.body) as Map<String, dynamic>);
     } catch (_) {}
@@ -853,8 +1206,8 @@ class _DealerSelectionScreenState extends State<DealerSelectionScreen> {
         Uri.parse(
           '$apiBase/rooms/${widget.roomCode}/dealer/continue',
         ),
-        headers: {'Content-Type': 'application/json'},
-        body: jsonEncode({'playerId': widget.currentPlayerId}),
+        headers: authHeaders(),
+        body: jsonEncode({}),
       );
 
       if (response.statusCode < 200 || response.statusCode >= 300) {
@@ -1047,7 +1400,6 @@ class _GameTableScreenState extends State<GameTableScreen> {
     // Обновления приходят сами по сокету; опрос — только пока сокет отвалился.
     link = RoomLink(
       roomCode: widget.roomCode,
-      playerId: widget.currentPlayerId,
       onRoom: applyRoom,
     );
     refreshRoom();
@@ -1057,11 +1409,11 @@ class _GameTableScreenState extends State<GameTableScreen> {
   }
 
   String roomUrl() =>
-      '$apiBase/rooms/${widget.roomCode}?playerId=${Uri.encodeComponent(widget.currentPlayerId)}';
+      '$apiBase/rooms/${widget.roomCode}';
 
   Future<void> refreshRoom() async {
     try {
-      final response = await http.get(Uri.parse(roomUrl()));
+      final response = await http.get(Uri.parse(roomUrl()), headers: authHeaders());
       if (response.statusCode == 200) {
         applyRoom(jsonDecode(response.body) as Map<String, dynamic>);
       }
@@ -1082,9 +1434,8 @@ class _GameTableScreenState extends State<GameTableScreen> {
     try {
       final response = await http.post(
         Uri.parse('$apiBase/rooms/${widget.roomCode}/bid'),
-        headers: {'Content-Type': 'application/json'},
+        headers: authHeaders(),
         body: jsonEncode({
-          'playerId': widget.currentPlayerId,
           'bid': bid,
           if (suit != null) 'suit': suit,
         }),
@@ -1121,8 +1472,8 @@ class _GameTableScreenState extends State<GameTableScreen> {
     try {
       final response = await http.post(
         Uri.parse('$apiBase/rooms/${widget.roomCode}/dealer/continue'),
-        headers: {'Content-Type': 'application/json'},
-        body: jsonEncode({'playerId': widget.currentPlayerId}),
+        headers: authHeaders(),
+        body: jsonEncode({}),
       );
 
       if (response.statusCode < 200 || response.statusCode >= 300) {
@@ -1149,9 +1500,8 @@ class _GameTableScreenState extends State<GameTableScreen> {
     try {
       final response = await http.post(
         Uri.parse('$apiBase/rooms/${widget.roomCode}/play'),
-        headers: {'Content-Type': 'application/json'},
+        headers: authHeaders(),
         body: jsonEncode({
-          'playerId': widget.currentPlayerId,
           'cardId': cardId,
         }),
       );
@@ -1231,8 +1581,8 @@ class _GameTableScreenState extends State<GameTableScreen> {
     try {
       final response = await http.post(
         Uri.parse('$apiBase/rooms/${widget.roomCode}/$path'),
-        headers: {'Content-Type': 'application/json'},
-        body: jsonEncode({'playerId': widget.currentPlayerId, ...body}),
+        headers: authHeaders(),
+        body: jsonEncode(body),
       );
 
       if (response.statusCode < 200 || response.statusCode >= 300) {
@@ -1258,8 +1608,8 @@ class _GameTableScreenState extends State<GameTableScreen> {
     try {
       final response = await http.post(
         Uri.parse('$apiBase/rooms/${widget.roomCode}/kon-trump'),
-        headers: {'Content-Type': 'application/json'},
-        body: jsonEncode({'playerId': widget.currentPlayerId, 'suit': suit}),
+        headers: authHeaders(),
+        body: jsonEncode({'suit': suit}),
       );
 
       if (response.statusCode < 200 || response.statusCode >= 300) {
@@ -1297,9 +1647,8 @@ class _GameTableScreenState extends State<GameTableScreen> {
     try {
       final response = await http.post(
         Uri.parse('$apiBase/rooms/${widget.roomCode}/vote'),
-        headers: {'Content-Type': 'application/json'},
+        headers: authHeaders(),
         body: jsonEncode({
-          'playerId': widget.currentPlayerId,
           'choice': choice,
         }),
       );

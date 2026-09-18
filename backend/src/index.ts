@@ -1,9 +1,19 @@
 import express from 'express';
 import cors from 'cors';
 import { createServer } from 'node:http';
+import { mkdirSync } from 'node:fs';
+import { dirname } from 'node:path';
 import { Server as SocketServer } from 'socket.io';
 
-import { STARTING_COINS } from './config.js';
+import {
+  cleanName,
+  createAccount,
+  findAccountByToken,
+  openDb,
+  setBalance,
+  tokenFromHeader,
+  type Account,
+} from './accounts.js';
 import { createDeck, shuffle } from './deck.js';
 import { openTrump } from './deal.js';
 import type { Card, Suit } from './types.js';
@@ -68,13 +78,14 @@ import {
 } from './play.js';
 
 type Player = {
-  id: string;
+  id: string; // это id аккаунта
   name: string;
   ready: boolean;
   joinedAt: number;
-  // Аккаунтов пока нет (этап 9), поэтому баланс живёт в комнате:
-  // каждый входит со стартовыми 10 000, как новый аккаунт по ТЗ.
+  // Баланс аккаунта. Пока игрок в комнате, деньги считаются здесь, а после каждого
+  // действия записываются обратно в базу (syncBalances).
   balance: number;
+  // Баланс при входе в комнату — от него считается, кто больше всех проиграл (§12.2).
   startBalance: number;
 };
 
@@ -249,6 +260,74 @@ const rooms = new Map<string, Room>();
 app.use(cors());
 app.use(express.json());
 
+// --- Аккаунты (этап 9.1) ---
+//
+// Файл базы — backend/data/garba.db, путь можно сменить переменной GARBA_DB
+// (':memory:' — база в памяти, для проверок). Комнаты пока живут в памяти
+// и при перезапуске сервера пропадают — сохранение комнат будет на этапе 9.2.
+const DB_FILE = process.env.GARBA_DB ?? 'data/garba.db';
+if (DB_FILE !== ':memory:') mkdirSync(dirname(DB_FILE), { recursive: true });
+const db = openDb(DB_FILE);
+
+// Незаконченная комната игрока. Играть можно только в одной комнате за раз:
+// баланс аккаунта один, и пока игрок за столом, его деньги считаются там.
+function activeRoomOf(accountId: string): Room | undefined {
+  for (const room of rooms.values()) {
+    if (room.status !== 'finished' && room.players.some((p) => p.id === accountId)) {
+      return room;
+    }
+  }
+  return undefined;
+}
+
+// Записать балансы игроков комнаты в базу.
+function syncBalances(room: Room) {
+  for (const p of room.players) setBalance(db, p.id, p.balance);
+}
+
+// Новый аккаунт: имя → id, токен, стартовые 10 000. Токен приходит один раз,
+// телефон обязан его сохранить.
+app.post('/accounts', (req, res) => {
+  const name = cleanName(req.body?.name);
+  if (!name) {
+    return res.status(400).json({ error: 'name must be 1 to 20 characters' });
+  }
+
+  const { account, token } = createAccount(db, name);
+  console.log(`[ACCOUNT] created ${account.name} (${account.id})`);
+
+  return res.status(201).json({ ...account, token });
+});
+
+// Кто я: по токену. roomId — незаконченная комната, если игрок в ней сидит.
+app.get('/me', (req, res) => {
+  const account = findAccountByToken(db, tokenFromHeader(req.headers.authorization));
+  if (!account) {
+    return res.status(401).json({ error: 'unauthorized' });
+  }
+
+  return res.json({ ...account, roomId: activeRoomOf(account.id)?.id ?? null });
+});
+
+// Всё про комнаты — только с токеном. Кто делает запрос, сервер знает сам:
+// playerId и name в теле запроса больше не нужны, а если пришли — не используются.
+// Так никто не может ходить за другого игрока или смотреть его карты.
+app.use('/rooms', (req, res, next) => {
+  const account = findAccountByToken(db, tokenFromHeader(req.headers.authorization));
+  if (!account) {
+    return res.status(401).json({ error: 'unauthorized' });
+  }
+
+  res.locals.account = account;
+  req.body = { ...(req.body ?? {}), playerId: account.id, name: account.name };
+  next();
+});
+
+// Аккаунт, от имени которого пришёл запрос (его положил middleware выше).
+function me(res: express.Response): Account {
+  return res.locals.account as Account;
+}
+
 // --- Живые обновления через Socket.IO (этап 8) ---
 //
 // Действия по-прежнему идут обычными HTTP-запросами — контракт API не меняется.
@@ -257,17 +336,25 @@ app.use(express.json());
 // рукой, чужие карты не уходят никому. Клиенту больше не нужно спрашивать раз в секунду.
 //
 // Протокол:
-//   клиент → 'watch' { roomId, playerId }   начать следить за комнатой
+//   клиент → 'watch' { roomId, token }      начать следить за комнатой
 //   сервер → 'room'  publicRoom(...)         сразу после watch и после каждого действия
-//   сервер → 'room_error' { error }          комнаты нет
+//   сервер → 'room_error' { error }          комнаты нет или токен не подходит
+//
+// Кто смотрит — сервер узнаёт по токену (этап 9.1), а не по присланному playerId.
 const httpServer = createServer(app);
 const io = new SocketServer(httpServer, { cors: { origin: '*' } });
 
 io.on('connection', (socket) => {
-  socket.on('watch', (payload: { roomId?: unknown; playerId?: unknown }) => {
+  socket.on('watch', (payload: { roomId?: unknown; token?: unknown }) => {
     const roomId = String(payload?.roomId ?? '');
-    const playerId = String(payload?.playerId ?? '');
+    const account = findAccountByToken(db, String(payload?.token ?? ''));
     const room = rooms.get(roomId);
+
+    if (!account) {
+      socket.emit('room_error', { error: 'unauthorized' });
+      return;
+    }
+    const playerId = account.id;
 
     if (!room) {
       socket.emit('room_error', { error: 'room not found' });
@@ -300,10 +387,13 @@ async function broadcastRoom(roomId: string) {
 // После любого действия с комнатой (POST /rooms/:id/...) — рассылка.
 // Рассылаем и после отказа: состояние не изменилось, лишнее сообщение безвредно,
 // а разбирать, какой ответ что поменял, — лишнее место для ошибок.
+// Здесь же балансы записываются в базу — деньги переживают перезапуск сервера.
 app.use('/rooms/:id', (req, res, next) => {
   if (req.method === 'POST') {
     const roomId = req.params.id;
     res.on('finish', () => {
+      const room = rooms.get(roomId);
+      if (room) syncBalances(room);
       broadcastRoom(roomId).catch((e) =>
         console.error(`[ROOM ${roomId}] broadcast failed:`, e),
       );
@@ -1161,13 +1251,19 @@ app.post('/rooms', (req, res) => {
     });
   }
 
-  // Создатель тоже должен проходить по минимуму. Аккаунтов пока нет,
-  // у всех стартовые 10 000 — с аккаунтами (этап 9) здесь будет реальный баланс.
-  if (STARTING_COINS < minBalanceValue) {
+  // Играть можно только в одной комнате за раз — roomId, чтобы вернуться в неё.
+  const busyIn = activeRoomOf(me(res).id);
+  if (busyIn) {
+    return res.status(409).json({ error: 'already in another room', roomId: busyIn.id });
+  }
+
+  // Создатель тоже должен проходить по минимуму.
+  const creatorBalance = me(res).balance;
+  if (creatorBalance < minBalanceValue) {
     return res.status(403).json({
       error: 'not enough coins to enter',
       minBalance: minBalanceValue,
-      balance: STARTING_COINS,
+      balance: creatorBalance,
     });
   }
 
@@ -1199,8 +1295,8 @@ app.post('/rooms', (req, res) => {
         name: String(name),
         ready: true,
         joinedAt: Date.now(),
-        balance: STARTING_COINS,
-        startBalance: STARTING_COINS,
+        balance: creatorBalance,
+        startBalance: creatorBalance,
       },
     ],
     status: 'lobby',
@@ -1220,10 +1316,8 @@ app.get('/rooms/:id', (req, res) => {
     return res.status(404).json({ error: 'room not found' });
   }
 
-  const viewerId =
-    typeof req.query.playerId === 'string' ? req.query.playerId : undefined;
-
-  return res.json(publicRoom(room, viewerId));
+  // Свою руку видит только тот, чей токен. ?playerId=... больше не читается.
+  return res.json(publicRoom(room, me(res).id));
 });
 
 app.post('/rooms/:id/join', (req, res) => {
@@ -1252,10 +1346,13 @@ app.post('/rooms/:id/join', (req, res) => {
     return res.status(409).json({ error: 'room is full' });
   }
 
+  const busyIn = activeRoomOf(String(playerId));
+  if (busyIn) {
+    return res.status(409).json({ error: 'already in another room', roomId: busyIn.id });
+  }
+
   // Войти можно, только если денег не меньше минимума комнаты (RULES.md §9.1a).
-  // Аккаунтов пока нет, у всех стартовые 10 000 — с аккаунтами (этап 9)
-  // здесь будет реальный баланс игрока.
-  const joiningBalance = STARTING_COINS;
+  const joiningBalance = me(res).balance;
   if (joiningBalance < room.settings.minBalance) {
     return res.status(403).json({
       error: 'not enough coins to enter',
@@ -1269,8 +1366,8 @@ app.post('/rooms/:id/join', (req, res) => {
     name: String(name),
     ready: true,
     joinedAt: Date.now(),
-    balance: STARTING_COINS,
-    startBalance: STARTING_COINS,
+    balance: joiningBalance,
+    startBalance: joiningBalance,
   });
 
   console.log(
@@ -1278,6 +1375,37 @@ app.post('/rooms/:id/join', (req, res) => {
   );
 
   return res.json(publicRoom(room, String(playerId)));
+});
+
+// Выйти из комнаты, пока игра не началась. Иначе брошенная комната держала бы
+// игрока навсегда — играть можно только в одной. Уходит создатель — комната
+// закрывается для всех: начать игру в ней больше некому.
+// Выход из начатой игры — это отключение, оно по правилам §13 (этап 9.2).
+app.post('/rooms/:id/leave', (req, res) => {
+  const room = rooms.get(req.params.id);
+
+  if (!room) {
+    return res.status(404).json({ error: 'room not found' });
+  }
+
+  if (room.status !== 'lobby') {
+    return res.status(409).json({ error: 'game already started' });
+  }
+
+  const playerId = me(res).id;
+  if (!room.players.some((p) => p.id === playerId)) {
+    return res.status(403).json({ error: 'player is not in this room' });
+  }
+
+  if (playerId === room.creatorId) {
+    room.status = 'finished';
+    console.log(`[ROOM ${room.id}] creator left, room closed`);
+  } else {
+    room.players = room.players.filter((p) => p.id !== playerId);
+    console.log(`[ROOM ${room.id}] ${me(res).name} left ${room.players.length}/${room.capacity}`);
+  }
+
+  return res.json(publicRoom(room, playerId));
 });
 
 app.post('/rooms/:id/start', (req, res) => {

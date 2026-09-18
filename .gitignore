@@ -12,3 +12,9 @@ Thumbs.db
 
 # Локальные настройки Claude Code
 .claude/settings.local.json
+
+# База аккаунтов (этап 9.1) — живые данные, не код
+backend/data/
+
+# Токены ботов из tools/garba.ps1 — у каждой машины свои
+tools/.bots.json

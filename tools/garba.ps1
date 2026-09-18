@@ -46,25 +46,70 @@ param(
 $ErrorActionPreference = 'Stop'
 $base = 'http://127.0.0.1:3000'
 
-$bots = @(
-    @{ id = 'bot-1'; name = 'Айдар' },
-    @{ id = 'bot-2'; name = 'Дана' },
-    @{ id = 'bot-3'; name = 'Ержан' },
-    @{ id = 'bot-4'; name = 'Асель' },
-    @{ id = 'bot-5'; name = 'Тимур' },
-    @{ id = 'bot-6'; name = 'Мадина' }
-)
+# С этапа 9.1 у каждого бота настоящий аккаунт: сервер узнаёт игрока по токену.
+# Токены ботов хранятся в tools\.bots.json (в git не попадает). Если сервер
+# их не знает (база стёрта) — аккаунты заводятся заново.
+$botNames = @('Айдар', 'Дана', 'Ержан', 'Асель', 'Тимур', 'Мадина')
+$botsFile = Join-Path $PSScriptRoot '.bots.json'
 
-function Send-Json($url, $obj) {
+function Send-Json($url, $obj, $token) {
     $json = $obj | ConvertTo-Json -Compress
     $bytes = [System.Text.Encoding]::UTF8.GetBytes($json)
-    return Invoke-RestMethod -Uri $url -Method Post -ContentType 'application/json; charset=utf-8' -Body $bytes
+    $headers = @{}
+    if ($token) { $headers.Authorization = "Bearer $token" }
+    return Invoke-RestMethod -Uri $url -Method Post -ContentType 'application/json; charset=utf-8' -Body $bytes -Headers $headers
 }
 
-function Get-RoomState($viewer) {
-    $url = "$base/rooms/$Room"
-    if ($viewer) { $url = "$url`?playerId=$viewer" }
-    return Invoke-RestMethod -Uri $url
+function Get-Me($token) {
+    try {
+        return Invoke-RestMethod -Uri "$base/me" -Headers @{ Authorization = "Bearer $token" }
+    } catch {
+        return $null
+    }
+}
+
+function New-Bot($name) {
+    $acc = Send-Json "$base/accounts" @{ name = $name } $null
+    return @{ id = $acc.id; name = $acc.name; token = $acc.token }
+}
+
+function Save-Bots {
+    $list = $bots | ForEach-Object { @{ id = $_.id; name = $_.name; token = $_.token } }
+    $json = ConvertTo-Json @($list) -Compress
+    [System.IO.File]::WriteAllText($botsFile, $json, (New-Object System.Text.UTF8Encoding $false))
+}
+
+function Load-Bots {
+    $saved = @()
+    if (Test-Path $botsFile) {
+        $text = [System.IO.File]::ReadAllText($botsFile, [System.Text.Encoding]::UTF8)
+        $saved = @($text | ConvertFrom-Json)
+    }
+    $result = @()
+    $changed = $false
+    for ($i = 0; $i -lt $botNames.Count; $i++) {
+        $s = $null
+        if ($i -lt $saved.Count) { $s = $saved[$i] }
+        if ($s -and (Get-Me $s.token)) {
+            $result += @{ id = $s.id; name = $s.name; token = $s.token }
+        } else {
+            $result += New-Bot $botNames[$i]
+            $changed = $true
+        }
+    }
+    return @{ bots = $result; changed = $changed }
+}
+
+$loaded = Load-Bots
+$bots = $loaded.bots
+if ($loaded.changed) { Save-Bots }
+
+# Смотреть комнату тоже можно только с токеном. Без бота — глазами первого бота:
+# Show-State берёт только общие поля, руки не показывает.
+function Get-RoomState($viewerBot) {
+    $token = $bots[0].token
+    if ($viewerBot) { $token = $viewerBot.token }
+    return Invoke-RestMethod -Uri "$base/rooms/$Room" -Headers @{ Authorization = "Bearer $token" }
 }
 
 function Show-State {
@@ -204,7 +249,16 @@ switch ($Command) {
 
         for ($i = 0; $i -lt $need; $i++) {
             $b = $bots[$i]
-            $res = Send-Json "$base/rooms/$Room/join" @{ playerId = $b.id; name = $b.name }
+            # Играть можно только в одной комнате. Если бот застрял в старой
+            # недоигранной — заводим ему новый аккаунт с тем же именем.
+            $meNow = Get-Me $b.token
+            if ($meNow.roomId -and $meNow.roomId -ne $Room) {
+                Write-Host "$($b.name) занят в комнате $($meNow.roomId) — новый аккаунт"
+                $b = New-Bot $b.name
+                $bots[$i] = $b
+                Save-Bots
+            }
+            $res = Send-Json "$base/rooms/$Room/join" @{} $b.token
             Write-Host "$($b.name) вошёл: $($res.players.Count)/$($res.capacity)"
         }
 
@@ -237,16 +291,16 @@ switch ($Command) {
             break
         }
 
-        Send-Json "$base/rooms/$Room/dealer/continue" @{ playerId = $b.id } | Out-Null
+        Send-Json "$base/rooms/$Room/dealer/continue" @{} $b.token | Out-Null
         Write-Host "$($b.name) раздал карты"
         Show-State
     }
 
     'bid' {
         $b = $bots[$Bot - 1]
-        $body = @{ playerId = $b.id; bid = $Bid }
+        $body = @{ bid = $Bid }
         if ($Suit) { $body.suit = $Suit }
-        $res = Send-Json "$base/rooms/$Room/bid" $body
+        $res = Send-Json "$base/rooms/$Room/bid" $body $b.token
         Write-Host "$($b.name) сказал $Bid $Suit"
         Show-State
     }
@@ -272,7 +326,7 @@ switch ($Command) {
                 break
             }
 
-            Send-Json "$base/rooms/$Room/bid" @{ playerId = $b.id; bid = 'ПАС' } | Out-Null
+            Send-Json "$base/rooms/$Room/bid" @{ bid = 'ПАС' } $b.token | Out-Null
             Write-Host "$($b.name) сказал ПАС"
         }
 
@@ -298,11 +352,11 @@ switch ($Command) {
                 break
             }
 
-            $view = Get-RoomState $b.id
+            $view = Get-RoomState $b
             $cardId = @($view.game.myPlayableCardIds)[0]
             $card = $view.game.hand | Where-Object { $_.id -eq $cardId }
 
-            Send-Json "$base/rooms/$Room/play" @{ playerId = $b.id; cardId = $cardId } | Out-Null
+            Send-Json "$base/rooms/$Room/play" @{ cardId = $cardId } $b.token | Out-Null
             Write-Host "$($b.name) сходил: $($card.rank) $($card.suit)"
         }
 
@@ -323,10 +377,10 @@ switch ($Command) {
             break
         }
         if ($Risk -gt 0) {
-            Send-Json "$base/rooms/$Room/special" @{ playerId = $b.id; action = 'take'; risk = $Risk } | Out-Null
+            Send-Json "$base/rooms/$Room/special" @{ action = 'take'; risk = $Risk } $b.token | Out-Null
             Write-Host "$($b.name) берёт спецкарту за x$Risk"
         } else {
-            Send-Json "$base/rooms/$Room/special" @{ playerId = $b.id; action = 'pass' } | Out-Null
+            Send-Json "$base/rooms/$Room/special" @{ action = 'pass' } $b.token | Out-Null
             Write-Host "$($b.name) пасует"
         }
         Show-State
@@ -345,9 +399,9 @@ switch ($Command) {
             Write-Host "Спецкарта у живого игрока. Сбрасывай в приложении."
             break
         }
-        $view = Get-RoomState $b.id
+        $view = Get-RoomState $b
         $cardId = @($view.game.myDiscardOptions)[0]
-        Send-Json "$base/rooms/$Room/discard" @{ playerId = $b.id; cardId = $cardId } | Out-Null
+        Send-Json "$base/rooms/$Room/discard" @{ cardId = $cardId } $b.token | Out-Null
         Write-Host "$($b.name) сбросил карту (её никто не видит)"
         Show-State
     }
@@ -367,7 +421,7 @@ switch ($Command) {
         }
         $pick = $Suit
         if (-not $pick) { $pick = $r.game.razSuit }
-        Send-Json "$base/rooms/$Room/kon-trump" @{ playerId = $b.id; suit = $pick } | Out-Null
+        Send-Json "$base/rooms/$Room/kon-trump" @{ suit = $pick } $b.token | Out-Null
         Write-Host "$($b.name) (КОН) назвал козырь: $pick"
         Show-State
     }
@@ -385,7 +439,7 @@ switch ($Command) {
             if (-not ($r.players | Where-Object { $_.id -eq $b.id })) { continue }
             if ($r.game.vote.votedIds -contains $b.id) { continue }
 
-            Send-Json "$base/rooms/$Room/vote" @{ playerId = $b.id; choice = $Choice } | Out-Null
+            Send-Json "$base/rooms/$Room/vote" @{ choice = $Choice } $b.token | Out-Null
             Write-Host "$($b.name) голосует: $Choice"
         }
 
