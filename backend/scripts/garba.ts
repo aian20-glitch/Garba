@@ -6,7 +6,8 @@
 // видят одних и тех же ботов.
 //
 // Запуск из корня проекта (обёртка tools/garba) или из backend: npm run garba -- <команда> ...
-//   ./tools/garba join     12345              добрать ботов до полной комнаты (+ держать им связь)
+//   ./tools/garba join     12345              добрать ботов до полной комнаты — дальше они играют сами
+//   ./tools/garba join     12345 --manual     то же, но боты только держат связь, ходы — командами ниже
 //   ./tools/garba state    12345              показать состояние комнаты
 //   ./tools/garba deal     12345              раздать, если раздающим оказался бот
 //   ./tools/garba bid      12345 РАЗ --bot 1  заявка конкретного бота
@@ -18,7 +19,7 @@
 //   ./tools/garba kontrump 12345 diamonds     бот, выигравший КОН, называет козырь (без масти — масть РАЗ)
 //   ./tools/garba special  12345 2            бот, чья очередь, берёт спецкарту за ×2 (без числа — пас)
 //   ./tools/garba discard  12345              бот-владелец спецкарты сбрасывает карту
-//   ./tools/garba online   12345              снова дать ботам связь (если окно закрыли)
+//   ./tools/garba online   12345 [--manual]   снова посадить ботов на связь (после offline)
 //   ./tools/garba offline                     «отключить» ботов (проверка паузы, §13)
 
 import { spawn } from 'node:child_process';
@@ -40,7 +41,8 @@ const argv = process.argv.slice(2);
 const flags: Record<string, string> = {};
 const positional: string[] = [];
 for (let i = 0; i < argv.length; i++) {
-  if (argv[i].startsWith('--')) flags[argv[i].slice(2)] = argv[++i] ?? '';
+  if (argv[i] === '--manual') flags.manual = '';
+  else if (argv[i].startsWith('--')) flags[argv[i].slice(2)] = argv[++i] ?? '';
   else positional.push(argv[i]);
 }
 const [command, room, extra] = positional;
@@ -117,7 +119,8 @@ async function loadBots(): Promise<Bot[]> {
 // ---------- связь ботов (этап 9.2) ----------
 
 // Игрок без сокета через 10 секунд считается отключившимся — игра встаёт на паузу.
-// Соединение ботам держит scripts/bots-online.ts, запускаем его в фоне.
+// Соединение ботам держит scripts/bots-online.ts, запускаем его в фоне. Он же ходит за ботов,
+// если не --manual.
 function stopOnline(): boolean {
   if (!existsSync(pidFile)) return false;
   const pid = Number(readFileSync(pidFile, 'utf8'));
@@ -132,15 +135,18 @@ function stopOnline(): boolean {
 
 function startOnline(roomId: string) {
   stopOnline();
+  const manual = 'manual' in flags;
   const log = openSync(logFile, 'w');
-  const child = spawn('npx', ['tsx', 'scripts/bots-online.ts', roomId], {
+  const args = ['tsx', 'scripts/bots-online.ts', roomId, ...(manual ? ['--manual'] : [])];
+  const child = spawn('npx', args, {
     cwd: backendDir,
     detached: true,
     stdio: ['ignore', log, log],
   });
   child.unref();
   writeFileSync(pidFile, String(child.pid));
-  console.log('Боты на связи (в фоне). Журнал: tools/.bots-online.log');
+  console.log(manual ? 'Боты на связи (в фоне), ходы — командами.' : 'Боты на связи (в фоне) и играют сами.');
+  console.log('Что они делают — журнал: tail -f tools/.bots-online.log');
   console.log('«Отключить» ботов: ./tools/garba offline');
 }
 
