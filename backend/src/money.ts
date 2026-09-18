@@ -36,10 +36,12 @@ export function baseKon(playerCount: number, ante: number): number {
 // и столько же положит в кон при поражении (до умножения на риск).
 //
 // РАЗ — весь кон (RULES.md §11.3).
-// ДВА — весь кон, пока он базовый; половина, когда кон вырос (RULES.md §11.4).
+// ДВА — половина кона, но только когда кон дорос до ×2 базового. Пока кон
+// меньше ×2 базового, делить нечего: ДВА стоит весь кон, как и РАЗ (RULES.md §11.4).
+// Пример: 5 × 100, кон 800 — меньше 1000, поэтому РАЗ и ДВА оба стоят 800.
 export function stakeFor(declaration: Declaration, kon: number, base: number): number {
   if (declaration === 'РАЗ') return kon;
-  if (kon > base) {
+  if (kon >= 2 * base) {
     // Половина округляется вниз до сотни, чтобы в коне всегда оставалось
     // не меньше, чем забирает ДВА: кон 1500 → ДВА 700, в коне 800.
     return Math.floor(kon / 2 / COIN_STEP) * COIN_STEP;
@@ -120,15 +122,15 @@ export function konUnlockAt(base: number, threshold: number): number {
 }
 
 // Самая дешёвая заявка при этом коне. При 4 игроках ДВА нет — только РАЗ.
-// При 5+ — ДВА (при выросшем коне он вдвое дешевле РАЗ).
-// Когда появится КОН (этап 6), он тоже должен попасть сюда — см. RULES.md §14.
+// При 5+ — ДВА (с кона ×2 базового он вдвое дешевле РАЗ, до этого стоит столько же).
+// Когда появится КОН (этап 6), он тоже должен попасть сюда — см. RULES.md §15.
 export function cheapestStake(capacity: number, kon: number, base: number): number {
   if (capacity === 4) return stakeFor('РАЗ', kon, base);
   return stakeFor('ДВА', kon, base);
 }
 
 // Кон никто не может взять: ни у кого не хватает даже на самую дешёвую заявку.
-// Тогда комната закрывается и кон делится поровну (RULES.md §12.2).
+// Тогда голосуем: продолжаем или делим кон поровну (RULES.md §12.2).
 export function nobodyCanPlay(balances: number[], cheapest: number): boolean {
   return balances.every((b) => b < cheapest);
 }
