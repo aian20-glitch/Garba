@@ -9,6 +9,7 @@
 #   .\tools\garba.ps1 state   -Room 12345     показать состояние комнаты
 #   .\tools\garba.ps1 deal    -Room 12345     раздать, если раздающим оказался бот
 #   .\tools\garba.ps1 bid     -Room 12345 -Bid РАЗ -Bot 1    заявка конкретного бота
+#   .\tools\garba.ps1 bid     -Room 12345 -Bid ДВА -Suit clubs -Bot 2   ДВА с мастью (6–7 игроков)
 #   .\tools\garba.ps1 passall -Room 12345     боты пасуют, пока очередь не дойдёт до тебя
 #   .\tools\garba.ps1 playall -Room 12345     боты ходят картами, пока очередь не дойдёт до тебя
 #   .\tools\garba.ps1 vote    -Room 12345 -Choice split      все боты голосуют (continue | split)
@@ -26,7 +27,11 @@ param(
     [int]$Bot = 1,
 
     [ValidateSet('continue', 'split')]
-    [string]$Choice = 'continue'
+    [string]$Choice = 'continue',
+
+    # Масть для ДВА при 6 и 7 игроках (RULES.md §6.3). При 5 не нужна.
+    [ValidateSet('', 'hearts', 'diamonds', 'clubs', 'spades')]
+    [string]$Suit = ''
 )
 
 $ErrorActionPreference = 'Stop'
@@ -79,8 +84,14 @@ function Show-State {
     } elseif ($g.razSuit) {
         Write-Host "РАЗ: $($g.razSuit)"
     }
+    if ($g.izzhoga -and $g.izzhoga.Count -gt 0) {
+        $iz = $g.izzhoga | ForEach-Object { "$($_.rank) $($_.suit)" }
+        Write-Host "ИЗЖОГА (вернули в колоду): $($iz -join ', ')"
+    }
     if ($g.stage -eq 'awaiting_deal') {
-        Write-Host "Все спасовали — пересдача, раздаёт $($g.dealerName)"
+        $why = 'Все спасовали'
+        if ($g.lastRedeal -eq 'three_izzhoga') { $why = 'Три ИЗЖОГИ подряд' }
+        Write-Host "$why — пересдача, раздаёт $($g.dealerName)"
         if ($g.lastAnte -and $g.lastAnte.skipped) {
             Write-Host "Доливки нет ни у кого: не хватает на взнос у $($g.lastAnte.brokePlayerIds -join ', ')"
         }
@@ -203,8 +214,10 @@ switch ($Command) {
 
     'bid' {
         $b = $bots[$Bot - 1]
-        $res = Send-Json "$base/rooms/$Room/bid" @{ playerId = $b.id; bid = $Bid }
-        Write-Host "$($b.name) сказал $Bid"
+        $body = @{ playerId = $b.id; bid = $Bid }
+        if ($Suit) { $body.suit = $Suit }
+        $res = Send-Json "$base/rooms/$Room/bid" $body
+        Write-Host "$($b.name) сказал $Bid $Suit"
         Show-State
     }
 
@@ -286,6 +299,7 @@ switch ($Command) {
         Show-State
     }
 }
+
 
 
 

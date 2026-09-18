@@ -3,6 +3,7 @@ import cors from 'cors';
 
 import { STARTING_COINS } from './config.js';
 import { createDeck, shuffle } from './deck.js';
+import { openTrump } from './deal.js';
 import type { Card, Suit } from './types.js';
 import {
   baseKon,
@@ -27,6 +28,7 @@ import {
 } from './money.js';
 import {
   allowedBidsFor,
+  dvaSuitOptions,
   isBiddingOver,
   razSuitFor,
   resolveBidding,
@@ -96,9 +98,13 @@ type MainResult = MainPlayer & {
   delta: number; // сколько монет получил (+) или положил в кон (−)
 };
 
+// Пустая раздача — никто не играет: все спасовали (§6.5) или три раза подряд
+// открылась ИЗЖОГА (§5.2). В обоих случаях пересдача с доливкой (§9.2, §9.3).
+type EmptyRoundReason = 'all_pass' | 'three_izzhoga';
+
 // Последний взнос в кон — чтобы игроки видели, откуда взялись деньги.
 type AnteRecord = {
-  reason: 'kon_empty' | 'all_pass';
+  reason: 'kon_empty' | EmptyRoundReason;
   perPlayer: number;
   total: number;
   // Доливают все или никто: если у кого-то не хватило денег, не доливал никто.
@@ -122,8 +128,15 @@ type GameState = {
   trumpSuit: Suit | null;
   // Главные игроки: один, либо двое при двух РАЗ.
   mains: MainPlayer[];
-  // Почему сейчас пересдача. Пока бывает только «все спасовали».
-  lastRedeal: 'all_pass' | null;
+  // Почему сейчас пересдача: все спасовали или три ИЗЖОГИ подряд.
+  lastRedeal: EmptyRoundReason | null;
+  // Карты ИЗЖОГИ, которые открылись в этой раздаче и вернулись в колоду (§5.2).
+  // Их видели все, поэтому они открыты.
+  izzhoga: Card[];
+  // Масть, которую выбрал сказавший ДВА при 6–7 игроках. СКРЫТА от остальных
+  // до начала розыгрыша (§6.3): в публичное состояние не попадает никогда —
+  // когда ДВА становится главным, она раскрывается через trumpSuit.
+  dvaSuit: Suit | null;
 
   // Розыгрыш.
   turnPlayerId: string | null;
@@ -230,6 +243,8 @@ function makeDealerSelection(room: Room): GameState {
     trumpSuit: null,
     mains: [],
     lastRedeal: null,
+    izzhoga: [],
+    dvaSuit: null,
     ...emptyPlayState(),
     hands: {},
     bids: [],
@@ -400,31 +415,56 @@ function emptyPlayState() {
 
 function beginBidding(room: Room) {
   if (!room.game) return;
+  const game = room.game;
 
-  // Колода зависит от числа игроков, см. RULES.md §3.
-  // Сходится ровно: 1 открытый козырь + по 5 карт каждому.
-  const deck = shuffle(createDeck(room.capacity as 4 | 5 | 6 | 7));
+  game.trumpSuit = null;
+  game.mains = [];
+  game.lastRedeal = null;
+  game.izzhoga = [];
+  game.dvaSuit = null;
+  Object.assign(game, emptyPlayState());
+  game.konBeforeSettlement = null;
 
-  // Сначала открываем одну карту. Она задаёт масть РАЗ, но при 4 игроках
-  // козырь всегда черви независимо от неё (RULES.md §5.1).
-  // ИЗЖОГА при 5 и 6 игроках (переоткрытие до 3 раз) — этап 5.
-  const openCard = deck.shift();
-
-  if (!openCard) {
-    throw new Error('cannot open a card');
+  // Отсчёт круга до следующего голосования: каждая раздача — шаг (§12.2).
+  if (game.dealsSinceContinue !== null) {
+    game.dealsSinceContinue += 1;
   }
 
-  const hands: Record<string, Card[]> = {};
+  // Кон пуст (старт комнаты или кто-то его забрал) — все вносят взнос (RULES.md §9.2).
+  // Если кон не пуст, взноса нет: играем на том, что лежит.
+  if (game.kon === 0) {
+    takeAnte(room, 'kon_empty');
+  } else {
+    game.lastAnte = null;
+  }
 
+  // Колода зависит от числа игроков, см. RULES.md §3.
+  // Сходится ровно: 1 открытая карта + по 5 карт каждому.
+  const deck = shuffle(createDeck(room.capacity as Capacity));
+
+  // Сначала открываем карту. Она задаёт масть РАЗ (при 4 игроках козырь всегда
+  // черви, §5.1). При 5 и 6 игроках вышла ИЗЖОГА — карта вбивается обратно
+  // в колоду и открывается следующая, не больше трёх раз (§5.2).
+  const opening = openTrump(deck, room.capacity);
+  game.izzhoga = opening.izzhoga;
+
+  if (!opening.openCard) {
+    // Три ИЗЖОГИ подряд — раздача отменяется, пересдача (§5.2).
+    emptyRound(room, 'three_izzhoga');
+    return;
+  }
+
+  // После открытой карты раздаём по 5 карт каждому. Вернувшиеся ИЗЖОГИ
+  // остались в колоде, поэтому карт ровно хватает.
+  const hands: Record<string, Card[]> = {};
   for (const player of room.players) {
     hands[player.id] = [];
   }
 
-  // После открытой карты раздаём по 5 карт каждому.
   let cursor = 0;
   for (let round = 0; round < 5; round++) {
     for (const player of room.players) {
-      const card = deck[cursor++];
+      const card = opening.deck[cursor++];
       if (!card) {
         throw new Error('not enough cards to deal 5 to each player');
       }
@@ -432,33 +472,13 @@ function beginBidding(room: Room) {
     }
   }
 
-  room.game.openCard = openCard;
-  room.game.razSuit = razSuitFor(room.capacity as Capacity, openCard);
-  room.game.trumpSuit = null;
-  room.game.mains = [];
-  room.game.lastRedeal = null;
-  Object.assign(room.game, emptyPlayState());
-  room.game.konBeforeSettlement = null;
-
-  // Отсчёт круга до следующего голосования: каждая раздача — шаг (§12.2).
-  if (room.game.dealsSinceContinue !== null) {
-    room.game.dealsSinceContinue += 1;
-  }
-
-  // Кон пуст (старт комнаты или кто-то его забрал) — все вносят взнос (RULES.md §9.2).
-  // Если кон не пуст, взноса нет: играем на том, что лежит.
-  if (room.game.kon === 0) {
-    takeAnte(room, 'kon_empty');
-  } else {
-    room.game.lastAnte = null;
-  }
+  game.openCard = opening.openCard;
+  game.razSuit = razSuitFor(room.capacity as Capacity, opening.openCard);
 
   // Первым говорит сосед справа от раздающего, дальше против часовой стрелки,
   // раздающий высказывается последним (RULES.md §6.1).
   // Против часовой = следующий индекс в room.players.
-  const dealerIndex = room.players.findIndex(
-    (p) => p.id === room.game!.dealerId,
-  );
+  const dealerIndex = room.players.findIndex((p) => p.id === game.dealerId);
 
   if (dealerIndex < 0) {
     throw new Error('dealer is not seated at the table');
@@ -469,12 +489,45 @@ function beginBidding(room: Room) {
       room.players[(dealerIndex + 1 + offset) % room.players.length].id,
   );
 
-  room.game.stage = 'bidding';
-  room.game.hands = hands;
-  room.game.bids = [];
-  room.game.bidOrder = bidOrder;
-  room.game.bidIndex = 0;
-  room.game.activeBidderId = bidOrder[0] ?? null;
+  game.stage = 'bidding';
+  game.hands = hands;
+  game.bids = [];
+  game.bidOrder = bidOrder;
+  game.bidIndex = 0;
+  game.activeBidderId = bidOrder[0] ?? null;
+}
+
+// Пустая раздача: никто не играет — все спасовали (§6.5) или три ИЗЖОГИ подряд (§5.2).
+// Раздающий переходит к соседу справа, все доливают взнос поверх кона — но только
+// пока пустых раздач подряд не больше лимита; дальше раздаём на том же коне (§9.3).
+function emptyRound(room: Room, reason: EmptyRoundReason) {
+  const game = room.game!;
+
+  game.emptyStreak += 1;
+  if (game.emptyStreak <= room.settings.emptyLimit) {
+    takeAnte(room, reason);
+  } else {
+    game.lastAnte = null;
+  }
+
+  passDealer(room);
+  game.stage = 'awaiting_deal';
+  game.lastRedeal = reason;
+  game.openCard = null;
+  game.razSuit = null;
+  game.trumpSuit = null;
+  game.dvaSuit = null;
+  game.mains = [];
+  game.hands = {};
+  game.bids = [];
+  game.bidOrder = [];
+  game.bidIndex = 0;
+  game.activeBidderId = null;
+  Object.assign(game, emptyPlayState());
+
+  // После доливки кон мог стать таким, что его никто не может взять —
+  // тогда голосуем, продолжать или делить (§12.2).
+  startVoteIfNobodyCanPlay(room);
 }
 
 // Торги закончились: либо определился главный, либо все спасовали.
@@ -488,6 +541,7 @@ function finishBidding(room: Room): 'main' | 'all_pass' {
     room.capacity as Capacity,
     game.bids,
     game.razSuit,
+    game.dvaSuit,
   );
 
   game.activeBidderId = null;
@@ -509,32 +563,8 @@ function finishBidding(room: Room): 'main' | 'all_pass' {
     return 'main';
   }
 
-  // Все спасовали — пересдача: раздаёт следующий игрок (RULES.md §6.5).
-  // Все доливают взнос поверх кона — но только пока пустых раздач подряд
-  // не больше лимита. Дальше раздаём на том же коне без доливки (§9.3).
-  game.emptyStreak += 1;
-  if (game.emptyStreak <= room.settings.emptyLimit) {
-    takeAnte(room, 'all_pass');
-  } else {
-    game.lastAnte = null;
-  }
-
-  passDealer(room);
-  game.stage = 'awaiting_deal';
-  game.lastRedeal = 'all_pass';
-  game.openCard = null;
-  game.razSuit = null;
-  game.trumpSuit = null;
-  game.mains = [];
-  game.hands = {};
-  game.bids = [];
-  game.bidOrder = [];
-  game.bidIndex = 0;
-  Object.assign(game, emptyPlayState());
-
-  // После доливки кон мог стать таким, что его никто не может взять —
-  // тогда голосуем, продолжать или делить (§12.2).
-  startVoteIfNobodyCanPlay(room);
+  // Все спасовали — пересдача (RULES.md §6.5).
+  emptyRound(room, 'all_pass');
   return 'all_pass';
 }
 
@@ -657,6 +687,30 @@ function publicRoom(room: Room, viewerId?: string) {
       openCard: room.game.openCard,
       razSuit: room.game.razSuit,
       trumpSuit: room.game.trumpSuit,
+      // Открывавшиеся ИЗЖОГИ видели все — они открыты (§5.2).
+      izzhoga: room.game.izzhoga,
+      // Масть ДВА видит только тот, кто сказал ДВА (§6.3), остальным — null.
+      // Оговорка: авторизации пока нет (CLAUDE.md, слабое место №8) — кто знает
+      // чужой playerId, увидит и чужую руку, и эту масть. Закрывается на этапе 9.
+      myDvaSuit:
+        viewerId !== undefined &&
+        room.game.dvaSuit !== null &&
+        room.game.bids.some((b) => b.playerId === viewerId && b.bid === 'ДВА')
+          ? room.game.dvaSuit
+          : null,
+      // Из каких мастей можно выбрать ДВА — только тому, чья очередь и кому ДВА доступен.
+      myDvaSuitOptions:
+        room.game.stage === 'bidding' &&
+        viewerId !== undefined &&
+        viewerId === room.game.activeBidderId &&
+        room.game.razSuit &&
+        allowedBidsFor(
+          room.capacity as Capacity,
+          room.game.bids,
+          walletOf(room, viewerId),
+        ).includes('ДВА')
+          ? dvaSuitOptions(room.capacity as Capacity, room.game.razSuit)
+          : [],
       mains: room.game.mains,
       lastRedeal: room.game.lastRedeal,
       // Кнопки заявок решает сервер: клиент только включает те, что пришли.
@@ -1028,7 +1082,7 @@ app.post('/rooms/:id/bid', (req, res) => {
     return res.status(404).json({ error: 'room/game not found' });
   }
 
-  const { playerId, bid } = req.body ?? {};
+  const { playerId, bid, suit } = req.body ?? {};
   const bidValue = String(bid) as Bid;
 
   if (room.game.stage !== 'bidding') {
@@ -1060,6 +1114,24 @@ app.post('/rooms/:id/bid', (req, res) => {
 
   if (!player) {
     return res.status(404).json({ error: 'player not found' });
+  }
+
+  // ДВА: при 5 игроках масть одна и выбирать нечего. При 6 и 7 игрок обязан
+  // назвать масть из допустимых (RULES.md §6.3). Масть хранится скрыто —
+  // в публичную заявку попадает только «ДВА».
+  if (bidValue === 'ДВА') {
+    const options = dvaSuitOptions(room.capacity as Capacity, room.game.razSuit!);
+
+    if (options.length === 1) {
+      room.game.dvaSuit = options[0];
+    } else if (options.includes(suit)) {
+      room.game.dvaSuit = suit;
+    } else {
+      return res.status(400).json({
+        error: 'choose a suit for ДВА',
+        suitOptions: options,
+      });
+    }
   }
 
   room.game.bids.push({

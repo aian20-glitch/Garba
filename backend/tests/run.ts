@@ -2,6 +2,7 @@
 // Проверки чистых модулей backend по правилам из RULES.md — без сервера и без сети.
 
 import './bidding.test.js';
+import './deal.test.js';
 import './play.test.js';
 import './money.test.js';
 import './vote.test.js';

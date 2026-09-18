@@ -30,13 +30,13 @@ export function razSuitFor(capacity: Capacity, openCard: Card): Suit {
   return openCard.suit;
 }
 
-// Масть ДВА — другая масть, которая в этом составе может быть козырем.
-// При 5 игроках она ровно одна. При 6 и 7 игрок выбирает её сам и прячет от
-// остальных (RULES.md §6.3) — это этап 5, пока возвращаем null.
-export function dvaSuitFor(capacity: Capacity, razSuit: Suit): Suit | null {
-  if (capacity !== 5) return null;
-  const others = eligibleTrumpSuits(capacity).filter((s) => s !== razSuit);
-  return others.length === 1 ? others[0] : null;
+// Из каких мастей можно выбрать ДВА — это другие масти, которые в этом составе
+// могут быть козырем (RULES.md §6.3).
+// 4 игрока — ДВА нет, пусто. 5 — ровно одна, выбирать нечего.
+// 6 — две, 7 — три: игрок выбирает сам и прячет выбор от остальных.
+export function dvaSuitOptions(capacity: Capacity, razSuit: Suit): Suit[] {
+  if (capacity === 4) return [];
+  return eligibleTrumpSuits(capacity).filter((s) => s !== razSuit);
 }
 
 // Кошелёк игрока, чья очередь: баланс и сколько стоит каждая заявка при текущем коне.
@@ -67,9 +67,6 @@ function allowedByRules(capacity: Capacity, bids: BidEntry[]): Bid[] {
   // При 4 игроках ДВА не существует (RULES.md §6.2).
   if (capacity === 4) return ['РАЗ', 'ПАС'];
 
-  // При 6 и 7 игроках ДВА требует выбора скрытой масти — этап 5.
-  if (capacity !== 5) return ['РАЗ', 'ПАС'];
-
   // Нельзя сказать заявку ниже уже прозвучавшей (RULES.md §6.4): после РАЗ
   // ДВА не говорят, второго ДВА не бывает.
   const dvaOrRazSaid = bids.some((b) => b.bid === 'ДВА' || b.bid === 'РАЗ');
@@ -88,10 +85,13 @@ export function isBiddingOver(bids: BidEntry[], playerCount: number): boolean {
 }
 
 // Итог торгов. Вызывать, когда isBiddingOver() вернул true.
+// chosenDvaSuit — масть, которую выбрал сказавший ДВА (при 6 и 7 игроках);
+// при 5 игроках выбирать нечего и можно передать null.
 export function resolveBidding(
   capacity: Capacity,
   bids: BidEntry[],
   razSuit: Suit,
+  chosenDvaSuit: Suit | null,
 ): BiddingOutcome {
   // РАЗ всегда старше ДВА. Сказавших РАЗ не больше двух — тогда играют оба,
   // а ДВА выбывает в обычные противники.
@@ -111,11 +111,12 @@ export function resolveBidding(
   // РАЗ не прозвучал — играет ДВА, если был. ДВА меняет козырь на свою масть.
   const dva = bids.find((b) => b.bid === 'ДВА');
   if (dva) {
-    const suit = dvaSuitFor(capacity, razSuit);
-    if (!suit) {
-      // allowedBidsFor() не даёт сказать ДВА там, где масть не определена,
-      // так что сюда попасть нельзя. Если попали — это ошибка в коде.
-      throw new Error(`ДВА без масти при ${capacity} игроках`);
+    const options = dvaSuitOptions(capacity, razSuit);
+    const suit = options.length === 1 ? options[0] : chosenDvaSuit;
+    if (!suit || !options.includes(suit)) {
+      // Масть ДВА проверяется при заявке, так что сюда попасть нельзя.
+      // Если попали — это ошибка в коде.
+      throw new Error(`ДВА без допустимой масти при ${capacity} игроках`);
     }
     return {
       kind: 'main',

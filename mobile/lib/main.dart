@@ -738,7 +738,11 @@ class _DealerSelectionScreenState extends State<DealerSelectionScreen> {
           );
         }
 
-        if (game['stage']?.toString() == 'bidding' && !moved) {
+        // Карты розданы — уходим к столу. Не только на 'bidding': если при первой
+        // же раздаче трижды вышла ИЗЖОГА, стадия сразу 'awaiting_deal' (пересдача),
+        // и без этого все остались бы на экране раздающего.
+        final stage = game['stage']?.toString();
+        if (stage != null && stage != 'dealer_found' && !moved) {
           moved = true;
           pollTimer?.cancel();
           revealTimer?.cancel();
@@ -976,7 +980,8 @@ class _GameTableScreenState extends State<GameTableScreen> {
     } catch (_) {}
   }
 
-  Future<void> sendBid(String bid) async {
+  // suit — масть для ДВА при 6 и 7 игроках (RULES.md §6.3).
+  Future<void> sendBid(String bid, {String? suit}) async {
     if (sendingBid) return;
     setState(() => sendingBid = true);
 
@@ -987,6 +992,7 @@ class _GameTableScreenState extends State<GameTableScreen> {
         body: jsonEncode({
           'playerId': widget.currentPlayerId,
           'bid': bid,
+          if (suit != null) 'suit': suit,
         }),
       );
 
@@ -1068,6 +1074,57 @@ class _GameTableScreenState extends State<GameTableScreen> {
     } finally {
       if (mounted) setState(() => sendingCard = false);
     }
+  }
+
+  // ДВА при 6 и 7 игроках: сначала выбираем масть. Выбор видит только сам игрок,
+  // остальным придёт просто «ДВА» (RULES.md §6.3). Масти присылает сервер.
+  Future<void> chooseDva(List<String> options) async {
+    if (options.length <= 1) {
+      await sendBid('ДВА');
+      return;
+    }
+
+    final suit = await showModalBottomSheet<String>(
+      context: context,
+      builder: (sheetContext) => SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.all(20),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              const Text(
+                'ДВА — какой масти козырь?',
+                textAlign: TextAlign.center,
+                style: TextStyle(fontSize: 20, fontWeight: FontWeight.w900),
+              ),
+              const SizedBox(height: 6),
+              const Text(
+                'Остальные увидят только «ДВА». Масть откроется, если вы станете главным.',
+                textAlign: TextAlign.center,
+                style: TextStyle(color: Colors.white60),
+              ),
+              const SizedBox(height: 16),
+              Wrap(
+                alignment: WrapAlignment.center,
+                spacing: 12,
+                runSpacing: 12,
+                children: options
+                    .map(
+                      (s) => GestureDetector(
+                        onTap: () => Navigator.pop(sheetContext, s),
+                        child: SuitBadge(suit: s),
+                      ),
+                    )
+                    .toList(),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+
+    if (suit != null) await sendBid('ДВА', suit: suit);
   }
 
   // Голос «продолжаем» / «делим кон», когда кон не по карману никому (RULES.md §12.2).
@@ -1153,6 +1210,15 @@ class _GameTableScreenState extends State<GameTableScreen> {
         openCardRaw is Map ? Map<String, dynamic>.from(openCardRaw) : null;
     final razSuit = game['razSuit']?.toString();
     final trumpSuit = game['trumpSuit']?.toString();
+    // ИЗЖОГИ, которые открылись и вернулись в колоду (RULES.md §5.2).
+    final izzhoga = ((game['izzhoga'] as List?) ?? const [])
+        .map((e) => Map<String, dynamic>.from(e as Map))
+        .toList();
+    // Масть ДВА: свою видит только сказавший ДВА (RULES.md §6.3).
+    final myDvaSuit = game['myDvaSuit']?.toString();
+    final myDvaSuitOptions = ((game['myDvaSuitOptions'] as List?) ?? const [])
+        .map((e) => e.toString())
+        .toList();
 
     final activeBidderId = game['activeBidderId']?.toString();
     final myAllowedBids = ((game['myAllowedBids'] as List?) ?? const [])
@@ -1388,10 +1454,12 @@ class _GameTableScreenState extends State<GameTableScreen> {
       );
     } else if (stage == 'awaiting_deal') {
       // Доливка в кон при пересдаче — пока пустых раздач подряд не больше лимита.
+      // Доливка бывает и после всеобщего ПАСа, и после трёх ИЗЖОГ.
+      final isRefill = lastAnte != null &&
+          (lastAnte['reason'] == 'all_pass' ||
+              lastAnte['reason'] == 'three_izzhoga');
       final String anteText;
-      if (lastAnte != null &&
-          lastAnte['reason'] == 'all_pass' &&
-          lastAnte['skipped'] == true) {
+      if (isRefill && lastAnte['skipped'] == true) {
         // Доливают все или никто (RULES.md §9.2).
         final brokeIds = ((lastAnte['brokePlayerIds'] as List?) ?? const [])
             .map((e) => e.toString())
@@ -1401,13 +1469,23 @@ class _GameTableScreenState extends State<GameTableScreen> {
             .map((p) => p['name'].toString())
             .join(', ');
         anteText = 'У игрока $names не хватает на взнос — доливки нет ни у кого.';
-      } else if (lastAnte != null && lastAnte['reason'] == 'all_pass') {
+      } else if (isRefill) {
         anteText = 'Все долили по ${fmtCoins((lastAnte['perPlayer'] as num).toInt())} в кон.';
       } else {
         anteText = 'Лимит пустых раздач исчерпан — в кон больше не доливаем.';
       }
+      // Почему пересдача: все спасовали (§6.5) или три ИЗЖОГИ подряд (§5.2).
+      final String why;
+      if (game['lastRedeal'] == 'three_izzhoga') {
+        final shown = izzhoga
+            .map((c) => '${c['rank']}${suitSymbol(c['suit'].toString())}')
+            .join(', ');
+        why = 'Три раза подряд открылась ИЗЖОГА ($shown) — пересдача.';
+      } else {
+        why = 'Все спасовали — пересдача.';
+      }
       footer = Text(
-        'Все спасовали — пересдача.\n$anteText\nРаздаёт $dealerName.',
+        '$why\n$anteText\nРаздаёт $dealerName.',
         textAlign: TextAlign.center,
         style: const TextStyle(color: Colors.white70, fontSize: 16),
       );
@@ -1594,6 +1672,17 @@ class _GameTableScreenState extends State<GameTableScreen> {
                     ],
                   ),
                 ),
+              // Открывалась ИЗЖОГА — показываем, что вернули в колоду (RULES.md §5.2).
+              if (izzhoga.isNotEmpty && (stage == 'bidding' || isPlaying))
+                Padding(
+                  padding: const EdgeInsets.only(top: 6),
+                  child: Text(
+                    'ИЗЖОГА, вернули в колоду: '
+                    '${izzhoga.map((c) => '${c['rank']}${suitSymbol(c['suit'].toString())}').join(', ')}',
+                    textAlign: TextAlign.center,
+                    style: const TextStyle(color: Colors.white60, fontSize: 13),
+                  ),
+                ),
               const SizedBox(height: 10),
               Text(
                 headline,
@@ -1641,7 +1730,13 @@ class _GameTableScreenState extends State<GameTableScreen> {
                         } else if (bidMatches.isEmpty) {
                           bidText = isActive ? 'ДУМАЕТ...' : '—';
                         } else {
-                          bidText = bidMatches.last['bid'].toString();
+                          final said = bidMatches.last['bid'].toString();
+                          // Свою масть ДВА игрок видит, остальные — просто «ДВА».
+                          bidText = said == 'ДВА' &&
+                                  pId == widget.currentPlayerId &&
+                                  myDvaSuit != null
+                              ? 'ДВА ${suitSymbol(myDvaSuit)}'
+                              : said;
                         }
 
                         return Padding(
@@ -1840,7 +1935,9 @@ class _GameTableScreenState extends State<GameTableScreen> {
                       Expanded(
                         child: FilledButton(
                           onPressed:
-                              canBid('ДВА') ? () => sendBid('ДВА') : null,
+                              canBid('ДВА')
+                                  ? () => chooseDva(myDvaSuitOptions)
+                                  : null,
                           child: Text('ДВА · ${fmtCoins(dvaStake)}'),
                         ),
                       ),
@@ -1947,17 +2044,23 @@ class PlayingCardView extends StatelessWidget {
               color: red ? Colors.red.shade800 : Colors.black,
             ),
           ),
-          const Spacer(),
-          Center(
-            child: Text(
-              symbol,
-              style: TextStyle(
-                fontSize: 70,
-                color: red ? Colors.red.shade800 : Colors.black,
+          // Большой значок масти занимает остаток карточки и ужимается под него.
+          // Раньше тут стоял фиксированный шрифт 70 между двумя Spacer, и на
+          // эмуляторе Pixel 8 карта переполнялась на 47 пикселей.
+          Expanded(
+            child: Center(
+              child: FittedBox(
+                fit: BoxFit.scaleDown,
+                child: Text(
+                  symbol,
+                  style: TextStyle(
+                    fontSize: 70,
+                    color: red ? Colors.red.shade800 : Colors.black,
+                  ),
+                ),
               ),
             ),
           ),
-          const Spacer(),
         ],
       ),
     );

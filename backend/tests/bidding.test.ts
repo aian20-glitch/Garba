@@ -3,6 +3,7 @@
 import { check, section } from './check.js';
 import {
   allowedBidsFor,
+  dvaSuitOptions,
   isBiddingOver,
   razSuitFor,
   resolveBidding,
@@ -19,7 +20,7 @@ const rich: Wallet = { balance: 1e9, razStake: 0, dvaStake: 0 };
 
 
 // Прогоняет торги: заявки идут по очереди, пока isBiddingOver не скажет стоп.
-function run(capacity: Capacity, razSuit: Suit, said: Bid[]) {
+function run(capacity: Capacity, razSuit: Suit, said: Bid[], dvaSuit: Suit | null = null) {
   const bids: BidEntry[] = [];
   for (let i = 0; i < said.length; i++) {
     const allowed = allowedBidsFor(capacity, bids, rich);
@@ -28,7 +29,7 @@ function run(capacity: Capacity, razSuit: Suit, said: Bid[]) {
     }
     bids.push({ playerId: `И${i + 1}`, playerName: `И${i + 1}`, bid: said[i] });
     if (isBiddingOver(bids, capacity)) {
-      const out = resolveBidding(capacity, bids, razSuit);
+      const out = resolveBidding(capacity, bids, razSuit, dvaSuit);
       return { spoke: bids.length, ...out };
     }
   }
@@ -72,8 +73,22 @@ check('ДВА, РАЗ, РАЗ → обрыв после второго РАЗ, �
     { playerId: 'И2', playerName: 'И2', declaration: 'РАЗ' },
     { playerId: 'И3', playerName: 'И3', declaration: 'РАЗ' }], trumpSuit: 'diamonds' });
 
-section('6 игроков');
-check('ДВА пока недоступен (выбор скрытой масти — этап 5)', allowedBidsFor(6, [], rich), ['РАЗ', 'ПАС']);
+section('ДВА при 6 и 7 игроках — выбор масти (§6.3)');
+check('4 игрока: ДВА нет — выбирать не из чего', dvaSuitOptions(4, 'hearts'), []);
+check('5 игроков, РАЗ бубны: ДВА только черви', dvaSuitOptions(5, 'diamonds'), ['hearts']);
+check('6 игроков, РАЗ бубны: ДВА — черви или крести (пики ИЗЖОГА)', dvaSuitOptions(6, 'diamonds'), ['hearts', 'clubs']);
+check('7 игроков, РАЗ черви: ДВА — любая из трёх остальных', dvaSuitOptions(7, 'hearts'), ['diamonds', 'clubs', 'spades']);
+check('6 игроков: кнопка ДВА теперь есть', allowedBidsFor(6, [], rich), ['РАЗ', 'ДВА', 'ПАС']);
+check('7 игроков: кнопка ДВА теперь есть', allowedBidsFor(7, [], rich), ['РАЗ', 'ДВА', 'ПАС']);
+check('6 игроков: ДВА выбрал крести, все ПАС → козырь крести',
+  run(6, 'diamonds', ['ДВА', 'ПАС', 'ПАС', 'ПАС', 'ПАС', 'ПАС'], 'clubs'),
+  { spoke: 6, kind: 'main', mains: [{ playerId: 'И1', playerName: 'И1', declaration: 'ДВА' }], trumpSuit: 'clubs' });
+check('7 игроков: ДВА выбрал пики, потом РАЗ → играет РАЗ, козырь черви, пики не раскрылись',
+  run(7, 'hearts', ['ДВА', 'ПАС', 'РАЗ', 'ПАС', 'ПАС', 'ПАС', 'ПАС'], 'spades'),
+  { spoke: 7, kind: 'main', mains: [{ playerId: 'И3', playerName: 'И3', declaration: 'РАЗ' }], trumpSuit: 'hearts' });
+check('5 игроков: масть ДВА не нужна — берётся единственная',
+  run(5, 'diamonds', ['ДВА', 'ПАС', 'ПАС', 'ПАС', 'ПАС'], null),
+  { spoke: 5, kind: 'main', mains: [{ playerId: 'И1', playerName: 'И1', declaration: 'ДВА' }], trumpSuit: 'hearts' });
 
 section('проверка баланса (RULES.md §6.6)');
 check('кон 1000, баланс 800: РАЗ закрыт (нужно 1000), ДВА открыт (нужно 500)',
