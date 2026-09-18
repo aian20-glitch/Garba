@@ -2669,6 +2669,12 @@ class _GameTableScreenState extends State<GameTableScreen> {
   // Смайлики (RULES.md §14): какой смайлик сейчас висит у игрока, и номер
   // последней показанной реакции — старые при входе в комнату не всплывают.
   final Map<String, String> flyingEmoji = {};
+  // Объявление «Тимур — РАЗ!» крупно над столом на пару секунд: заявку легко пропустить.
+  ({int id, String text})? announcement;
+  int announcementSeq = 0;
+  int seenBids = 0;
+  String seenSpecial = '';
+  bool firstAnnounce = true;
   // Итог раздачи всплывает поверх стола; закрытый нажатием больше не показываем.
   String? dismissedResultKey;
   int lastReactionId = 0;
@@ -2712,6 +2718,7 @@ class _GameTableScreenState extends State<GameTableScreen> {
     });
 
     applyReactions((data['reactions'] as List?) ?? const []);
+    applyAnnouncements(data);
 
     // Пока пауза — перерисовываем раз в секунду, чтобы шёл обратный отсчёт.
     if (data['pause'] is Map) {
@@ -2722,6 +2729,48 @@ class _GameTableScreenState extends State<GameTableScreen> {
       pauseTicker?.cancel();
       pauseTicker = null;
     }
+  }
+
+  // Новые заявки (кроме ПАС) и перехват спецкарты — крупным объявлением над столом.
+  // При первом открытии комнаты старое только запоминаем.
+  void applyAnnouncements(Map<String, dynamic> data) {
+    final game = data['game'];
+    if (game is! Map) return;
+    String nameOf(String id) {
+      for (final p in (data['players'] as List? ?? const [])) {
+        if ((p as Map)['id'].toString() == id) return p['name'].toString();
+      }
+      return '';
+    }
+
+    String? text;
+    final bids = (game['bids'] as List?) ?? const [];
+    if (bids.length < seenBids) seenBids = 0; // новая раздача — заявки с нуля
+    for (var i = seenBids; i < bids.length; i++) {
+      final b = Map<String, dynamic>.from(bids[i] as Map);
+      if (b['bid'] != 'ПАС') text = '${nameOf(b['playerId'].toString())} — ${b['bid']}!';
+    }
+    seenBids = bids.length;
+
+    final special = game['special'];
+    final holder = special is Map ? special['holderId']?.toString() : null;
+    final specialKey = holder == null ? '' : '$holder-${special['risk']}';
+    if (specialKey != seenSpecial && holder != null) {
+      text = '${nameOf(holder)} — '
+          '${specialName(special['kind'].toString())} ×${special['risk']}!';
+    }
+    seenSpecial = specialKey;
+
+    if (firstAnnounce) {
+      firstAnnounce = false;
+      return;
+    }
+    if (text == null) return;
+    final id = ++announcementSeq;
+    setState(() => announcement = (id: id, text: text!));
+    Timer(const Duration(milliseconds: 2600), () {
+      if (mounted && announcement?.id == id) setState(() => announcement = null);
+    });
   }
 
   // Новые смайлики всплывают у игрока на 3 секунды. Те, что пришли при первом
@@ -3802,7 +3851,17 @@ class _GameTableScreenState extends State<GameTableScreen> {
 
         // В торгах — заявка, в розыгрыше — взятки.
         final String bidText;
-        if (isPlaying || isRoundDone) {
+        final mainDecl = mains
+            .where((m) => m['playerId'].toString() == pId)
+            .map((m) => m['declaration'].toString())
+            .firstOrNull;
+        if ((isPlaying || isRoundDone) && mainDecl != null) {
+          // Главный: заявка видна до конца раздачи — «РАЗ · взяток 1».
+          final label = specialOutcome != null && special != null
+              ? '${specialName(special['kind'].toString())} ×${specialOutcome['risk']}'
+              : mainDecl;
+          bidText = '$label · взяток ${tricksWon[pId] ?? 0}';
+        } else if (isPlaying || isRoundDone) {
           bidText = 'взяток: ${tricksWon[pId] ?? 0}';
         } else if (bidMatches.isEmpty) {
           bidText = isActive ? 'думает…' : '';
@@ -4221,6 +4280,40 @@ class _GameTableScreenState extends State<GameTableScreen> {
                     ],
                     ),
                   ),
+                  if (announcement != null)
+                    Positioned.fill(
+                      child: IgnorePointer(
+                        child: Center(
+                          child: TweenAnimationBuilder<double>(
+                            key: ValueKey(announcement!.id),
+                            tween: Tween(begin: 0.3, end: 1),
+                            duration: const Duration(milliseconds: 700),
+                            curve: Curves.elasticOut,
+                            builder: (_, t, c) => Transform.scale(scale: t, child: c),
+                            child: Container(
+                              padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 10),
+                              decoration: BoxDecoration(
+                                color: const Color(0xEE0B1620),
+                                borderRadius: BorderRadius.circular(16),
+                                border: Border.all(color: const Color(0xFFD4A94F), width: 2),
+                                boxShadow: const [
+                                  BoxShadow(color: Color(0x88D4A94F), blurRadius: 24),
+                                ],
+                              ),
+                              child: Text(
+                                announcement!.text,
+                                textAlign: TextAlign.center,
+                                style: const TextStyle(
+                                  fontSize: 30,
+                                  fontWeight: FontWeight.w900,
+                                  color: Color(0xFFD4A94F),
+                                ),
+                              ),
+                            ),
+                          ),
+                        ),
+                      ),
+                    ),
                   if (resultPopup != null) Positioned.fill(child: resultPopup),
                     ],
                   ),
