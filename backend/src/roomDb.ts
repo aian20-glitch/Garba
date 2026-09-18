@@ -7,6 +7,7 @@
 
 import type { DatabaseSync } from 'node:sqlite';
 import { emptyStats, type PlayerStats } from './stats.js';
+import { ratingOf } from './rating.js';
 
 export type StoredRoom = {
   id: string;
@@ -14,6 +15,8 @@ export type StoredRoom = {
   players: { id: string; balance: number }[];
   // Статистика игроков за эту комнату (этап 9.4). Нет — игра ещё не начиналась.
   stats?: Record<string, PlayerStats>;
+  // Мастерство игроков, пока они за столом (этап 9.6) — как баланс.
+  rating?: Record<string, { skill: number }>;
 };
 
 // Колонки статистики в базе и поля PlayerStats — в одном порядке.
@@ -66,6 +69,11 @@ export function writeRoom(db: DatabaseSync, room: StoredRoom) {
 
   const setBalance = db.prepare('UPDATE accounts SET balance = ? WHERE id = ?');
   for (const p of room.players) setBalance.run(p.balance, p.id);
+
+  if (room.rating) {
+    const setSkill = db.prepare('UPDATE accounts SET skill = ? WHERE id = ?');
+    for (const [playerId, r] of Object.entries(room.rating)) setSkill.run(r.skill, playerId);
+  }
 
   if (room.stats) {
     const cols = STAT_COLUMNS.map(([c]) => c);
@@ -120,4 +128,25 @@ export function loadUnfinishedRooms<T>(db: DatabaseSync): T[] {
 // Номер комнаты занят — в том числе закрытой: её итоги лежат в базе.
 export function roomIdTaken(db: DatabaseSync, id: string): boolean {
   return db.prepare('SELECT 1 FROM rooms WHERE id = ?').get(id) !== undefined;
+}
+
+export type RatedPlayer = { id: string; name: string; code: string; rating: number };
+
+// Рейтинг игроков (RULES.md §16): мастерство + опыт по всем сыгранным партиям.
+// ids — только эти игроки (друзья); без ids — все. По убыванию рейтинга.
+export function ratedPlayers(db: DatabaseSync, ids?: string[]): RatedPlayer[] {
+  if (ids && ids.length === 0) return [];
+  const where = ids ? `WHERE a.id IN (${ids.map(() => '?').join(', ')})` : '';
+  const rows = db
+    .prepare(
+      `SELECT a.id, a.name, a.code, a.skill, COALESCE(SUM(rs.deals), 0) AS deals
+       FROM accounts a LEFT JOIN room_stats rs ON rs.player_id = a.id
+       ${where}
+       GROUP BY a.id`,
+    )
+    .all(...(ids ?? [])) as { id: string; name: string; code: string; skill: number; deals: number }[];
+
+  return rows
+    .map((r) => ({ id: r.id, name: r.name, code: r.code, rating: ratingOf(Number(r.skill), Number(r.deals)) }))
+    .sort((a, b) => b.rating - a.rating || a.name.localeCompare(b.name));
 }

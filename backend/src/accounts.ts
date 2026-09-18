@@ -13,6 +13,7 @@ import { STARTING_COINS } from './config.js';
 import { ensureRoomTable } from './roomDb.js';
 import { makePlayerCode } from './bonus.js';
 import { ensureAvatarTable } from './avatars.js';
+import { START_SKILL } from './rating.js';
 
 export type Account = {
   id: string;
@@ -26,6 +27,8 @@ export type Account = {
   dailyStreak: number;
   // Кто пригласил (id аккаунта) — null, если пришёл сам.
   invitedBy: string | null;
+  // Мастерство 0…8 (RULES.md §16). Рейтинг = мастерство + опыт по сыгранным партиям.
+  skill: number;
 };
 
 export const NAME_MAX_LENGTH = 20;
@@ -80,6 +83,7 @@ function migrateAccounts(db: DatabaseSync) {
   add('daily_day', 'TEXT');
   add('daily_streak', 'INTEGER NOT NULL DEFAULT 0');
   add('invited_by', 'TEXT');
+  add('skill', `REAL NOT NULL DEFAULT ${START_SKILL}`); // рейтинг — этап 9.6
 
   // Аккаунтам, созданным до этапа 9.3, выдаём коды.
   const withoutCode = db.prepare('SELECT id FROM accounts WHERE code IS NULL').all() as { id: string }[];
@@ -113,7 +117,7 @@ function hashToken(token: string): string {
   return createHash('sha256').update(token).digest('hex');
 }
 
-const ACCOUNT_FIELDS = 'id, name, balance, created_at, code, daily_day, daily_streak, invited_by';
+const ACCOUNT_FIELDS = 'id, name, balance, created_at, code, daily_day, daily_streak, invited_by, skill';
 
 function toAccount(row: Record<string, unknown> | undefined): Account | null {
   if (!row) return null;
@@ -126,6 +130,7 @@ function toAccount(row: Record<string, unknown> | undefined): Account | null {
     dailyDay: row.daily_day == null ? null : String(row.daily_day),
     dailyStreak: Number(row.daily_streak ?? 0),
     invitedBy: row.invited_by == null ? null : String(row.invited_by),
+    skill: Number(row.skill ?? START_SKILL),
   };
 }
 
@@ -150,14 +155,14 @@ export function createAccount(
   const code = freeCode(db);
 
   db.prepare(
-    `INSERT INTO accounts (id, token_hash, name, balance, created_at, code, daily_streak, invited_by)
-     VALUES (?, ?, ?, ?, ?, ?, 0, ?)`,
-  ).run(id, hashToken(token), name, STARTING_COINS, createdAt, code, invitedBy);
+    `INSERT INTO accounts (id, token_hash, name, balance, created_at, code, daily_streak, invited_by, skill)
+     VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?)`,
+  ).run(id, hashToken(token), name, STARTING_COINS, createdAt, code, invitedBy, START_SKILL);
 
   return {
     account: {
       id, name, balance: STARTING_COINS, createdAt, code,
-      dailyDay: null, dailyStreak: 0, invitedBy,
+      dailyDay: null, dailyStreak: 0, invitedBy, skill: START_SKILL,
     },
     token,
   };

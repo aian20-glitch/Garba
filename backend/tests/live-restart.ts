@@ -148,6 +148,23 @@ async function main() {
   check('у ушедшего тоже 1 комната в профиле', (await request('GET', '/me/profile', erzhan.token)).body.stats.rooms, 1);
   check('победитель комнаты отмечен сервером', Array.isArray(closed.game?.winnerIds) && closed.game.winnerIds.length > 0, true);
 
+  section('рейтинг (этап 9.6)');
+  const seats = closed.players as any[];
+  check('за столом у каждого рейтинг и с каким сел — новички с 4.0',
+    seats.every((p) => typeof p.rating === 'number' && p.ratingStart === 4), true);
+  const erzhanSeat = seats.find((p) => p.id === erzhan.id);
+  check('ушёл из игры, комната закрылась из-за него — рейтинг 4.0 → 3.0', erzhanSeat.rating, 3);
+  const winnerSeat = seats.find((p) => closed.game.winnerIds.includes(p.id));
+  check('победитель комнаты — рейтинг вырос', winnerSeat.rating > 4, true);
+  check('рейтинг записан в аккаунт', (await request('GET', '/me', erzhan.token)).body.rating, erzhanSeat.rating);
+
+  const board = (await request('GET', '/rating?scope=all', serik.token)).body;
+  check('общий рейтинг: все 4 игрока, по убыванию, моё место известно',
+    [board.total, board.players.every((p: any, i: number) => i === 0 || board.players[i - 1].rating >= p.rating), typeof board.myPlace],
+    [4, true, 'number']);
+  const friendsBoard = (await request('GET', '/rating?scope=friends', serik.token)).body;
+  check('рейтинг друзей без друзей — только я, место 1', [friendsBoard.total, friendsBoard.myPlace], [1, 1]);
+
   for (const s of sockets.values()) s.close();
 }
 

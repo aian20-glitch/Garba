@@ -12,6 +12,7 @@ import {
   createAccount,
   findAccountByCode,
   findAccountByToken,
+  getAccount,
   giftedOn,
   invitedCount,
   listFriends,
@@ -24,7 +25,8 @@ import {
   type Account,
 } from './accounts.js';
 import { createDeck, shuffle } from './deck.js';
-import { loadUnfinishedRooms, profileStats, roomIdTaken, saveRoom, writeRoom } from './roomDb.js';
+import { loadUnfinishedRooms, profileStats, ratedPlayers, roomIdTaken, saveRoom, writeRoom } from './roomDb.js';
+import { afterDeal, afterRoom, ratingOf, shownRating, START_SKILL } from './rating.js';
 import { addDeal, addMoney, emptyStats, roomWinners, type PlayerStats } from './stats.js';
 import { avatarPath, detectImageType, loadAvatar, MAX_AVATAR_BYTES, saveAvatar } from './avatars.js';
 import {
@@ -282,6 +284,10 @@ type Room = {
   game?: GameState;
   // Статистика игроков за эту комнату (ТЗ §35, этап 9.4). Заводится при старте игры.
   stats?: Record<string, PlayerStats>;
+  // Рейтинг игроков за столом (RULES.md §16, этап 9.6). Мастерство меняется здесь и
+  // сохраняется в аккаунт вместе с комнатой — как баланс. startSkill и startDeals —
+  // с чем игрок сел за стол: от них «Рейтинг 4.0 → 4.9» в итогах.
+  rating?: Record<string, { skill: number; startSkill: number; startDeals: number }>;
 };
 
 const app = express();
@@ -417,6 +423,7 @@ app.get('/me', (req, res) => {
   return res.json({
     ...account,
     avatar: avatarPath(db, account.id),
+    rating: shownRating(accountRating(account.id)),
     roomId: activeRoomOf(account.id)?.id ?? null,
     daily: {
       claimedToday: !claim.claimable,
@@ -514,6 +521,7 @@ app.get('/me/profile', (req, res) => {
     balance: account.balance,
     createdAt: account.createdAt,
     avatar: avatarPath(db, account.id),
+    rating: shownRating(accountRating(account.id)),
     stats: profileStats(db, account.id),
     friendsCount: listFriends(db, account.id).length,
   });
@@ -534,9 +542,36 @@ app.get('/players/:code', (req, res) => {
     code: player.code,
     name: player.name,
     avatar: avatarPath(db, player.id),
+    rating: shownRating(accountRating(player.id)),
     stats: profileStats(db, player.id),
     isFriend: areFriends(db, me.id, player.id),
   });
+});
+
+// --- Рейтинг (ТЗ §38, RULES.md §16) ---
+// scope=friends — я и мои друзья; scope=all — все игроки (первые 50 и моё место).
+app.get('/rating', (req, res) => {
+  const me = accountOf(req);
+  if (!me) {
+    return res.status(401).json({ error: 'unauthorized' });
+  }
+  const friendsOnly = req.query.scope === 'friends';
+  const list = friendsOnly
+    ? ratedPlayers(db, [me.id, ...listFriends(db, me.id).map((f) => f.id)])
+    : ratedPlayers(db);
+
+  const places = list.map((p, i) => ({
+    place: i + 1,
+    code: p.code,
+    name: p.name,
+    avatar: avatarPath(db, p.id),
+    rating: shownRating(p.rating),
+    me: p.id === me.id,
+  }));
+  const myPlace = places.find((p) => p.me)?.place ?? null;
+  const top = friendsOnly ? places : places.slice(0, 50);
+
+  return res.json({ scope: friendsOnly ? 'friends' : 'all', total: places.length, myPlace, players: top });
 });
 
 // --- Друзья (ТЗ §2, этап 9.4) ---
@@ -552,6 +587,7 @@ app.get('/friends', (req, res) => {
       code: f.code,
       name: f.name,
       avatar: avatarPath(db, f.id),
+      rating: shownRating(accountRating(f.id)),
       stats: profileStats(db, f.id),
       // В какой комнате сейчас сидит — чтобы можно было зайти к другу.
       roomId: activeRoomOf(f.id)?.id ?? null,
@@ -784,8 +820,8 @@ function closeByDisconnect(room: Room, leftIds: string[]) {
   game.kon = 0;
   game.stage = 'room_done';
   game.closeReason = 'player_left';
-  markWinners(room);
   game.leftPlayerIds = leftIds;
+  markWinners(room);
   game.activeBidderId = null;
   game.turnPlayerId = null;
   game.vote = null;
@@ -885,6 +921,47 @@ function markWinners(room: Room) {
   room.game!.winnerIds = roomWinners(
     room.players.map((p) => ({ id: p.id, diff: p.balance - p.startBalance })),
   );
+
+  // Итог комнаты меняет рейтинг (RULES.md §16.3); ушедшему — штраф (§16.3a).
+  const skills = afterRoom(
+    room.players.map((p) => ({
+      id: p.id,
+      skill: ratingState(room, p.id).skill,
+      rating: liveRating(room, p.id),
+      diff: p.balance - p.startBalance,
+    })),
+    room.game!.winnerIds,
+    room.capacity,
+    room.game!.leftPlayerIds ?? [],
+  );
+  for (const [id, skill] of Object.entries(skills)) ratingState(room, id).skill = skill;
+}
+
+// --- Рейтинг (RULES.md §16, этап 9.6) ---
+
+// Мастерство и опыт игрока за этим столом. Заводится при старте игры; для комнат,
+// поднятых из базы до этапа 9.6, — при первом обращении.
+function ratingState(room: Room, playerId: string) {
+  room.rating ??= {};
+  if (!room.rating[playerId]) {
+    const account = getAccount(db, playerId);
+    const skill = account?.skill ?? START_SKILL;
+    const deals = profileStats(db, playerId).deals - statsOf(room, playerId).deals;
+    room.rating[playerId] = { skill, startSkill: skill, startDeals: deals };
+  }
+  return room.rating[playerId];
+}
+
+// Рейтинг прямо сейчас: мастерство + опыт, включая партии этой комнаты.
+function liveRating(room: Room, playerId: string): number {
+  const r = ratingState(room, playerId);
+  return ratingOf(r.skill, r.startDeals + statsOf(room, playerId).deals);
+}
+
+// Рейтинг игрока вне стола — из базы.
+function accountRating(playerId: string): number {
+  const account = getAccount(db, playerId);
+  return ratingOf(account?.skill ?? START_SKILL, profileStats(db, playerId).deals);
 }
 
 function makeRoomId(): string {
@@ -1477,6 +1554,14 @@ function finishRound(room: Room, won: boolean[], instantIndex = -1) {
     );
   }
 
+  // И рейтинг (RULES.md §16.2): риск, ГАРБА, отбились ли противники.
+  const skills = afterDeal(
+    room.players.map((p) => ({ id: p.id, skill: ratingState(room, p.id).skill, rating: liveRating(room, p.id) })),
+    game.result.map((r) => ({ id: r.playerId, won: r.won, risk, garba: r.garba })),
+    room.capacity,
+  );
+  for (const [id, skill] of Object.entries(skills)) ratingState(room, id).skill = skill;
+
   updateClosing(room);
 
   // Комната доигрывала последний кон, и его забрали — комната закрывается (§12.1).
@@ -1687,7 +1772,18 @@ function publicRoom(room: Room, viewerId?: string) {
     creatorId: room.creatorId,
     settings: room.settings,
     // У каждого игрока — адрес его фото (этап 9.5) или null.
-    players: room.players.map((p) => ({ ...p, avatar: avatarPath(db, p.id) })),
+    // И рейтинг (этап 9.6): сейчас и с каким сел за стол — для итогов «4.0 → 4.9».
+    players: room.players.map((p) => {
+      const atTable = room.rating?.[p.id];
+      return {
+        ...p,
+        avatar: avatarPath(db, p.id),
+        rating: shownRating(atTable ? liveRating(room, p.id) : accountRating(p.id)),
+        ratingStart: shownRating(
+          atTable ? ratingOf(atTable.startSkill, atTable.startDeals) : accountRating(p.id),
+        ),
+      };
+    }),
     status: room.status,
     // Пауза из-за отключения (§13): кто отключился и сколько секунд у него осталось.
     pause: publicPause(room),
@@ -1948,6 +2044,8 @@ app.post('/rooms/:id/start', (req, res) => {
 
   room.game = makeDealerSelection(room);
   room.stats = Object.fromEntries(room.players.map((p) => [p.id, emptyStats()]));
+  room.rating = {};
+  for (const p of room.players) ratingState(room, p.id);
 
   console.log(
     `[ROOM ${room.id}] GAME STARTED, dealer=${room.game.dealerName}`,
