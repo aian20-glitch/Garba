@@ -3012,25 +3012,9 @@ class _GameTableScreenState extends State<GameTableScreen> {
                   child: Wrap(
                     spacing: 4,
                     runSpacing: 4,
-                    children: ((tricks[i]['cards'] as List?) ?? const []).map((t) {
-                      final card = Map<String, dynamic>.from((t as Map)['card'] as Map);
-                      final suit = card['suit'].toString();
-                      return Container(
-                        padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 1),
-                        decoration: BoxDecoration(
-                          color: const Color(0xFFF4EFE2),
-                          borderRadius: BorderRadius.circular(4),
-                        ),
-                        child: Text(
-                          '${card['rank']}${suitSymbol(suit)}',
-                          style: TextStyle(
-                            fontSize: 12,
-                            fontWeight: FontWeight.w800,
-                            color: isRedSuit(suit) ? Colors.red.shade800 : Colors.black,
-                          ),
-                        ),
-                      );
-                    }).toList(),
+                    children: ((tricks[i]['cards'] as List?) ?? const [])
+                        .map((t) => cardChip(Map<String, dynamic>.from((t as Map)['card'] as Map)))
+                        .toList(),
                   ),
                 ),
                 Text(
@@ -3041,6 +3025,27 @@ class _GameTableScreenState extends State<GameTableScreen> {
             ),
           ),
       ],
+    );
+  }
+
+  // Сыгранная карта строкой: «Q♦». Карта текущей взятки — крупнее и в золотой рамке.
+  Widget cardChip(Map<String, dynamic> card, {bool current = false}) {
+    final suit = card['suit'].toString();
+    return Container(
+      padding: EdgeInsets.symmetric(horizontal: current ? 6 : 4, vertical: 1),
+      decoration: BoxDecoration(
+        color: const Color(0xFFF4EFE2),
+        borderRadius: BorderRadius.circular(4),
+        border: current ? Border.all(color: const Color(0xFFD4A94F), width: 2) : null,
+      ),
+      child: Text(
+        '${card['rank']}${suitSymbol(suit)}',
+        style: TextStyle(
+          fontSize: current ? 15 : 12,
+          fontWeight: FontWeight.w800,
+          color: isRedSuit(suit) ? Colors.red.shade800 : Colors.black,
+        ),
+      ),
     );
   }
 
@@ -3149,6 +3154,20 @@ class _GameTableScreenState extends State<GameTableScreen> {
         if ((t as Map)['playerId'].toString() == widget.currentPlayerId)
           Map<String, dynamic>.from(t['card'] as Map),
     ];
+    // Что сыграл каждый игрок в этой раздаче — показываем в его строке, чтобы
+    // не листать стол вниз: прошлые взятки по порядку, последней — текущая.
+    final playedBy = <String, List<Map<String, dynamic>>>{};
+    for (final pt in playedTricks) {
+      for (final t in (pt['cards'] as List)) {
+        playedBy.putIfAbsent((t as Map)['playerId'].toString(), () => []).add(
+              Map<String, dynamic>.from(t['card'] as Map),
+            );
+      }
+    }
+    final currentCardOf = <String, Map<String, dynamic>>{
+      for (final t in currentTrick)
+        t['playerId'].toString(): Map<String, dynamic>.from(t['card'] as Map),
+    };
     final lastTrickRaw = game['lastTrick'];
     final lastTrick =
         lastTrickRaw is Map ? Map<String, dynamic>.from(lastTrickRaw) : null;
@@ -3936,6 +3955,23 @@ class _GameTableScreenState extends State<GameTableScreen> {
                                         color: Colors.white54,
                                       ),
                                     ),
+                                    // Сыгранные карты этого игрока (§10.6: открыты всем).
+                                    if ((isPlaying || isRoundDone) &&
+                                        (playedBy[pId] != null || currentCardOf[pId] != null))
+                                      Padding(
+                                        padding: const EdgeInsets.only(top: 3),
+                                        child: Wrap(
+                                          spacing: 4,
+                                          runSpacing: 4,
+                                          crossAxisAlignment: WrapCrossAlignment.center,
+                                          children: [
+                                            for (final c in playedBy[pId] ?? const <Map<String, dynamic>>[])
+                                              Opacity(opacity: 0.7, child: cardChip(c)),
+                                            if (currentCardOf[pId] != null)
+                                              cardChip(currentCardOf[pId]!, current: true),
+                                          ],
+                                        ),
+                                      ),
                                   ],
                                 ),
                               ),
