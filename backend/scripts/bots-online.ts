@@ -83,8 +83,10 @@ function nextAction(bot: Bot, room: any): Action | null {
     }
 
     case 'special':
-      // Спецкарту боты не берут — решает живой игрок.
-      if ((g.mySpecialRisks ?? []).length === 0) return null;
+      // Спецкарту боты не берут — решает живой игрок. Очередь — по activeId:
+      // mySpecialRisks бывает пуст и в свою очередь (не хватает монет ни на один риск),
+      // а пас доступен всегда.
+      if (g.special?.activeId !== bot.id) return null;
       return {
         path: `${at}/special`,
         body: { action: 'pass' },

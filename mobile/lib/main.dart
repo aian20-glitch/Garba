@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:http/http.dart' as http;
@@ -3154,16 +3155,7 @@ class _GameTableScreenState extends State<GameTableScreen> {
         if ((t as Map)['playerId'].toString() == widget.currentPlayerId)
           Map<String, dynamic>.from(t['card'] as Map),
     ];
-    // Что сыграл каждый игрок в этой раздаче — показываем в его строке, чтобы
-    // не листать стол вниз: прошлые взятки по порядку, последней — текущая.
-    final playedBy = <String, List<Map<String, dynamic>>>{};
-    for (final pt in playedTricks) {
-      for (final t in (pt['cards'] as List)) {
-        playedBy.putIfAbsent((t as Map)['playerId'].toString(), () => []).add(
-              Map<String, dynamic>.from(t['card'] as Map),
-            );
-      }
-    }
+    // Карта каждого игрока в текущей взятке — кладём её перед ним на столе.
     final currentCardOf = <String, Map<String, dynamic>>{
       for (final t in currentTrick)
         t['playerId'].toString(): Map<String, dynamic>.from(t['card'] as Map),
@@ -3224,7 +3216,6 @@ class _GameTableScreenState extends State<GameTableScreen> {
       return (matches.first['balance'] as num?)?.toInt() ?? 0;
     }
 
-    final myBalance = balanceOf(widget.currentPlayerId);
 
     // Голосование.
     final isVote = stage == 'vote';
@@ -3294,11 +3285,6 @@ class _GameTableScreenState extends State<GameTableScreen> {
 
     // Какие кнопки активны, решает сервер через myAllowedBids.
     bool canBid(String bid) => myAllowedBids.contains(bid) && !sendingBid;
-
-    const labelStyle = TextStyle(
-      fontWeight: FontWeight.w900,
-      color: Color(0xFFD4A94F),
-    );
 
     final Widget footer;
     if (isRoomDone) {
@@ -3742,6 +3728,338 @@ class _GameTableScreenState extends State<GameTableScreen> {
       );
     }
 
+    // Круглый стол (RULES.md §2): я внизу, остальные — по кругу против часовой стрелки.
+    // Следующий в room.players — сосед справа: на экране он правее меня, дальше вверх и
+    // влево, и так обратно ко мне. Карта взятки лежит перед игроком, ближе к центру.
+    Widget roundTable() {
+      final n = players.length;
+      final myIndex = math.max(
+        0,
+        players.indexWhere((p) => p['id'].toString() == widget.currentPlayerId),
+      );
+      // Взятка только что закрылась — ещё показываем её, чтобы была видна последняя
+      // карта и кто забрал.
+      final showLast = isPlaying && currentTrick.isEmpty && lastTrick != null;
+      final trickCardOf = <String, Map<String, dynamic>>{
+        if (showLast)
+          for (final t in ((lastTrick['cards'] as List?) ?? const []))
+            (t as Map)['playerId'].toString(): Map<String, dynamic>.from(t['card'] as Map)
+        else
+          ...currentCardOf,
+      };
+      // Прошлые взятки — мелко под игроком (§10.6: сыгранные карты открыты всем).
+      final historyOf = <String, List<Map<String, dynamic>>>{};
+      final shownTricks = showLast
+          ? playedTricks.sublist(0, playedTricks.length - 1)
+          : playedTricks;
+      for (final pt in shownTricks) {
+        for (final t in (pt['cards'] as List)) {
+          historyOf.putIfAbsent((t as Map)['playerId'].toString(), () => []).add(
+                Map<String, dynamic>.from(t['card'] as Map),
+              );
+        }
+      }
+      const gold = Color(0xFFD4A94F);
+      const seatWidth = 96.0;
+
+      Widget smallChip(Map<String, dynamic> card) {
+        final suit = card['suit'].toString();
+        return Container(
+          padding: const EdgeInsets.symmetric(horizontal: 3),
+          decoration: BoxDecoration(
+            color: const Color(0xFFF4EFE2).withValues(alpha: 0.75),
+            borderRadius: BorderRadius.circular(3),
+          ),
+          child: Text(
+            '${card['rank']}${suitSymbol(suit)}',
+            style: TextStyle(
+              fontSize: 10,
+              fontWeight: FontWeight.w800,
+              color: isRedSuit(suit) ? Colors.red.shade800 : Colors.black,
+            ),
+          ),
+        );
+      }
+
+      Widget seat(Map<String, dynamic> p) {
+        final pId = p['id'].toString();
+        final isMain = mainIds.contains(pId);
+        final isActive = pId == actorId;
+        final bidMatches = bids.where((b) => b['playerId'].toString() == pId);
+
+        // В торгах — заявка, в розыгрыше — взятки.
+        final String bidText;
+        if (isPlaying || isRoundDone) {
+          bidText = 'взяток: ${tricksWon[pId] ?? 0}';
+        } else if (bidMatches.isEmpty) {
+          bidText = isActive ? 'думает…' : '';
+        } else {
+          final said = bidMatches.last['bid'].toString();
+          // Свою масть ДВА игрок видит, остальные — просто «ДВА».
+          bidText = said == 'ДВА' && pId == widget.currentPlayerId && myDvaSuit != null
+              ? 'ДВА ${suitSymbol(myDvaSuit)}'
+              : said;
+        }
+        final history = historyOf[pId] ?? const <Map<String, dynamic>>[];
+
+        return SizedBox(
+          width: seatWidth,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Stack(
+                clipBehavior: Clip.none,
+                children: [
+                  // Чей ход — зелёное кольцо со свечением, главный — золотое.
+                  Container(
+                    padding: const EdgeInsets.all(2.5),
+                    decoration: BoxDecoration(
+                      shape: BoxShape.circle,
+                      color: const Color(0xFF0B1620),
+                      border: Border.all(
+                        color: isActive
+                            ? Colors.greenAccent
+                            : isMain
+                                ? gold
+                                : const Color(0xFF3A4A55),
+                        width: 3,
+                      ),
+                      boxShadow: isActive
+                          ? [BoxShadow(color: Colors.greenAccent.withValues(alpha: 0.5), blurRadius: 12)]
+                          : null,
+                    ),
+                    child: AvatarView(
+                      avatar: p['avatar']?.toString(),
+                      name: p['name'].toString(),
+                      radius: 21,
+                    ),
+                  ),
+                  if (isMain)
+                    const Positioned(
+                      left: -6,
+                      top: -6,
+                      child: Icon(Icons.star, size: 18, color: gold),
+                    ),
+                  // Раздающий — фишка «Р», как кнопка дилера в покере.
+                  if (pId == dealerId)
+                    Positioned(
+                      right: -8,
+                      top: -4,
+                      child: Container(
+                        width: 20,
+                        height: 20,
+                        alignment: Alignment.center,
+                        decoration: BoxDecoration(
+                          color: Colors.white,
+                          shape: BoxShape.circle,
+                          border: Border.all(color: Colors.black26, width: 2),
+                        ),
+                        child: const Text(
+                          'Р',
+                          style: TextStyle(
+                            fontSize: 11,
+                            fontWeight: FontWeight.w900,
+                            color: Colors.black,
+                          ),
+                        ),
+                      ),
+                    ),
+                  // Смайлик этого игрока, если он только что его отправил.
+                  if (flyingEmoji[pId] != null)
+                    Positioned(
+                      right: -22,
+                      bottom: -4,
+                      child: Text(flyingEmoji[pId]!, style: const TextStyle(fontSize: 22)),
+                    ),
+                ],
+              ),
+              // Табличка: имя и монеты.
+              Transform.translate(
+                offset: const Offset(0, -6),
+                child: Container(
+                  width: seatWidth,
+                  padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
+                  decoration: BoxDecoration(
+                    color: const Color(0xE60B1620),
+                    borderRadius: BorderRadius.circular(8),
+                    border: Border.all(
+                      color: isActive ? Colors.greenAccent : const Color(0xFF3A4A55),
+                    ),
+                  ),
+                  child: Column(
+                    children: [
+                      Text(
+                        p['name'].toString(),
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(
+                          fontSize: 12,
+                          fontWeight: FontWeight.w800,
+                          color: Colors.white,
+                        ),
+                      ),
+                      Text(
+                        '🪙 ${fmtCoins(balanceOf(pId))}  ⭐${fmtRating(p['rating'])}',
+                        maxLines: 1,
+                        style: const TextStyle(
+                          fontSize: 10,
+                          fontWeight: FontWeight.w700,
+                          color: gold,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+              // Заявка в торгах или взятки в розыгрыше — плашкой.
+              if (bidText.isNotEmpty)
+                Transform.translate(
+                  offset: const Offset(0, -4),
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 1),
+                    decoration: BoxDecoration(
+                      color: bidText == 'ПАС' ? const Color(0xFF3A4A55) : gold,
+                      borderRadius: BorderRadius.circular(10),
+                    ),
+                    child: Text(
+                      bidText,
+                      style: TextStyle(
+                        fontSize: 11,
+                        fontWeight: FontWeight.w900,
+                        color: bidText == 'ПАС' ? Colors.white70 : Colors.black,
+                      ),
+                    ),
+                  ),
+                ),
+              if ((isPlaying || isRoundDone) && history.isNotEmpty)
+                Wrap(
+                  alignment: WrapAlignment.center,
+                  spacing: 2,
+                  runSpacing: 2,
+                  children: history.map(smallChip).toList(),
+                ),
+            ],
+          ),
+        );
+      }
+
+      // Центр стола: открытая карта и масть РАЗ в торгах, козырь в розыгрыше.
+      final centerParts = <Widget>[
+        // Кон — как банк в центре покерного стола.
+        Container(
+          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 3),
+          margin: const EdgeInsets.only(bottom: 6),
+          decoration: BoxDecoration(
+            color: const Color(0xCC0B1620),
+            borderRadius: BorderRadius.circular(14),
+            border: Border.all(color: gold.withValues(alpha: 0.6)),
+          ),
+          child: Text(
+            'КОН 🪙 ${fmtCoins(kon)}',
+            style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w900, color: gold),
+          ),
+        ),
+        if (openCard != null && !isPlaying && !isRoundDone)
+          SmallTrumpCard(
+            rank: openCard['rank'].toString(),
+            suit: openCard['suit'].toString(),
+          ),
+        if (trumpSuit != null || razSuit != null) ...[
+          const SizedBox(height: 2),
+          Text(
+            trumpSuit != null ? 'КОЗЫРЬ' : 'РАЗ',
+            style: const TextStyle(fontSize: 10, fontWeight: FontWeight.w900, color: gold),
+          ),
+          Text(
+            suitSymbol(trumpSuit ?? razSuit!),
+            style: TextStyle(
+              fontSize: 26,
+              height: 1.1,
+              color: isRedSuit(trumpSuit ?? razSuit!) ? Colors.redAccent : Colors.white,
+            ),
+          ),
+        ],
+        if (showLast)
+          Text(
+            'забрал\n${lastTrick['winnerName']}',
+            textAlign: TextAlign.center,
+            style: const TextStyle(fontSize: 10, color: Colors.white70),
+          ),
+        const Text('↺', style: TextStyle(fontSize: 16, color: Colors.white38)),
+      ];
+
+      return LayoutBuilder(
+        builder: (context, constraints) {
+          final width = constraints.maxWidth;
+          final height = (width * 1.2).clamp(330.0, 480.0);
+          return SizedBox(
+            height: height,
+            child: Stack(
+              children: [
+                // Стол: деревянный бортик с золотой каймой, внутри — сукно.
+                Positioned(
+                  left: 14,
+                  right: 14,
+                  top: 30,
+                  bottom: 40,
+                  child: Container(
+                    padding: const EdgeInsets.all(9),
+                    decoration: BoxDecoration(
+                      borderRadius: BorderRadius.all(Radius.elliptical(width / 2, height / 2)),
+                      gradient: const LinearGradient(
+                        begin: Alignment.topCenter,
+                        end: Alignment.bottomCenter,
+                        colors: [Color(0xFF6B4423), Color(0xFF3B2412)],
+                      ),
+                      border: Border.all(color: gold.withValues(alpha: 0.8), width: 1.5),
+                      boxShadow: const [
+                        BoxShadow(color: Colors.black54, blurRadius: 18, offset: Offset(0, 6)),
+                      ],
+                    ),
+                    child: Container(
+                      decoration: BoxDecoration(
+                        borderRadius: BorderRadius.all(Radius.elliptical(width / 2, height / 2)),
+                        gradient: const RadialGradient(
+                          colors: [Color(0xFF2F8F5B), Color(0xFF17583A)],
+                          radius: 0.8,
+                        ),
+                        border: Border.all(color: Colors.black38, width: 2),
+                      ),
+                    ),
+                  ),
+                ),
+                Align(
+                  alignment: Alignment.center,
+                  child: Column(mainAxisSize: MainAxisSize.min, children: centerParts),
+                ),
+                for (var i = 0; i < n; i++) ...() {
+                  // Смещение от меня по кругу: 0 — я (внизу), 1 — сосед справа, …
+                  final k = (i - myIndex + n) % n;
+                  final angle = -math.pi / 2 + 2 * math.pi * k / n;
+                  final x = math.cos(angle);
+                  final y = -math.sin(angle);
+                  final p = players[i];
+                  final pId = p['id'].toString();
+                  final card = trickCardOf[pId];
+                  return <Widget>[
+                    Align(alignment: Alignment(x, y), child: seat(p)),
+                    if (card != null)
+                      Align(
+                        alignment: Alignment(x * 0.42, y * 0.42),
+                        child: Opacity(
+                          opacity: showLast ? 0.6 : 1,
+                          child: cardChip(card, current: true),
+                        ),
+                      ),
+                  ];
+                }(),
+              ],
+            ),
+          );
+        },
+      );
+    }
+
     return Scaffold(
       appBar: AppBar(title: Text('ГАРБА • #${widget.roomCode}')),
       body: SafeArea(
@@ -3758,27 +4076,6 @@ class _GameTableScreenState extends State<GameTableScreen> {
                   fontSize: 18,
                   fontWeight: FontWeight.w800,
                 ),
-              ),
-              const SizedBox(height: 8),
-              Row(
-                mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-                children: [
-                  Text(
-                    'КОН: ${fmtCoins(kon)}',
-                    style: const TextStyle(
-                      fontSize: 18,
-                      fontWeight: FontWeight.w900,
-                    ),
-                  ),
-                  Text(
-                    'Баланс: ${fmtCoins(myBalance)}',
-                    style: const TextStyle(
-                      fontSize: 16,
-                      fontWeight: FontWeight.w700,
-                      color: Colors.white70,
-                    ),
-                  ),
-                ],
               ),
               if (paused && !isRoomDone)
                 Container(
@@ -3808,40 +4105,6 @@ class _GameTableScreenState extends State<GameTableScreen> {
                   ),
                 ),
               const SizedBox(height: 10),
-              if (openCard != null || razSuit != null || trumpSuit != null)
-                Container(
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 14,
-                    vertical: 10,
-                  ),
-                  decoration: BoxDecoration(
-                    color: const Color(0xFF13232E),
-                    borderRadius: BorderRadius.circular(16),
-                    border: Border.all(color: const Color(0xFFD4A94F)),
-                  ),
-                  child: Row(
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    children: [
-                      if (openCard != null) ...[
-                        const Text('ОТКРЫТА: ', style: labelStyle),
-                        SmallTrumpCard(
-                          rank: openCard['rank'].toString(),
-                          suit: openCard['suit'].toString(),
-                        ),
-                        const SizedBox(width: 18),
-                      ],
-                      // До конца торгов известна только масть РАЗ.
-                      // После торгов — итоговый козырь (ДВА может его сменить).
-                      if (trumpSuit != null) ...[
-                        const Text('КОЗЫРЬ: ', style: labelStyle),
-                        SuitBadge(suit: trumpSuit),
-                      ] else if (razSuit != null) ...[
-                        const Text('РАЗ: ', style: labelStyle),
-                        SuitBadge(suit: razSuit),
-                      ],
-                    ],
-                  ),
-                ),
               // Открывалась ИЗЖОГА — показываем, что вернули в колоду (RULES.md §5.2).
               if (izzhoga.isNotEmpty && (stage == 'bidding' || isPlaying))
                 Padding(
@@ -3866,126 +4129,12 @@ class _GameTableScreenState extends State<GameTableScreen> {
               const SizedBox(height: 14),
               Expanded(
                 child: Container(
-                  padding: const EdgeInsets.all(14),
-                  decoration: BoxDecoration(
-                    color: const Color(0xFF0C3A2F),
-                    borderRadius: BorderRadius.circular(26),
-                    border: Border.all(
-                      color: const Color(0xFFD4A94F),
-                      width: 2,
-                    ),
-                  ),
                   // Прокрутка: при 7 игроках, взятке и истории взяток стол не влезает
                   // по высоте на телефон.
                   child: SingleChildScrollView(
                     child: Column(
                     children: [
-                      const Text(
-                        'ИГРОВОЙ СТОЛ',
-                        style: TextStyle(
-                          fontWeight: FontWeight.w900,
-                          fontSize: 22,
-                        ),
-                      ),
-                      const SizedBox(height: 12),
-                      // Игроки идут в порядке мест за столом против часовой стрелки.
-                      ...players.map((p) {
-                        final pId = p['id'].toString();
-                        final isMain = mainIds.contains(pId);
-                        final isActive = pId == actorId;
-                        final bidMatches =
-                            bids.where((b) => b['playerId'].toString() == pId);
-
-                        // В торгах справа — заявка, в розыгрыше — взятки.
-                        final String bidText;
-                        if (isPlaying || isRoundDone) {
-                          bidText = 'взяток: ${tricksWon[pId] ?? 0}';
-                        } else if (bidMatches.isEmpty) {
-                          bidText = isActive ? 'ДУМАЕТ...' : '—';
-                        } else {
-                          final said = bidMatches.last['bid'].toString();
-                          // Свою масть ДВА игрок видит, остальные — просто «ДВА».
-                          bidText = said == 'ДВА' &&
-                                  pId == widget.currentPlayerId &&
-                                  myDvaSuit != null
-                              ? 'ДВА ${suitSymbol(myDvaSuit)}'
-                              : said;
-                        }
-
-                        return Padding(
-                          padding: const EdgeInsets.symmetric(vertical: 5),
-                          child: Row(
-                            children: [
-                              AvatarView(
-                                avatar: p['avatar']?.toString(),
-                                name: p['name'].toString(),
-                                radius: 16,
-                              ),
-                              // Смайлик этого игрока, если он только что его отправил.
-                              if (flyingEmoji[pId] != null)
-                                Text(flyingEmoji[pId]!, style: const TextStyle(fontSize: 22)),
-                              const SizedBox(width: 6),
-                              Icon(
-                                isMain
-                                    ? Icons.star
-                                    : isActive
-                                        ? Icons.play_circle_fill
-                                        : Icons.person,
-                                size: 20,
-                                color: isMain
-                                    ? const Color(0xFFD4A94F)
-                                    : isActive
-                                        ? Colors.greenAccent
-                                        : Colors.white60,
-                              ),
-                              const SizedBox(width: 8),
-                              Expanded(
-                                child: Column(
-                                  crossAxisAlignment: CrossAxisAlignment.start,
-                                  children: [
-                                    Text(
-                                      pId == dealerId
-                                          ? '${p['name']}  • раздаёт'
-                                          : p['name'].toString(),
-                                    ),
-                                    Text(
-                                      '⭐ ${fmtRating(p['rating'])} · 🪙 ${fmtCoins(balanceOf(pId))}',
-                                      style: const TextStyle(
-                                        fontSize: 11,
-                                        color: Colors.white54,
-                                      ),
-                                    ),
-                                    // Сыгранные карты этого игрока (§10.6: открыты всем).
-                                    if ((isPlaying || isRoundDone) &&
-                                        (playedBy[pId] != null || currentCardOf[pId] != null))
-                                      Padding(
-                                        padding: const EdgeInsets.only(top: 3),
-                                        child: Wrap(
-                                          spacing: 4,
-                                          runSpacing: 4,
-                                          crossAxisAlignment: WrapCrossAlignment.center,
-                                          children: [
-                                            for (final c in playedBy[pId] ?? const <Map<String, dynamic>>[])
-                                              Opacity(opacity: 0.7, child: cardChip(c)),
-                                            if (currentCardOf[pId] != null)
-                                              cardChip(currentCardOf[pId]!, current: true),
-                                          ],
-                                        ),
-                                      ),
-                                  ],
-                                ),
-                              ),
-                              Text(
-                                bidText,
-                                style: const TextStyle(
-                                  fontWeight: FontWeight.w900,
-                                  color: Color(0xFFD4A94F),
-                                ),
-                              ),
-                            ],
-                          ),
-                        );
-                      }),
+                      roundTable(),
                       const SizedBox(height: 16),
                       footer,
                       // Смайлики — только когда раздача сыграна или комната закрыта
