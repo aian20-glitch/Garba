@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:socket_io_client/socket_io_client.dart' as io;
@@ -204,6 +205,8 @@ class StartScreen extends StatefulWidget {
 
 class _StartScreenState extends State<StartScreen> {
   final nameController = TextEditingController();
+  // Код друга, который пригласил (ТЗ §4). Необязательно.
+  final inviteController = TextEditingController();
   // checking — проверяем сохранённый аккаунт; needName — аккаунта нет, нужно имя.
   bool checking = true;
   bool needName = false;
@@ -219,6 +222,7 @@ class _StartScreenState extends State<StartScreen> {
   @override
   void dispose() {
     nameController.dispose();
+    inviteController.dispose();
     super.dispose();
   }
 
@@ -272,8 +276,15 @@ class _StartScreenState extends State<StartScreen> {
       final response = await http.post(
         Uri.parse('$apiBase/accounts'),
         headers: {'Content-Type': 'application/json'},
-        body: jsonEncode({'name': name}),
+        body: jsonEncode({
+          'name': name,
+          if (inviteController.text.trim().isNotEmpty) 'inviteCode': inviteController.text.trim(),
+        }),
       );
+      if (response.statusCode == 400 && response.body.contains('invite code not found')) {
+        setState(() => error = 'Код приглашения не найден. Проверьте его или оставьте поле пустым.');
+        return;
+      }
       if (response.statusCode != 201) throw Exception(response.body);
       await Session.save(jsonDecode(response.body) as Map<String, dynamic>);
       openHome();
@@ -334,6 +345,15 @@ class _StartScreenState extends State<StartScreen> {
                   ),
                   onSubmitted: (_) => createAccount(),
                 ),
+                const SizedBox(height: 8),
+                TextField(
+                  controller: inviteController,
+                  textCapitalization: TextCapitalization.characters,
+                  decoration: const InputDecoration(
+                    labelText: 'Код приглашения (если есть)',
+                    border: OutlineInputBorder(),
+                  ),
+                ),
               ],
               if (error != null) ...[
                 const SizedBox(height: 12),
@@ -367,9 +387,15 @@ class HomeScreen extends StatefulWidget {
 }
 
 class _HomeScreenState extends State<HomeScreen> with RouteAware {
-  // Баланс и незаконченная комната — с сервера (GET /me).
+  // Всё с сервера (GET /me): баланс, незаконченная комната, код игрока,
+  // ежедневный бонус (ТЗ §3), дарил ли сегодня (ТЗ §5).
   int? balance;
   String? roomId;
+  String code = '';
+  int dailyStreak = 0;
+  bool giftSentToday = false;
+  int invitedCount = 0;
+  bool claimingBonus = false;
 
   @override
   void initState() {
@@ -400,12 +426,64 @@ class _HomeScreenState extends State<HomeScreen> with RouteAware {
       if (response.statusCode != 200) return;
       final me = jsonDecode(response.body) as Map<String, dynamic>;
       if (!mounted) return;
+      final daily = Map<String, dynamic>.from(me['daily'] as Map);
       setState(() {
         balance = (me['balance'] as num).toInt();
         roomId = me['roomId']?.toString();
+        code = me['code'].toString();
+        dailyStreak = (daily['streak'] as num).toInt();
+        giftSentToday = me['giftSentToday'] == true;
+        invitedCount = (me['invitedCount'] as num?)?.toInt() ?? 0;
       });
+      // Первый вход за день — бонус забирается сам (ТЗ §3: «за ежедневный вход»).
+      if (daily['claimedToday'] != true) await claimDailyBonus();
     } catch (_) {
       // Нет связи — оставляем то, что уже показано.
+    }
+  }
+
+  Future<void> claimDailyBonus() async {
+    if (claimingBonus) return;
+    claimingBonus = true;
+    try {
+      final response = await http.post(
+        Uri.parse('$apiBase/me/daily-bonus'),
+        headers: authHeaders(),
+        body: jsonEncode({}),
+      );
+      if (response.statusCode != 200) return;
+      final bonus = jsonDecode(response.body) as Map<String, dynamic>;
+      final amount = (bonus['amount'] as num).toInt();
+      final streak = (bonus['streak'] as num).toInt();
+      if (!mounted) return;
+      setState(() {
+        balance = (bonus['balance'] as num).toInt();
+        dailyStreak = streak;
+      });
+      await showDialog<void>(
+        context: context,
+        builder: (dialogContext) => AlertDialog(
+          title: const Text('Ежедневный бонус'),
+          content: Text(
+            streak == 7
+                ? 'День 7/7 — 7 дней подряд!\n+${fmtCoins(amount)} монет'
+                : 'День $streak/7\n+${fmtCoins(amount)} монет\n\n'
+                    'Заходите каждый день: на 7-й день подряд — 6 000.',
+            textAlign: TextAlign.center,
+            style: const TextStyle(fontSize: 18),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(dialogContext),
+              child: const Text('ЗАБРАТЬ'),
+            ),
+          ],
+        ),
+      );
+    } catch (_) {
+      // Нет связи — бонус заберётся при следующем входе.
+    } finally {
+      claimingBonus = false;
     }
   }
 
@@ -440,51 +518,337 @@ class _HomeScreenState extends State<HomeScreen> with RouteAware {
                 Session.name,
                 style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w700),
               ),
-              const Text(
-                'Казахская карточная онлайн-игра',
-                style: TextStyle(color: Colors.white70),
-              ),
-              const Spacer(),
-              // Игрок уже сидит в комнате — туда и возвращаемся, новую не начать.
-              if (roomId != null) ...[
-                GarbaButton(
-                  label: 'ВЕРНУТЬСЯ В КОМНАТУ #$roomId',
-                  onTap: () => Navigator.push(
-                    context,
-                    MaterialPageRoute(
-                      builder: (_) => LobbyScreen(
-                        roomCode: roomId!,
-                        currentPlayerId: Session.id,
+              if (code.isNotEmpty)
+                Text(
+                  'Ваш код: $code · бонус: день $dailyStreak/7',
+                  style: const TextStyle(color: Colors.white70),
+                ),
+              const SizedBox(height: 16),
+              // Кнопок много — на небольшом экране они прокручиваются.
+              Expanded(
+                child: SingleChildScrollView(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      // Игрок уже сидит в комнате — туда и возвращаемся, новую не начать.
+                      if (roomId != null) ...[
+                        GarbaButton(
+                          label: 'ВЕРНУТЬСЯ В КОМНАТУ #$roomId',
+                          onTap: () => Navigator.push(
+                            context,
+                            MaterialPageRoute(
+                              builder: (_) => LobbyScreen(
+                                roomCode: roomId!,
+                                currentPlayerId: Session.id,
+                              ),
+                            ),
+                          ),
+                        ),
+                        const SizedBox(height: 14),
+                      ],
+                      GarbaButton(
+                        label: 'СОЗДАТЬ КОМНАТУ',
+                        onTap: () => Navigator.push(
+                          context,
+                          MaterialPageRoute(builder: (_) => const CreateRoomScreen()),
+                        ),
                       ),
-                    ),
+                      const SizedBox(height: 14),
+                      GarbaButton(
+                        label: 'ВОЙТИ ПО КОДУ',
+                        onTap: () => Navigator.push(
+                          context,
+                          MaterialPageRoute(builder: (_) => const JoinRoomScreen()),
+                        ),
+                      ),
+                      const SizedBox(height: 14),
+                      GarbaButton(
+                        label: 'ПОДАРИТЬ МОНЕТЫ',
+                        onTap: () => Navigator.push(
+                          context,
+                          MaterialPageRoute(
+                            builder: (_) => GiftScreen(
+                              balance: balance ?? 0,
+                              giftSentToday: giftSentToday,
+                              inRoom: roomId != null,
+                            ),
+                          ),
+                        ),
+                      ),
+                      const SizedBox(height: 14),
+                      GarbaButton(
+                        label: 'ПРИГЛАСИТЬ ДРУГА',
+                        onTap: () => Navigator.push(
+                          context,
+                          MaterialPageRoute(
+                            builder: (_) => InviteScreen(code: code, invitedCount: invitedCount),
+                          ),
+                        ),
+                      ),
+                      const SizedBox(height: 14),
+                      GarbaButton(label: 'РЕЙТИНГ', onTap: () {}),
+                      const SizedBox(height: 14),
+                      GarbaButton(label: 'ПРОФИЛЬ', onTap: () {}),
+                    ],
                   ),
                 ),
-                const SizedBox(height: 14),
-              ],
-              GarbaButton(
-                label: 'СОЗДАТЬ КОМНАТУ',
-                onTap: () => Navigator.push(
-                  context,
-                  MaterialPageRoute(builder: (_) => const CreateRoomScreen()),
-                ),
               ),
-              const SizedBox(height: 14),
-              GarbaButton(
-                label: 'ВОЙТИ ПО КОДУ',
-                onTap: () => Navigator.push(
-                  context,
-                  MaterialPageRoute(builder: (_) => const JoinRoomScreen()),
-                ),
-              ),
-              const SizedBox(height: 14),
-              GarbaButton(label: 'РЕЙТИНГ', onTap: () {}),
-              const SizedBox(height: 14),
-              GarbaButton(label: 'ПРОФИЛЬ', onTap: () {}),
-              const Spacer(),
+              const SizedBox(height: 12),
               const Text(
                 'Игровые монеты являются виртуальными единицами и не имеют денежного эквивалента.',
                 textAlign: TextAlign.center,
                 style: TextStyle(color: Colors.white54, fontSize: 12),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+// Подарок монет другому игроку по его коду (ТЗ §5): до 1 000, раз в сутки.
+// Все проверки — на сервере; экран только подсказывает заранее.
+class GiftScreen extends StatefulWidget {
+  final int balance;
+  final bool giftSentToday;
+  final bool inRoom;
+
+  const GiftScreen({
+    super.key,
+    required this.balance,
+    required this.giftSentToday,
+    required this.inRoom,
+  });
+
+  @override
+  State<GiftScreen> createState() => _GiftScreenState();
+}
+
+class _GiftScreenState extends State<GiftScreen> {
+  final codeController = TextEditingController();
+  int amount = 100;
+  // Кому уйдёт подарок — имя по коду, чтобы не ошибиться адресатом.
+  String? recipientName;
+  String? error;
+  bool sending = false;
+
+  static const _gifts = [100, 200, 300, 400, 500, 600, 700, 800, 900, 1000];
+
+  static const _errors = <String, String>{
+    'player not found': 'Игрока с таким кодом нет',
+    'bad amount': 'Сумма — от 100 до 1 000',
+    'self': 'Себе подарить нельзя',
+    'already gifted today': 'Сегодня вы уже дарили. Следующий подарок — завтра',
+    'not enough coins': 'Не хватает монет',
+    'finish your game first': 'Сначала доиграйте: пока вы в комнате, дарить нельзя',
+  };
+
+  @override
+  void dispose() {
+    codeController.dispose();
+    super.dispose();
+  }
+
+  Future<void> findRecipient() async {
+    final code = codeController.text.trim();
+    if (code.isEmpty) return;
+    setState(() {
+      recipientName = null;
+      error = null;
+    });
+    try {
+      final response = await http.get(
+        Uri.parse('$apiBase/players/${Uri.encodeComponent(code)}'),
+        headers: authHeaders(),
+      );
+      if (!mounted) return;
+      if (response.statusCode == 404) {
+        setState(() => error = _errors['player not found']);
+        return;
+      }
+      if (response.statusCode != 200) throw Exception(response.body);
+      final player = jsonDecode(response.body) as Map<String, dynamic>;
+      setState(() => recipientName = player['name'].toString());
+    } catch (e) {
+      if (mounted) setState(() => error = 'Нет связи с сервером');
+    }
+  }
+
+  Future<void> sendGift() async {
+    if (sending || recipientName == null) return;
+    setState(() {
+      sending = true;
+      error = null;
+    });
+    try {
+      final response = await http.post(
+        Uri.parse('$apiBase/gifts'),
+        headers: authHeaders(),
+        body: jsonEncode({'toCode': codeController.text.trim(), 'amount': amount}),
+      );
+      final body = jsonDecode(response.body);
+      if (response.statusCode != 200) {
+        final code = body is Map ? body['error']?.toString() : null;
+        setState(() => error = _errors[code] ?? 'Ошибка: ${response.body}');
+        return;
+      }
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Подарок отправлен: $recipientName +${fmtCoins(amount)}')),
+      );
+      Navigator.pop(context);
+    } catch (e) {
+      if (mounted) setState(() => error = 'Нет связи с сервером');
+    } finally {
+      if (mounted) setState(() => sending = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final blocked = widget.giftSentToday
+        ? _errors['already gifted today']
+        : widget.inRoom
+            ? _errors['finish your game first']
+            : null;
+
+    return Scaffold(
+      appBar: AppBar(title: const Text('Подарить монеты')),
+      body: SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.all(20),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              const Text(
+                'Можно подарить до 1 000 монет, один раз в сутки.',
+                style: TextStyle(color: Colors.white70),
+              ),
+              const SizedBox(height: 16),
+              if (blocked != null)
+                Text(blocked, style: const TextStyle(color: Colors.orangeAccent, fontSize: 16))
+              else ...[
+                TextField(
+                  controller: codeController,
+                  textCapitalization: TextCapitalization.characters,
+                  decoration: InputDecoration(
+                    labelText: 'Код игрока',
+                    border: const OutlineInputBorder(),
+                    suffixIcon: IconButton(
+                      icon: const Icon(Icons.search),
+                      onPressed: findRecipient,
+                    ),
+                  ),
+                  onChanged: (_) {
+                    if (recipientName != null) setState(() => recipientName = null);
+                  },
+                  onSubmitted: (_) => findRecipient(),
+                ),
+                if (recipientName != null)
+                  Padding(
+                    padding: const EdgeInsets.only(top: 8),
+                    child: Text(
+                      'Получатель: $recipientName',
+                      style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w700),
+                    ),
+                  ),
+                const SizedBox(height: 16),
+                Wrap(
+                  spacing: 8,
+                  runSpacing: 8,
+                  children: _gifts.map((n) {
+                    return ChoiceChip(
+                      label: Text(fmtCoins(n)),
+                      selected: amount == n,
+                      onSelected: n <= widget.balance ? (_) => setState(() => amount = n) : null,
+                    );
+                  }).toList(),
+                ),
+              ],
+              if (error != null)
+                Padding(
+                  padding: const EdgeInsets.only(top: 12),
+                  child: Text(error!, style: const TextStyle(color: Colors.redAccent)),
+                ),
+              const Spacer(),
+              if (blocked == null)
+                GarbaButton(
+                  label: sending
+                      ? 'ОТПРАВЛЯЕМ...'
+                      : recipientName == null
+                          ? 'ВВЕДИТЕ КОД И НАЙДИТЕ ИГРОКА'
+                          : 'ПОДАРИТЬ ${fmtCoins(amount)}',
+                  onTap: recipientName == null ? findRecipient : sendGift,
+                ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+// Приглашение друга (ТЗ §4): друг вводит этот код при первом входе в игру —
+// пригласивший получает 1 000 монет.
+class InviteScreen extends StatelessWidget {
+  final String code;
+  final int invitedCount;
+
+  const InviteScreen({super.key, required this.code, required this.invitedCount});
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: const Text('Пригласить друга')),
+      body: SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.all(20),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              const Text(
+                'Ваш код приглашения',
+                textAlign: TextAlign.center,
+                style: TextStyle(color: Colors.white70),
+              ),
+              const SizedBox(height: 8),
+              SelectableText(
+                code,
+                textAlign: TextAlign.center,
+                style: const TextStyle(
+                  fontSize: 40,
+                  fontWeight: FontWeight.w900,
+                  letterSpacing: 6,
+                  color: Color(0xFFD4A94F),
+                ),
+              ),
+              const SizedBox(height: 8),
+              OutlinedButton.icon(
+                onPressed: () {
+                  Clipboard.setData(ClipboardData(text: code));
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(content: Text('Код скопирован')),
+                  );
+                },
+                icon: const Icon(Icons.copy),
+                label: const Text('СКОПИРОВАТЬ'),
+              ),
+              const SizedBox(height: 24),
+              const Text(
+                'Друг устанавливает ГАРБУ и при первом входе вводит этот код. '
+                'Как только он создаст аккаунт — вы получите 1 000 монет.',
+                style: TextStyle(fontSize: 16),
+              ),
+              const SizedBox(height: 16),
+              Text(
+                'Пришло по вашему коду: $invitedCount',
+                style: const TextStyle(color: Colors.white70),
+              ),
+              const SizedBox(height: 8),
+              const Text(
+                'По этому же коду вам можно подарить монеты.',
+                style: TextStyle(color: Colors.white54),
               ),
             ],
           ),

@@ -146,6 +146,40 @@ async function main() {
   check('ушёл создатель — комната закрыта', closed.body.status, 'finished');
   check('из начатой игры так не выйти', (await post(`/rooms/${roomId}/leave`, bots[1].token)).status, 409);
 
+  section('приглашение, ежедневный бонус, подарки (этап 9.3)');
+  const aMe = (await request('GET', '/me', a.token)).body;
+  check('у игрока есть код для приглашений и подарков', /^[A-Z2-9]{6}$/.test(aMe.code), true);
+  check('неверный код приглашения — отказ', (await request('POST', '/accounts', undefined, { name: 'Асель', inviteCode: 'ZZZZZZ' })).status, 400);
+  const invited = (await request('POST', '/accounts', undefined, { name: 'Асель', inviteCode: aMe.code.toLowerCase() })).body;
+  check('пришла по приглашению — у неё обычные 10 000', invited.balance, 10_000);
+  const aAfterInvite = (await request('GET', '/me', a.token)).body;
+  check('пригласившему +1 000', [aAfterInvite.balance, aAfterInvite.invitedCount], [11_000, 1]);
+
+  check('бонус ещё не взят: день 1/7, 1 000', aAfterInvite.daily, { claimedToday: false, streak: 1, amount: 1_000 });
+  const bonus = await post('/me/daily-bonus', a.token);
+  check('забрал ежедневный бонус', [bonus.body.amount, bonus.body.streak, bonus.body.balance], [1_000, 1, 12_000]);
+  check('второй раз за день — нельзя', (await post('/me/daily-bonus', a.token)).status, 409);
+  check('на главном экране: сегодня уже взят', (await request('GET', '/me', a.token)).body.daily.claimedToday, true);
+
+  const bMe = (await request('GET', '/me', b.token)).body;
+  check('найти игрока по коду перед подарком', (await request('GET', `/players/${bMe.code}`, a.token)).body, { code: bMe.code, name: 'Ержан' });
+  check('больше 1 000 подарить нельзя', (await post('/gifts', a.token, { toCode: bMe.code, amount: 1_100 })).body.error, 'bad amount');
+  check('себе — нельзя', (await post('/gifts', a.token, { toCode: aMe.code, amount: 400 })).body.error, 'self');
+  const gift = await post('/gifts', a.token, { toCode: bMe.code, amount: 400 });
+  check('подарил 400', [gift.status, gift.body.balance, gift.body.to?.name], [200, 11_600, 'Ержан']);
+  check('получатель получил', (await request('GET', '/me', b.token)).body.balance, 10_400);
+  check('второй подарок в тот же день — нельзя', (await post('/gifts', a.token, { toCode: bMe.code, amount: 100 })).body.error, 'already gifted today');
+
+  const serikBefore = (await request('GET', `/rooms/${roomId}`, serik.token)).body.players.find((p: any) => p.id === serik.id);
+  check('сидит за столом — дарить нельзя', (await post('/gifts', serik.token, { toCode: bMe.code, amount: 100 })).body.error, 'finish your game first');
+  await post('/gifts', b.token, { toCode: (await request('GET', '/me', serik.token)).body.code, amount: 300 });
+  await post('/me/daily-bonus', serik.token);
+  const serikAfter = (await request('GET', `/rooms/${roomId}`, serik.token)).body.players.find((p: any) => p.id === serik.id);
+  check('подарок и бонус игроку за столом дошли до баланса в комнате',
+    serikAfter.balance - serikBefore.balance, 1_300);
+  check('и не считаются выигрышем за столом', serikAfter.startBalance - serikBefore.startBalance, 1_300);
+  check('баланс аккаунта совпадает с комнатой', (await request('GET', '/me', serik.token)).body.balance, serikAfter.balance);
+
   for (const w of [serikWatch, botWatch, ghost, stranger]) w.socket.close();
 }
 

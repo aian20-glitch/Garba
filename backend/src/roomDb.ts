@@ -24,19 +24,24 @@ export function ensureRoomTable(db: DatabaseSync) {
   `);
 }
 
+// Записать комнату и балансы её игроков — без своей транзакции,
+// чтобы можно было вложить в общую (подарок, бонус — этап 9.3).
+export function writeRoom(db: DatabaseSync, room: StoredRoom) {
+  db.prepare(
+    `INSERT INTO rooms (id, status, data, updated_at) VALUES (?, ?, ?, ?)
+     ON CONFLICT(id) DO UPDATE SET status = excluded.status, data = excluded.data,
+                                   updated_at = excluded.updated_at`,
+  ).run(room.id, room.status, JSON.stringify(room), Date.now());
+
+  const setBalance = db.prepare('UPDATE accounts SET balance = ? WHERE id = ?');
+  for (const p of room.players) setBalance.run(p.balance, p.id);
+}
+
 // Комната и балансы её игроков — одной транзакцией.
 export function saveRoom(db: DatabaseSync, room: StoredRoom) {
   db.exec('BEGIN');
   try {
-    db.prepare(
-      `INSERT INTO rooms (id, status, data, updated_at) VALUES (?, ?, ?, ?)
-       ON CONFLICT(id) DO UPDATE SET status = excluded.status, data = excluded.data,
-                                     updated_at = excluded.updated_at`,
-    ).run(room.id, room.status, JSON.stringify(room), Date.now());
-
-    const setBalance = db.prepare('UPDATE accounts SET balance = ? WHERE id = ?');
-    for (const p of room.players) setBalance.run(p.balance, p.id);
-
+    writeRoom(db, room);
     db.exec('COMMIT');
   } catch (e) {
     db.exec('ROLLBACK');

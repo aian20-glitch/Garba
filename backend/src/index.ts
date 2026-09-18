@@ -8,13 +8,26 @@ import { Server as SocketServer } from 'socket.io';
 import {
   cleanName,
   createAccount,
+  findAccountByCode,
   findAccountByToken,
+  giftedOn,
+  invitedCount,
   openDb,
+  recordGift,
+  setDaily,
   tokenFromHeader,
+  transaction,
   type Account,
 } from './accounts.js';
 import { createDeck, shuffle } from './deck.js';
-import { loadUnfinishedRooms, roomIdTaken, saveRoom } from './roomDb.js';
+import { loadUnfinishedRooms, roomIdTaken, saveRoom, writeRoom } from './roomDb.js';
+import {
+  dailyClaim,
+  dayKey,
+  giftError,
+  normalizeCode,
+  REFERRAL_BONUS,
+} from './bonus.js';
 import {
   DISCONNECT_TIMEOUT_MS,
   OFFLINE_GRACE_MS,
@@ -298,28 +311,190 @@ function persistRoom(room: Room) {
   saveRoom(db, room);
 }
 
+// Изменить баланс аккаунта вне игры: бонус, подарок, приглашение (этап 9.3).
+// Вызывать внутри transaction(). Если игрок сидит в незаконченной комнате, его деньги
+// сейчас считаются там — меняем и там, иначе следующее сохранение комнаты затёрло бы
+// начисление. startBalance сдвигаем тоже: бонус и подарок — не выигрыш за столом,
+// в «кто больше всех проиграл» (§12.2, §13) и в итоги комнаты они не входят.
+// undo — как откатить изменение в памяти, если транзакция не прошла.
+function changeCoins(accountId: string, delta: number, undo: (() => void)[]): Room | undefined {
+  const room = activeRoomOf(accountId);
+  const player = room?.players.find((p) => p.id === accountId);
+
+  if (room && player) {
+    player.balance += delta;
+    player.startBalance += delta;
+    undo.push(() => {
+      player.balance -= delta;
+      player.startBalance -= delta;
+    });
+    writeRoom(db, room);
+    return room;
+  }
+
+  db.prepare('UPDATE accounts SET balance = balance + ? WHERE id = ?').run(delta, accountId);
+  return undefined;
+}
+
+// Несколько изменений денег одной транзакцией. Не прошла — память откатывается
+// вместе с базой. Прошла — комнатам, где поменялся баланс, рассылается новое состояние.
+function moveCoins(changes: { accountId: string; delta: number }[], extra: () => void = () => {}) {
+  const undo: (() => void)[] = [];
+  let touched: Room[] = [];
+  try {
+    touched = transaction(db, () => {
+      const rooms: Room[] = [];
+      for (const c of changes) {
+        const room = changeCoins(c.accountId, c.delta, undo);
+        if (room) rooms.push(room);
+      }
+      extra();
+      return rooms;
+    });
+  } catch (e) {
+    for (const u of undo.reverse()) u();
+    throw e;
+  }
+  for (const room of touched) {
+    broadcastRoom(room.id).catch((e) => console.error(`[ROOM ${room.id}] broadcast failed:`, e));
+  }
+}
+
+function accountOf(req: express.Request): Account | null {
+  return findAccountByToken(db, tokenFromHeader(req.headers.authorization));
+}
+
 // Новый аккаунт: имя → id, токен, стартовые 10 000. Токен приходит один раз,
-// телефон обязан его сохранить.
+// телефон обязан его сохранить. inviteCode — код пригласившего (ТЗ §4):
+// он сразу получает 1 000 — новый игрок зарегистрировался и вошёл.
 app.post('/accounts', (req, res) => {
   const name = cleanName(req.body?.name);
   if (!name) {
     return res.status(400).json({ error: 'name must be 1 to 20 characters' });
   }
 
-  const { account, token } = createAccount(db, name);
-  console.log(`[ACCOUNT] created ${account.name} (${account.id})`);
+  const inviteCode = normalizeCode(req.body?.inviteCode);
+  const inviter = inviteCode ? findAccountByCode(db, inviteCode) : null;
+  if (inviteCode && !inviter) {
+    return res.status(400).json({ error: 'invite code not found' });
+  }
+
+  let created: ReturnType<typeof createAccount> | null = null;
+  moveCoins(inviter ? [{ accountId: inviter.id, delta: REFERRAL_BONUS }] : [], () => {
+    created = createAccount(db, name, inviter?.id ?? null);
+  });
+  const { account, token } = created!;
+
+  console.log(
+    `[ACCOUNT] created ${account.name} (${account.id})` +
+      (inviter ? `, invited by ${inviter.name} (+${REFERRAL_BONUS})` : ''),
+  );
 
   return res.status(201).json({ ...account, token });
 });
 
 // Кто я: по токену. roomId — незаконченная комната, если игрок в ней сидит.
+// daily — ежедневный бонус (ТЗ §3): взят ли сегодня, какой день серии, сколько даст.
 app.get('/me', (req, res) => {
-  const account = findAccountByToken(db, tokenFromHeader(req.headers.authorization));
+  const account = accountOf(req);
   if (!account) {
     return res.status(401).json({ error: 'unauthorized' });
   }
 
-  return res.json({ ...account, roomId: activeRoomOf(account.id)?.id ?? null });
+  const today = dayKey(Date.now());
+  const claim = dailyClaim(account.dailyDay, account.dailyStreak, today);
+
+  return res.json({
+    ...account,
+    roomId: activeRoomOf(account.id)?.id ?? null,
+    daily: {
+      claimedToday: !claim.claimable,
+      streak: claim.streak,
+      amount: claim.claimable ? claim.amount : 0,
+    },
+    giftSentToday: giftedOn(db, account.id, today),
+    invitedCount: invitedCount(db, account.id),
+  });
+});
+
+// Забрать ежедневный бонус (ТЗ §3): 1 000, на 7-й день подряд ещё 5 000.
+app.post('/me/daily-bonus', (req, res) => {
+  const account = accountOf(req);
+  if (!account) {
+    return res.status(401).json({ error: 'unauthorized' });
+  }
+
+  const today = dayKey(Date.now());
+  const claim = dailyClaim(account.dailyDay, account.dailyStreak, today);
+  if (!claim.claimable) {
+    return res.status(409).json({ error: 'already claimed today', streak: claim.streak });
+  }
+
+  moveCoins([{ accountId: account.id, delta: claim.amount }], () => {
+    setDaily(db, account.id, today, claim.streak);
+  });
+  console.log(`[ACCOUNT] ${account.name}: daily bonus day ${claim.streak}/7, +${claim.amount}`);
+
+  return res.json({
+    amount: claim.amount,
+    streak: claim.streak,
+    balance: account.balance + claim.amount,
+  });
+});
+
+// Найти игрока по коду — чтобы перед подарком показать, кому он уйдёт.
+app.get('/players/:code', (req, res) => {
+  if (!accountOf(req)) {
+    return res.status(401).json({ error: 'unauthorized' });
+  }
+  const player = findAccountByCode(db, normalizeCode(req.params.code));
+  if (!player) {
+    return res.status(404).json({ error: 'player not found' });
+  }
+  return res.json({ code: player.code, name: player.name });
+});
+
+// Подарить монеты по коду игрока (ТЗ §5): до 1 000, не чаще раза в сутки.
+// Дарить можно, только когда не сидишь в комнате: там деньги нужны для ставок,
+// и минимум для входа проверялся по балансу на момент входа.
+app.post('/gifts', (req, res) => {
+  const from = accountOf(req);
+  if (!from) {
+    return res.status(401).json({ error: 'unauthorized' });
+  }
+
+  const to = findAccountByCode(db, normalizeCode(req.body?.toCode));
+  if (!to) {
+    return res.status(404).json({ error: 'player not found' });
+  }
+
+  const busyIn = activeRoomOf(from.id);
+  if (busyIn) {
+    return res.status(409).json({ error: 'finish your game first', roomId: busyIn.id });
+  }
+
+  const amount = Number(req.body?.amount);
+  const today = dayKey(Date.now());
+  const error = giftError({
+    amount,
+    balance: from.balance,
+    giftedToday: giftedOn(db, from.id, today),
+    toSelf: to.id === from.id,
+  });
+  if (error) {
+    return res.status(error === 'already gifted today' ? 409 : 400).json({ error });
+  }
+
+  moveCoins(
+    [
+      { accountId: from.id, delta: -amount },
+      { accountId: to.id, delta: amount },
+    ],
+    () => recordGift(db, from.id, to.id, amount, today),
+  );
+  console.log(`[GIFT] ${from.name} → ${to.name}: ${amount}`);
+
+  return res.json({ amount, balance: from.balance - amount, to: { code: to.code, name: to.name } });
 });
 
 // Всё про комнаты — только с токеном. Кто делает запрос, сервер знает сам:
