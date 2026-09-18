@@ -135,6 +135,23 @@ export function passCard(c: Contest, playerId: string): Contest {
   return { ...c, passed: [...c.passed, playerId], lastActorId: playerId };
 }
 
+// Кому не хватает монет ни на один доступный множитель, того не спрашивают — он сразу
+// пасует (§7.4a, решение владельца правил). Пас окончательный, как обычный: монеты за время
+// борьбы не меняются, так что позже денег у него не прибавится. canAfford(игрок, риск) —
+// хватает ли на проигрыш «кон × риск» (§11.7), считает вызывающий.
+export function passUnaffordable(
+  c: Contest,
+  canAfford: (playerId: string, risk: number) => boolean,
+): Contest {
+  let current = c;
+  for (let actor = nextActor(current); actor !== null; actor = nextActor(current)) {
+    const id = actor;
+    if (riskOptions(current).some((r) => canAfford(id, r))) break;
+    current = passCard(current, id);
+  }
+  return current;
+}
+
 // Чем закончилась борьба (вызывать, когда nextActor вернул null):
 // карта у holderId на множителе risk, или её не взял никто — тогда обычные торги.
 export function contestResult(c: Contest): { holderId: string; risk: number } | null {

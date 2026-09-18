@@ -5,6 +5,7 @@ import {
   contestResult,
   nextActor,
   passCard,
+  passUnaffordable,
   riskOptions,
   specialKindOf,
   specialLeader,
@@ -106,3 +107,22 @@ check('не в свою очередь — отказ', error.includes('not your
 error = '';
 try { takeCard(guard, 'И2', 1); } catch (e) { error = String(e); }
 check('короля за ×1 взять нельзя', error.includes('not allowed'), true);
+
+section('нет монет на спецкарту — не спрашиваем (§7.4a, решение владельца правил)');
+// Кон 1000, дама за ×2 стоит 2000 проигрыша. У И2 и И4 денег меньше — их пропускаем.
+const wallet: Record<string, number> = { И1: 5000, И2: 1500, И3: 5000, И4: 900, И5: 5000 };
+const afford = (id: string, risk: number) => wallet[id] >= 1000 * risk;
+let poor = passUnaffordable(startContest('Q', seats, 'И1'), afford);
+check('И2 не хватает на ×2 — сразу пас, спрашиваем И3', [nextActor(poor), poor.passed], ['И3', ['И2']]);
+poor = passUnaffordable(passCard(poor, 'И3'), afford);
+check('И3 спасовал сам, И4 пропущен — спрашиваем И5', [nextActor(poor), poor.passed], ['И5', ['И2', 'И3', 'И4']]);
+poor = passUnaffordable(takeCard(poor, 'И5', 5), afford);
+check('×5 — борьба окончена', [nextActor(poor), contestResult(poor)], [null, { holderId: 'И5', risk: 5 }]);
+// Перехват: карта у И3 на ×2, дальше нужно ×3 = 3000 — у И4 (2500) уже не хватает.
+const wallet2: Record<string, number> = { И1: 9000, И2: 9000, И3: 9000, И4: 2500, И5: 9000 };
+let kx = takeCard(startContest('K', seats, 'И1'), 'И2', 2);
+kx = passUnaffordable(passCard(kx, 'И3'), (id, r) => wallet2[id] >= 1000 * r);
+check('на ×2 хватило бы, на ×3 — нет: И4 пропущен при перехвате', [nextActor(kx), kx.passed], ['И5', ['И3', 'И4']]);
+const nobodyRich = passUnaffordable(startContest('A', seats, 'И1'), () => false);
+check('не может никто — борьба кончается сразу, карту не взял никто', [nextActor(nobodyRich), contestResult(nobodyRich)], [null, null]);
+check('у кого хватает — спрашиваем как обычно', nextActor(passUnaffordable(startContest('K', seats, 'И1'), () => true)), 'И2');

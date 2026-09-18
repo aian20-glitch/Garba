@@ -86,6 +86,7 @@ import { dealsUntilNextVote, tallyVote, type VoteChoice } from './vote.js';
 import {
   contestResult,
   nextActor,
+  passUnaffordable,
   passCard,
   riskOptions,
   specialKindOf,
@@ -1371,6 +1372,9 @@ function beginBidding(room: Room) {
     };
     game.stage = 'special';
     game.activeBidderId = null;
+    // Кому не по карману ни один множитель — не спрашиваем (§7.4a). Не может никто —
+    // борьба кончается сразу, идут обычные торги.
+    skipUnaffordable(room);
   }
 }
 
@@ -1385,6 +1389,15 @@ function visibleCardCount(game: GameState): number | null {
 function canAffordSpecial(room: Room, playerId: string, risk: number): boolean {
   const player = room.players.find((p) => p.id === playerId);
   return !!player && player.balance >= room.game!.kon * risk;
+}
+
+// Пропустить тех, кому не хватает на спецкарту (§7.4a); борьба кончилась — подвести итог.
+function skipUnaffordable(room: Room) {
+  const special = room.game!.special!;
+  special.contest = passUnaffordable(special.contest, (id, risk) =>
+    canAffordSpecial(room, id, risk),
+  );
+  if (nextActor(special.contest) === null) finishSpecial(room);
 }
 
 // Борьба за спецкарту окончена.
@@ -2371,8 +2384,9 @@ app.post('/rooms/:id/special', (req, res) => {
     return res.status(400).json({ error: 'action must be take or pass' });
   }
 
-  if (nextActor(game.special.contest) === null) {
-    finishSpecial(room);
+  // Дальше по кругу — кому не по карману, тех не спрашиваем (§7.4a).
+  skipUnaffordable(room);
+  if (game.stage !== 'special') {
     const outcome = game.special.outcome;
     console.log(
       outcome === 'nobody'
