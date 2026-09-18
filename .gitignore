@@ -1,0 +1,14 @@
+# Backend: зависимости и сборка ставятся заново через npm install / npm run build
+backend/node_modules/
+backend/dist/
+
+# Кэш компилятора Kotlin — Flutter-овский android/.gitignore его не прикрывает
+mobile/android/.kotlin/
+
+# Логи и мусор ОС
+*.log
+.DS_Store
+Thumbs.db
+
+# Локальные настройки Claude Code
+.claude/settings.local.json
