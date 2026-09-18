@@ -216,6 +216,26 @@ async function main() {
   check('за столом у игрока видно фото', seat.avatar, uploaded.body.avatar);
   check('у кого фото нет — null', (await request('GET', '/me', a.token)).body.avatar, null);
 
+  section('реакции и ссылки-приглашения (этап 9.7)');
+  const stage = (await request('GET', `/rooms/${roomId}`, serik.token)).body.game.stage;
+  if (stage !== 'round_done' && stage !== 'room_done') {
+    check('во время торгов смайлик не отправить', (await post(`/rooms/${roomId}/react`, serik.token, { emoji: '👍' })).status, 409);
+  }
+  check('в комнате есть список реакций', Array.isArray((await request('GET', `/rooms/${roomId}`, serik.token)).body.reactions), true);
+
+  const roomPage = await fetch(`${BASE}/r/${roomId}`);
+  const roomHtml = await roomPage.text();
+  check('страница приглашения в комнату: кнопка открыть в приложении и номер',
+    [roomPage.status, roomHtml.includes(`garba://room/${roomId}`), roomHtml.includes('Серик зовёт')], [200, true, true]);
+  check('несуществующая комната — 404', (await fetch(`${BASE}/r/99999`)).status, 404);
+
+  const hacker = await account('<script>x');
+  const hackerCode = (await request('GET', '/me', hacker.token)).body.code;
+  const invitePage = await (await fetch(`${BASE}/i/${hackerCode}`)).text();
+  check('страница приглашения друга: код и ссылка в приложение', invitePage.includes(`garba://invite/${hackerCode}`), true);
+  check('имя с HTML-тегами на странице экранировано', [invitePage.includes('<script>x'), invitePage.includes('&lt;script&gt;x')], [false, true]);
+  check('мусор вместо кода — 404', (await fetch(`${BASE}/i/%3Cb%3E`)).status, 404);
+
   for (const w of [serikWatch, botWatch, ghost, stranger]) w.socket.close();
 }
 

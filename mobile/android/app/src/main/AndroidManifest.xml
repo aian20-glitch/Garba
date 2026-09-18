@@ -23,6 +23,16 @@
                 <action android:name="android.intent.action.MAIN"/>
                 <category android:name="android.intent.category.LAUNCHER"/>
             </intent-filter>
+            <!-- Ссылки-приглашения garba://room/12345 и garba://invite/КОД (этап 9.7).
+                 Их ловит пакет app_links, поэтому встроенную обработку ссылок Flutter
+                 выключаем — иначе он сам попробует открыть их как экран. -->
+            <meta-data android:name="flutter_deeplinking_enabled" android:value="false" />
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="garba" />
+            </intent-filter>
         </activity>
         <meta-data
             android:name="flutterEmbedding"

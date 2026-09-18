@@ -66,5 +66,20 @@
 		<string>UIInterfaceOrientationLandscapeLeft</string>
 		<string>UIInterfaceOrientationLandscapeRight</string>
 	</array>
+	<!-- Ссылки-приглашения garba://room/12345 и garba://invite/КОД (этап 9.7).
+	     Их ловит пакет app_links; встроенная обработка ссылок Flutter выключена. -->
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleURLName</key>
+			<string>garba</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>garba</string>
+			</array>
+		</dict>
+	</array>
+	<key>FlutterDeepLinkingEnabled</key>
+	<false/>
 </dict>
 </plist>

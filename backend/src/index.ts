@@ -27,6 +27,7 @@ import {
 import { createDeck, shuffle } from './deck.js';
 import { loadUnfinishedRooms, profileStats, ratedPlayers, roomIdTaken, saveRoom, writeRoom } from './roomDb.js';
 import { afterDeal, afterRoom, ratingOf, shownRating, START_SKILL } from './rating.js';
+import { addReaction, isPlayerCode, isRoomCode, type ReactionEntry } from './reactions.js';
 import { addDeal, addMoney, emptyStats, roomWinners, type PlayerStats } from './stats.js';
 import { avatarPath, detectImageType, loadAvatar, MAX_AVATAR_BYTES, saveAvatar } from './avatars.js';
 import {
@@ -288,6 +289,8 @@ type Room = {
   // сохраняется в аккаунт вместе с комнатой — как баланс. startSkill и startDeals —
   // с чем игрок сел за стол: от них «Рейтинг 4.0 → 4.9» в итогах.
   rating?: Record<string, { skill: number; startSkill: number; startDeals: number }>;
+  // Последние реакции-смайлики (RULES.md §14, этап 9.7).
+  reactions?: ReactionEntry[];
 };
 
 const app = express();
@@ -458,6 +461,87 @@ app.post('/me/daily-bonus', (req, res) => {
     streak: claim.streak,
     balance: account.balance + claim.amount,
   });
+});
+
+// --- Ссылки-приглашения (ТЗ §4, §6, этап 9.7) ---
+//
+// Ссылку игрок отправляет другу в мессенджер. Она открывает эту страницу:
+// кнопка «Открыть в ГАРБЕ» запускает приложение (garba://...), а если приложения
+// ещё нет — на странице крупно код, его можно ввести вручную.
+//   /r/<номер комнаты>  — зовут в комнату
+//   /i/<код игрока>     — приглашение друга (пригласивший получит 1 000)
+
+function escapeHtml(text: string): string {
+  return text.replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]!);
+}
+
+function invitePage(title: string, text: string, appLink: string, code: string, hint: string): string {
+  return `<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>${escapeHtml(title)}</title>
+<style>
+  body { margin: 0; font-family: system-ui, sans-serif; background: #07131B; color: #fff;
+         display: flex; min-height: 100vh; align-items: center; justify-content: center; }
+  main { max-width: 420px; padding: 24px; text-align: center; }
+  h1 { color: #D4A94F; font-size: 40px; margin: 0 0 8px; }
+  p { color: #cfd8dc; font-size: 17px; line-height: 1.4; }
+  a.btn { display: block; margin: 24px 0; padding: 16px; border-radius: 12px; background: #D4A94F;
+          color: #07131B; font-weight: 800; font-size: 18px; text-decoration: none; }
+  .code { font-size: 36px; font-weight: 900; letter-spacing: 6px; color: #D4A94F; }
+  small { color: #78909c; }
+</style>
+</head>
+<body><main>
+  <h1>ГАРБА</h1>
+  <p>${escapeHtml(text)}</p>
+  <a class="btn" href="${escapeHtml(appLink)}">ОТКРЫТЬ В ГАРБЕ</a>
+  <p>${escapeHtml(hint)}</p>
+  <div class="code">${escapeHtml(code)}</div>
+  <p><small>Монеты в ГАРБЕ — игровые, это не деньги.</small></p>
+</main></body>
+</html>`;
+}
+
+app.get('/r/:roomId', (req, res) => {
+  const roomId = req.params.roomId;
+  const room = isRoomCode(roomId) ? rooms.get(roomId) : undefined;
+  if (!room || room.status === 'finished') {
+    return res.status(404).type('html').send(
+      invitePage('ГАРБА', 'Эта комната уже закрыта или её нет.', 'garba://', '', 'Создайте новую комнату в приложении.'),
+    );
+  }
+  const creator = room.players.find((p) => p.id === room.creatorId)?.name ?? 'Друг';
+  return res.type('html').send(
+    invitePage(
+      'Приглашение в ГАРБУ',
+      `${creator} зовёт вас играть в ГАРБУ: комната на ${room.capacity} игроков, сейчас ${room.players.length}.`,
+      `garba://room/${roomId}`,
+      roomId,
+      'Если приложение не открылось — нажмите «Войти по коду» и введите номер комнаты:',
+    ),
+  );
+});
+
+app.get('/i/:code', (req, res) => {
+  const code = req.params.code;
+  const inviter = isPlayerCode(code) ? findAccountByCode(db, code) : null;
+  if (!inviter) {
+    return res.status(404).type('html').send(
+      invitePage('ГАРБА', 'Такого приглашения нет.', 'garba://', '', 'Проверьте ссылку.'),
+    );
+  }
+  return res.type('html').send(
+    invitePage(
+      'Приглашение в ГАРБУ',
+      `${inviter.name} приглашает вас в ГАРБУ — карточную игру для друзей.`,
+      `garba://invite/${code}`,
+      code,
+      'Установите приложение и при первом входе введите код приглашения:',
+    ),
+  );
 });
 
 // --- Аватар (ТЗ §2, этап 9.5) ---
@@ -1787,6 +1871,8 @@ function publicRoom(room: Room, viewerId?: string) {
     status: room.status,
     // Пауза из-за отключения (§13): кто отключился и сколько секунд у него осталось.
     pause: publicPause(room),
+    // Смайлики после раздачи и после игры (§14). Клиент показывает новые по id.
+    reactions: room.reactions ?? [],
     // Статистика игроков за комнату (ТЗ §35) — для экрана «ИТОГИ ИГРЫ».
     stats: room.stats ?? null,
     createdAt: room.createdAt,
@@ -2367,6 +2453,34 @@ app.post('/rooms/:id/kon-trump', (req, res) => {
   );
 
   return res.json(publicRoom(room, String(playerId)));
+});
+
+// Реакция-смайлик (RULES.md §14): только после раздачи и после закрытия комнаты.
+app.post('/rooms/:id/react', (req, res) => {
+  const room = rooms.get(req.params.id);
+
+  if (!room || !room.game) {
+    return res.status(404).json({ error: 'room/game not found' });
+  }
+
+  const playerId = me(res).id;
+  if (!room.players.some((p) => p.id === playerId)) {
+    return res.status(403).json({ error: 'player is not in this room' });
+  }
+
+  const result = addReaction(room.reactions ?? [], room.game.stage, playerId, req.body?.emoji, Date.now());
+  if (result === 'not now') {
+    return res.status(409).json({ error: 'reactions only after a deal' });
+  }
+  if (result === 'unknown emoji') {
+    return res.status(400).json({ error: 'unknown emoji' });
+  }
+  if (result === 'too fast') {
+    return res.status(429).json({ error: 'too fast' });
+  }
+
+  room.reactions = result;
+  return res.json({ ok: true });
 });
 
 // Голос «продолжаем» или «делим кон» (RULES.md §12.2).

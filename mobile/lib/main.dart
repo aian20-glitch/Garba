@@ -3,7 +3,9 @@ import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:http/http.dart' as http;
+import 'package:app_links/app_links.dart';
 import 'package:image_picker/image_picker.dart';
+import 'package:share_plus/share_plus.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:socket_io_client/socket_io_client.dart' as io;
 
@@ -54,6 +56,9 @@ String fmtCoins(int value) {
 
 // +500 / −500 для изменений баланса.
 String fmtDelta(int value) => value > 0 ? '+${fmtCoins(value)}' : fmtCoins(value);
+
+// Смайлики за столом (RULES.md §14). Тот же набор, что принимает сервер.
+const tableReactions = ['👍', '👏', '😂', '😎', '😮', '🤔', '😭', '😡', '🔥', '🤝', '🙈', '🎉'];
 
 bool isRedSuit(String suit) =>
     suit == 'hearts' || suit == 'diamonds' || suit == '♥' || suit == '♦';
@@ -170,6 +175,64 @@ String? busyInRoomMessage(http.Response response) {
 // Главный экран обновляет баланс, когда на него возвращаются.
 final routeObserver = RouteObserver<ModalRoute<void>>();
 
+// Ссылки-приглашения (ТЗ §4, §6, этап 9.7).
+//
+// Друг получает ссылку вида http://сервер/r/12345 (комната) или /i/КОД (приглашение).
+// Страница на сервере открывает приложение ссылкой garba://room/12345 или
+// garba://invite/КОД — её и ловит этот код.
+final navigatorKey = GlobalKey<NavigatorState>();
+
+String roomLink(String roomId) => '$apiBase/r/$roomId';
+String inviteLink(String code) => '$apiBase/i/$code';
+
+class DeepLinks {
+  // Ссылка пришла раньше, чем игрок вошёл в аккаунт, — откроем после входа.
+  static Uri? pending;
+  static StreamSubscription<Uri>? _sub;
+
+  // Подписка ловит и ту ссылку, которой приложение запустили.
+  static void start() {
+    _sub ??= AppLinks().uriLinkStream.listen(handle);
+  }
+
+  static void handle(Uri uri) {
+    final kind = uri.host; // room или invite
+    final value = uri.pathSegments.isEmpty ? '' : uri.pathSegments.first;
+    final navigator = navigatorKey.currentState;
+
+    if (value.isEmpty) return;
+    // Аккаунта ещё нет или приложение не готово — запомним ссылку.
+    if (Session.token.isEmpty || navigator == null) {
+      pending = uri;
+      return;
+    }
+
+    if (kind == 'room') {
+      navigator.push(MaterialPageRoute(builder: (_) => JoinRoomScreen(initialCode: value)));
+    } else if (kind == 'invite') {
+      // У игрока уже есть аккаунт — бонус за приглашение не начислится,
+      // но можно посмотреть карточку пригласившего и добавить его в друзья.
+      navigator.push(MaterialPageRoute(builder: (_) => PlayerScreen(code: value)));
+    }
+  }
+
+  // Код приглашения из ссылки — подставляется на экране первого входа.
+  static String takeInviteCode() {
+    final uri = pending;
+    if (uri == null || uri.host != 'invite' || uri.pathSegments.isEmpty) return '';
+    pending = null;
+    return uri.pathSegments.first;
+  }
+
+  // Игрок вошёл в аккаунт — открываем отложенную ссылку.
+  static void openPending() {
+    final uri = pending;
+    if (uri == null) return;
+    pending = null;
+    handle(uri);
+  }
+}
+
 void main() => runApp(const GarbaApp());
 
 class GarbaApp extends StatelessWidget {
@@ -189,6 +252,7 @@ class GarbaApp extends StatelessWidget {
           brightness: Brightness.dark,
         ),
       ),
+      navigatorKey: navigatorKey,
       navigatorObservers: [routeObserver],
       home: const StartScreen(),
     );
@@ -217,6 +281,7 @@ class _StartScreenState extends State<StartScreen> {
   @override
   void initState() {
     super.initState();
+    DeepLinks.start();
     checkAccount();
   }
 
@@ -235,6 +300,9 @@ class _StartScreenState extends State<StartScreen> {
 
     await Session.load();
     if (Session.token.isEmpty) {
+      // Пришли по ссылке-приглашению — код уже заполнен.
+      final fromLink = DeepLinks.takeInviteCode();
+      if (fromLink.isNotEmpty) inviteController.text = fromLink;
       setState(() {
         checking = false;
         needName = true;
@@ -303,6 +371,8 @@ class _StartScreenState extends State<StartScreen> {
       context,
       MaterialPageRoute(builder: (_) => const HomeScreen()),
     );
+    // Ссылка на комнату ждала входа в аккаунт — открываем её.
+    DeepLinks.openPending();
   }
 
   @override
@@ -892,6 +962,17 @@ class InviteScreen extends StatelessWidget {
                   fontWeight: FontWeight.w900,
                   letterSpacing: 6,
                   color: Color(0xFFD4A94F),
+                ),
+              ),
+              const SizedBox(height: 8),
+              GarbaButton(
+                label: 'ОТПРАВИТЬ ССЫЛКУ',
+                onTap: () => SharePlus.instance.share(
+                  ShareParams(
+                    text: 'Играю в ГАРБУ — карточная игра для друзей. '
+                        'Заходи по ссылке: ${inviteLink(code)}\n'
+                        'При первом входе введи код приглашения $code.',
+                  ),
                 ),
               ),
               const SizedBox(height: 8),
@@ -1884,7 +1965,10 @@ class _CreateRoomScreenState extends State<CreateRoomScreen> {
 }
 
 class JoinRoomScreen extends StatefulWidget {
-  const JoinRoomScreen({super.key});
+  // Номер комнаты из ссылки-приглашения — тогда входим сразу.
+  final String? initialCode;
+
+  const JoinRoomScreen({super.key, this.initialCode});
 
   @override
   State<JoinRoomScreen> createState() => _JoinRoomScreenState();
@@ -1893,6 +1977,16 @@ class JoinRoomScreen extends StatefulWidget {
 class _JoinRoomScreenState extends State<JoinRoomScreen> {
   final roomController = TextEditingController();
   bool loading = false;
+
+  @override
+  void initState() {
+    super.initState();
+    final code = widget.initialCode;
+    if (code != null && code.isNotEmpty) {
+      roomController.text = code;
+      WidgetsBinding.instance.addPostFrameCallback((_) => joinRoom());
+    }
+  }
 
   Future<void> joinRoom() async {
     final roomId = roomController.text.trim();
@@ -2229,7 +2323,13 @@ class _LobbyScreenState extends State<LobbyScreen> {
             ),
             const Spacer(),
             OutlinedButton.icon(
-              onPressed: () {},
+              onPressed: () => SharePlus.instance.share(
+                ShareParams(
+                  text: 'Играем в ГАРБУ! Заходи в комнату #${widget.roomCode}: '
+                      '${roomLink(widget.roomCode)}\n'
+                      'Если ссылка не открылась — введи код комнаты ${widget.roomCode} в приложении.',
+                ),
+              ),
               icon: const Icon(Icons.share),
               label: const Text('ПРИГЛАСИТЬ'),
             ),
@@ -2557,6 +2657,12 @@ class _GameTableScreenState extends State<GameTableScreen> {
   // от него на экране идёт обратный отсчёт, раз в секунду.
   DateTime pauseReceivedAt = DateTime.now();
   Timer? pauseTicker;
+  // Смайлики (RULES.md §14): какой смайлик сейчас висит у игрока, и номер
+  // последней показанной реакции — старые при входе в комнату не всплывают.
+  final Map<String, String> flyingEmoji = {};
+  int lastReactionId = 0;
+  bool firstReactions = true;
+  bool sendingReaction = false;
 
   late final RoomLink link;
 
@@ -2594,6 +2700,8 @@ class _GameTableScreenState extends State<GameTableScreen> {
       pauseReceivedAt = DateTime.now();
     });
 
+    applyReactions((data['reactions'] as List?) ?? const []);
+
     // Пока пауза — перерисовываем раз в секунду, чтобы шёл обратный отсчёт.
     if (data['pause'] is Map) {
       pauseTicker ??= Timer.periodic(const Duration(seconds: 1), (_) {
@@ -2602,6 +2710,46 @@ class _GameTableScreenState extends State<GameTableScreen> {
     } else {
       pauseTicker?.cancel();
       pauseTicker = null;
+    }
+  }
+
+  // Новые смайлики всплывают у игрока на 3 секунды. Те, что пришли при первом
+  // открытии комнаты, только запоминаем — они уже отжили своё у других.
+  void applyReactions(List reactions) {
+    for (final raw in reactions) {
+      final r = Map<String, dynamic>.from(raw as Map);
+      final id = (r['id'] as num).toInt();
+      if (id <= lastReactionId) continue;
+      lastReactionId = id;
+      if (firstReactions) continue;
+
+      final playerId = r['playerId'].toString();
+      final emoji = r['emoji'].toString();
+      flyingEmoji[playerId] = emoji;
+      Timer(const Duration(seconds: 3), () {
+        if (!mounted) return;
+        setState(() {
+          if (flyingEmoji[playerId] == emoji) flyingEmoji.remove(playerId);
+        });
+      });
+    }
+    firstReactions = false;
+  }
+
+  // Отправить смайлик. Сервер сам решает, можно ли сейчас (§14).
+  Future<void> sendReaction(String emoji) async {
+    if (sendingReaction) return;
+    setState(() => sendingReaction = true);
+    try {
+      await http.post(
+        Uri.parse('$apiBase/rooms/${widget.roomCode}/react'),
+        headers: authHeaders(),
+        body: jsonEncode({'emoji': emoji}),
+      );
+    } catch (_) {
+      // Не дошло — не беда, это просто смайлик.
+    } finally {
+      if (mounted) setState(() => sendingReaction = false);
     }
   }
 
@@ -3754,6 +3902,9 @@ class _GameTableScreenState extends State<GameTableScreen> {
                                 name: p['name'].toString(),
                                 radius: 16,
                               ),
+                              // Смайлик этого игрока, если он только что его отправил.
+                              if (flyingEmoji[pId] != null)
+                                Text(flyingEmoji[pId]!, style: const TextStyle(fontSize: 22)),
                               const SizedBox(width: 6),
                               Icon(
                                 isMain
@@ -3801,6 +3952,22 @@ class _GameTableScreenState extends State<GameTableScreen> {
                       }),
                       const SizedBox(height: 16),
                       footer,
+                      // Смайлики — только когда раздача сыграна или комната закрыта
+                      // (RULES.md §14: чата во время игры нет).
+                      if (isRoundDone || isRoomDone) ...[
+                        const SizedBox(height: 12),
+                        const Divider(),
+                        Wrap(
+                          alignment: WrapAlignment.center,
+                          spacing: 4,
+                          children: tableReactions
+                              .map((emoji) => IconButton(
+                                    onPressed: sendingReaction ? null : () => sendReaction(emoji),
+                                    icon: Text(emoji, style: const TextStyle(fontSize: 24)),
+                                  ))
+                              .toList(),
+                        ),
+                      ],
                     ],
                     ),
                   ),

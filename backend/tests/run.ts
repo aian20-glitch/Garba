@@ -14,6 +14,7 @@ import './bonus.test.js';
 import './stats.test.js';
 import './avatars.test.js';
 import './rating.test.js';
+import './reactions.test.js';
 import { summary } from './check.js';
 
 process.exit(summary() === 0 ? 0 : 1);
