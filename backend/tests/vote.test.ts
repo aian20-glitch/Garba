@@ -7,18 +7,18 @@ import { dealsUntilNextVote, tallyVote, type VoteChoice } from '../src/vote.js';
 const C: VoteChoice = 'continue';
 const S: VoteChoice = 'split';
 
-section('4 игрока');
-check('3 за «делим» — делим', tallyVote([S, S, S], 4), 'split');
-check('2 : 2 — ничья, продолжаем', tallyVote([S, S, C, C], 4), 'continue');
-check('2 за «продолжаем» — уже ясно, что минимум ничья → продолжаем', tallyVote([C, C], 4), 'continue');
+section('4 игрока — делим только единогласно (§12.2)');
+check('3 за «делим» из 4 — ещё ждём четвёртого', tallyVote([S, S, S], 4), 'pending');
+check('все 4 за «делим» — делим', tallyVote([S, S, S, S], 4), 'split');
+check('3 за «делим», 1 против — продолжаем', tallyVote([S, S, S, C], 4), 'continue');
+check('первый же голос «продолжаем» решает всё', tallyVote([C], 4), 'continue');
 check('2 за «делим» из 4 — ещё не решено', tallyVote([S, S], 4), 'pending');
-check('1 : 1 — ещё не решено', tallyVote([S, C], 4), 'pending');
+check('1 «делим», 1 против — уже продолжаем', tallyVote([S, C], 4), 'continue');
 
 section('5 игроков');
-check('3 за «делим» — делим', tallyVote([S, S, S], 5), 'split');
-check('3 за «продолжаем» — продолжаем', tallyVote([C, C, C], 5), 'continue');
-check('2 : 2 — ждём пятого', tallyVote([S, S, C, C], 5), 'pending');
-check('пятый за «делим» — 3 : 2, делим', tallyVote([S, S, C, C, S], 5), 'split');
+check('4 за «делим» из 5 — ждём пятого', tallyVote([S, S, S, S], 5), 'pending');
+check('пятый против — продолжаем', tallyVote([S, S, S, S, C], 5), 'continue');
+check('пятый тоже «делим» — делим', tallyVote([S, S, S, S, S], 5), 'split');
 
 section('перебор всех раскладов голосов, 4–7 игроков');
 let wrong = 0;
@@ -26,7 +26,7 @@ for (let n = 4; n <= 7; n++) {
   for (let mask = 0; mask < 1 << n; mask++) {
     const votes: VoteChoice[] = Array.from({ length: n }, (_, i) => ((mask >> i) & 1 ? S : C));
     const splits = votes.filter((v) => v === S).length;
-    const expected = splits > n - splits ? 'split' : 'continue'; // большинство, ничья → продолжаем
+    const expected = splits === n ? 'split' : 'continue'; // делим только единогласно
     if (tallyVote(votes, n) !== expected) wrong++;
     // Ранний итог не должен противоречить полному: если по части голосов уже
     // объявлено решение, полный подсчёт обязан дать то же самое.
@@ -36,7 +36,7 @@ for (let n = 4; n <= 7; n++) {
     }
   }
 }
-check('все расклады: большинство решает, ничья = продолжаем, ранний итог никогда не ошибается', wrong, 0);
+check('все расклады: делим только единогласно, ранний итог никогда не ошибается', wrong, 0);
 
 section('повторное голосование через круг');
 check('решения «продолжаем» не было — спрашиваем сразу', dealsUntilNextVote(null, 5), 0);

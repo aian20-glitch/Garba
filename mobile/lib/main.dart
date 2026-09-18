@@ -955,6 +955,7 @@ class _GameTableScreenState extends State<GameTableScreen> {
   bool dealing = false;
   bool sendingCard = false;
   bool voting = false;
+  bool choosingKonTrump = false;
 
   @override
   void initState() {
@@ -1127,6 +1128,45 @@ class _GameTableScreenState extends State<GameTableScreen> {
     if (suit != null) await sendBid('ДВА', suit: suit);
   }
 
+  // Выигравший КОН называет козырь (RULES.md §6.7).
+  Future<void> chooseKonTrump(String suit) async {
+    if (choosingKonTrump) return;
+    setState(() => choosingKonTrump = true);
+
+    try {
+      final response = await http.post(
+        Uri.parse('$apiBase/rooms/${widget.roomCode}/kon-trump'),
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode({'playerId': widget.currentPlayerId, 'suit': suit}),
+      );
+
+      if (response.statusCode < 200 || response.statusCode >= 300) {
+        throw Exception(response.body);
+      }
+
+      await refreshRoom();
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Не удалось назвать козырь: $e')),
+      );
+    } finally {
+      if (mounted) setState(() => choosingKonTrump = false);
+    }
+  }
+
+  // Подпись кнопки заявки в две строки: название и цена. В одну строку четыре
+  // кнопки («РАЗ · 1 000», «ДВА · 500», «КОН · 500», «ПАС») не помещаются.
+  Widget bidLabel(String name, int stake) {
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Text(name, style: const TextStyle(fontWeight: FontWeight.w900)),
+        Text(fmtCoins(stake), style: const TextStyle(fontSize: 11)),
+      ],
+    );
+  }
+
   // Голос «продолжаем» / «делим кон», когда кон не по карману никому (RULES.md §12.2).
   Future<void> sendVote(String choice) async {
     if (voting) return;
@@ -1268,6 +1308,13 @@ class _GameTableScreenState extends State<GameTableScreen> {
     final baseKon = (game['baseKon'] as num?)?.toInt() ?? 0;
     final razStake = (game['razStake'] as num?)?.toInt() ?? 0;
     final dvaStake = (game['dvaStake'] as num?)?.toInt() ?? 0;
+    // КОН: открыт ли, сколько стоит, как назван козырь (RULES.md §6.7).
+    final konOpen = game['konAvailable'] == true;
+    final konStake = (game['konStake'] as num?)?.toInt() ?? 0;
+    final konAs = game['konAs']?.toString();
+    final myKonTrumpOptions = ((game['myKonTrumpOptions'] as List?) ?? const [])
+        .map((e) => Map<String, dynamic>.from(e as Map))
+        .toList();
     final konBefore = (game['konBeforeSettlement'] as num?)?.toInt();
     final closing = game['closing'] == true;
     final isRoomDone = stage == 'room_done';
@@ -1310,6 +1357,8 @@ class _GameTableScreenState extends State<GameTableScreen> {
       headline = 'Комната закрыта';
     } else if (isVote) {
       headline = 'Голосование';
+    } else if (stage == 'kon_trump') {
+      headline = 'КОН называет козырь';
     } else if (stage == 'awaiting_deal') {
       headline = 'Пересдача';
     } else if (isRoundDone) {
@@ -1439,7 +1488,7 @@ class _GameTableScreenState extends State<GameTableScreen> {
           ),
           const SizedBox(height: 4),
           const Text(
-            'Решает большинство, при ничьей — продолжаем',
+            'Делим, только если согласны все. Хоть один против — играем дальше',
             style: TextStyle(color: Colors.white54, fontSize: 12),
           ),
           if (waiting.isNotEmpty) ...[
@@ -1490,9 +1539,12 @@ class _GameTableScreenState extends State<GameTableScreen> {
         style: const TextStyle(color: Colors.white70, fontSize: 16),
       );
     } else if (isPlaying) {
-      final names = mains
-          .map((m) => '${m['playerName']} (${m['declaration']})')
-          .join(' и ');
+      // У КОНА видно, как он назвал козырь: «КОН по ДВА».
+      final names = mains.map((m) {
+        final d = m['declaration'].toString();
+        final label = d == 'КОН' && konAs != null ? 'КОН по $konAs' : d;
+        return '${m['playerName']} ($label)';
+      }).join(' и ');
       footer = Column(
         mainAxisSize: MainAxisSize.min,
         children: [
@@ -1537,8 +1589,22 @@ class _GameTableScreenState extends State<GameTableScreen> {
       footer = Column(
         mainAxisSize: MainAxisSize.min,
         children: [
+          // ГАРБА — дама, король и туз козыря: побеждает без розыгрыша (RULES.md §8).
+          if (result.any((r) => r['garba'] == true))
+            const GarbaBanner()
+          // ДВА с дамой, королём и тузом своей масти тоже побеждает без розыгрыша,
+          // но это не ГАРБА: без анимации, просто строкой (RULES.md §8).
+          else if (result.any((r) => r['instant'] == true))
+            const Padding(
+              padding: EdgeInsets.only(bottom: 8),
+              child: Text(
+                'Дама, король и туз козыря — без розыгрыша',
+                textAlign: TextAlign.center,
+                style: TextStyle(color: Colors.white60, fontSize: 13),
+              ),
+            )
           // Раздача не доигрывается до пятой взятки, если исход уже ясен.
-          if (trickNumber < 5)
+          else if (trickNumber < 5)
             Padding(
               padding: const EdgeInsets.only(bottom: 8),
               child: Text(
@@ -1554,7 +1620,8 @@ class _GameTableScreenState extends State<GameTableScreen> {
               padding: const EdgeInsets.symmetric(vertical: 4),
               child: Text(
                 '${r['playerName']} (${r['declaration']}): '
-                'взяток ${r['tricks']} — ${won ? 'ВЫИГРАЛ' : 'ПРОИГРАЛ'} '
+                '${r['garba'] == true ? 'ГАРБА' : r['instant'] == true ? 'Q K A козыря' : 'взяток ${r['tricks']}'} — '
+                '${won ? 'ВЫИГРАЛ' : 'ПРОИГРАЛ'} '
                 '${fmtDelta(delta)}',
                 textAlign: TextAlign.center,
                 style: TextStyle(
@@ -1920,6 +1987,53 @@ class _GameTableScreenState extends State<GameTableScreen> {
                     color: myTurn ? Colors.greenAccent : Colors.white60,
                   ),
                 )
+              else if (stage == 'kon_trump')
+                // Выигравший КОН называет козырь: по РАЗ или по ДВА (RULES.md §6.7).
+                // До этого козырь не знает никто, варианты сервер присылает только ему.
+                myKonTrumpOptions.isNotEmpty
+                    ? Column(
+                        crossAxisAlignment: CrossAxisAlignment.stretch,
+                        children: [
+                          const Text(
+                            'КОН: назовите козырь',
+                            textAlign: TextAlign.center,
+                            style: TextStyle(fontWeight: FontWeight.w900),
+                          ),
+                          const SizedBox(height: 8),
+                          Wrap(
+                            alignment: WrapAlignment.center,
+                            spacing: 10,
+                            runSpacing: 10,
+                            children: myKonTrumpOptions.map((o) {
+                              final suit = o['suit'].toString();
+                              return GestureDetector(
+                                onTap: choosingKonTrump
+                                    ? null
+                                    : () => chooseKonTrump(suit),
+                                child: Column(
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    SuitBadge(suit: suit),
+                                    const SizedBox(height: 4),
+                                    Text(
+                                      'по ${o['as']}',
+                                      style: const TextStyle(
+                                        color: Colors.white70,
+                                        fontSize: 12,
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              );
+                            }).toList(),
+                          ),
+                        ],
+                      )
+                    : Text(
+                        'Козырь называет ${mains.isNotEmpty ? mains.first['playerName'] : ''} (КОН)',
+                        textAlign: TextAlign.center,
+                        style: const TextStyle(color: Colors.white60),
+                      )
               else if (stage == 'bidding')
                 Row(
                   children: [
@@ -1927,22 +2041,32 @@ class _GameTableScreenState extends State<GameTableScreen> {
                       child: FilledButton(
                         onPressed: canBid('РАЗ') ? () => sendBid('РАЗ') : null,
                         // Сколько стоит заявка: столько заберёшь или положишь.
-                        child: Text('РАЗ · ${fmtCoins(razStake)}'),
+                        child: bidLabel('РАЗ', razStake),
                       ),
                     ),
                     if (capacity != 4) ...[
-                      const SizedBox(width: 8),
+                      const SizedBox(width: 6),
                       Expanded(
                         child: FilledButton(
                           onPressed:
                               canBid('ДВА')
                                   ? () => chooseDva(myDvaSuitOptions)
                                   : null,
-                          child: Text('ДВА · ${fmtCoins(dvaStake)}'),
+                          child: bidLabel('ДВА', dvaStake),
                         ),
                       ),
                     ],
-                    const SizedBox(width: 8),
+                    // КОН — только когда кон дорос до порога (RULES.md §6.7).
+                    if (konOpen) ...[
+                      const SizedBox(width: 6),
+                      Expanded(
+                        child: FilledButton(
+                          onPressed: canBid('КОН') ? () => sendBid('КОН') : null,
+                          child: bidLabel('КОН', konStake),
+                        ),
+                      ),
+                    ],
+                    const SizedBox(width: 6),
                     Expanded(
                       child: OutlinedButton(
                         onPressed: canBid('ПАС') ? () => sendBid('ПАС') : null,
@@ -1953,6 +2077,43 @@ class _GameTableScreenState extends State<GameTableScreen> {
                 ),
             ],
           ),
+        ),
+      ),
+    );
+  }
+}
+
+// «ГАРБА!» — надпись, которая при появлении увеличивается и загорается (RULES.md §8:
+// «показывается анимация ГАРБА»). Без пакетов анимации — встроенный TweenAnimationBuilder.
+class GarbaBanner extends StatelessWidget {
+  const GarbaBanner({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    return TweenAnimationBuilder<double>(
+      tween: Tween(begin: 0.3, end: 1),
+      duration: const Duration(milliseconds: 900),
+      curve: Curves.elasticOut,
+      builder: (_, scale, child) => Transform.scale(scale: scale, child: child),
+      child: const Padding(
+        padding: EdgeInsets.only(bottom: 10),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Text(
+              'ГАРБА!',
+              style: TextStyle(
+                fontSize: 44,
+                fontWeight: FontWeight.w900,
+                color: Color(0xFFD4A94F),
+                shadows: [Shadow(color: Color(0xAAD4A94F), blurRadius: 24)],
+              ),
+            ),
+            Text(
+              'Дама, король и туз козыря — без розыгрыша',
+              style: TextStyle(color: Colors.white70, fontSize: 13),
+            ),
+          ],
         ),
       ),
     );

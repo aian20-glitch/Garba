@@ -4,7 +4,7 @@
 import { eligibleTrumpSuits } from './config.js';
 import type { Card, Suit } from './types.js';
 
-export type Bid = 'РАЗ' | 'ДВА' | 'ПАС';
+export type Bid = 'РАЗ' | 'ДВА' | 'КОН' | 'ПАС';
 export type Capacity = 4 | 5 | 6 | 7;
 
 export type BidEntry = {
@@ -16,11 +16,13 @@ export type BidEntry = {
 export type MainPlayer = {
   playerId: string;
   playerName: string;
-  declaration: 'РАЗ' | 'ДВА';
+  declaration: 'РАЗ' | 'ДВА' | 'КОН';
 };
 
 export type BiddingOutcome =
   | { kind: 'main'; mains: MainPlayer[]; trumpSuit: Suit }
+  // Выиграл КОН: козырь он назовёт отдельным шагом после торгов (RULES.md §6.7).
+  | { kind: 'kon'; main: MainPlayer }
   | { kind: 'all_pass' };
 
 // Масть РАЗ — масть открытой карты. Исключение: при 4 игроках козырь всегда
@@ -44,6 +46,9 @@ export type Wallet = {
   balance: number;
   razStake: number;
   dvaStake: number;
+  // Сколько стоит КОН (базовый кон). null — КОН сейчас не открыт: кон не дорос
+  // до порога (RULES.md §6.7).
+  konStake: number | null;
 };
 
 // Какие заявки доступны игроку, чья сейчас очередь.
@@ -52,27 +57,36 @@ export function allowedBidsFor(
   bids: BidEntry[],
   wallet: Wallet,
 ): Bid[] {
-  const byRules = allowedByRules(capacity, bids);
+  // != null, а не !== null: отсутствующее поле тоже значит «КОН закрыт».
+  const byRules = allowedByRules(capacity, bids, wallet.konStake != null);
 
   // Заявиться можно, только если баланс покрывает возможный проигрыш именно
   // по этой заявке (RULES.md §6.6). ПАС доступен всегда.
   return byRules.filter((bid) => {
     if (bid === 'РАЗ') return wallet.balance >= wallet.razStake;
     if (bid === 'ДВА') return wallet.balance >= wallet.dvaStake;
+    if (bid === 'КОН') return wallet.konStake != null && wallet.balance >= wallet.konStake;
     return true;
   });
 }
 
-function allowedByRules(capacity: Capacity, bids: BidEntry[]): Bid[] {
+// Нельзя сказать заявку ниже уже прозвучавшей (RULES.md §6.4):
+//   ничего → РАЗ, ДВА, КОН (если открыт), ПАС
+//   КОН    → РАЗ, ДВА, ПАС      (второго КОНА не бывает)
+//   ДВА    → РАЗ, ПАС           (второго ДВА не бывает, КОН ниже)
+//   РАЗ    → РАЗ, ПАС           (второй РАЗ — последний)
+function allowedByRules(capacity: Capacity, bids: BidEntry[], konOpen: boolean): Bid[] {
+  const said = (bid: Bid) => bids.some((b) => b.bid === bid);
+  const allowed: Bid[] = ['РАЗ'];
+
   // При 4 игроках ДВА не существует (RULES.md §6.2).
-  if (capacity === 4) return ['РАЗ', 'ПАС'];
+  if (capacity !== 4 && !said('РАЗ') && !said('ДВА')) allowed.push('ДВА');
 
-  // Нельзя сказать заявку ниже уже прозвучавшей (RULES.md §6.4): после РАЗ
-  // ДВА не говорят, второго ДВА не бывает.
-  const dvaOrRazSaid = bids.some((b) => b.bid === 'ДВА' || b.bid === 'РАЗ');
-  if (dvaOrRazSaid) return ['РАЗ', 'ПАС'];
+  // КОН — только пока не прозвучало ничего выше и не было другого КОНА.
+  if (konOpen && !said('РАЗ') && !said('ДВА') && !said('КОН')) allowed.push('КОН');
 
-  return ['РАЗ', 'ДВА', 'ПАС'];
+  allowed.push('ПАС');
+  return allowed;
 }
 
 // Закончились ли торги после очередной заявки.
@@ -127,6 +141,27 @@ export function resolveBidding(
     };
   }
 
+  // Ни РАЗ, ни ДВА — играет КОН, если был. Козырь он назовёт после торгов.
+  const kon = bids.find((b) => b.bid === 'КОН');
+  if (kon) {
+    return {
+      kind: 'kon',
+      main: { playerId: kon.playerId, playerName: kon.playerName, declaration: 'КОН' },
+    };
+  }
+
   // Все спасовали — пересдача (RULES.md §6.5).
   return { kind: 'all_pass' };
+}
+
+// Какие масти может назвать козырем выигравший КОН: масть РАЗ или любую масть ДВА
+// (RULES.md §6.7). При 4 игроках выбора нет — только черви.
+export function konTrumpOptions(
+  capacity: Capacity,
+  razSuit: Suit,
+): { suit: Suit; as: 'РАЗ' | 'ДВА' }[] {
+  return [
+    { suit: razSuit, as: 'РАЗ' },
+    ...dvaSuitOptions(capacity, razSuit).map((suit) => ({ suit, as: 'ДВА' as const })),
+  ];
 }

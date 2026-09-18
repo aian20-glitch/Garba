@@ -13,10 +13,12 @@
 #   .\tools\garba.ps1 passall -Room 12345     боты пасуют, пока очередь не дойдёт до тебя
 #   .\tools\garba.ps1 playall -Room 12345     боты ходят картами, пока очередь не дойдёт до тебя
 #   .\tools\garba.ps1 vote    -Room 12345 -Choice split      все боты голосуют (continue | split)
+#   .\tools\garba.ps1 bid     -Room 12345 -Bid КОН -Bot 1    КОН (когда кон дорос до порога)
+#   .\tools\garba.ps1 kontrump -Room 12345 -Suit diamonds    бот, выигравший КОН, называет козырь
 
 param(
     [Parameter(Mandatory = $true, Position = 0)]
-    [ValidateSet('join', 'state', 'deal', 'bid', 'passall', 'playall', 'vote')]
+    [ValidateSet('join', 'state', 'deal', 'bid', 'passall', 'playall', 'vote', 'kontrump')]
     [string]$Command,
 
     [Parameter(Mandatory = $true)]
@@ -72,6 +74,12 @@ function Show-State {
     $g = $r.game
     Write-Host "Раздающий: $($g.dealerName) | стадия: $($g.stage)"
     Write-Host "Кон: $($g.kon) (базовый $($g.baseKon)) | РАЗ стоит $($g.razStake), ДВА стоит $($g.dvaStake)"
+    if ($g.konAvailable) {
+        Write-Host "КОН открыт (с $($g.konUnlockAt)), стоит $($g.konStake)"
+    }
+    if ($g.stage -eq 'kon_trump') {
+        Write-Host "КОН выиграл $($g.mains[0].playerName) — ждём, какой козырь он назовёт"
+    }
     if ($g.closing) {
         Write-Host "У кого-то меньше базового кона — доигрываем последний кон"
     }
@@ -137,13 +145,17 @@ function Show-State {
 
     if ($g.stage -eq 'round_done') {
         Write-Host ""
-        if ($g.trickNumber -lt 5) {
+        $noPlay = @($g.result | Where-Object { $_.instant }).Count -gt 0
+        if ($g.trickNumber -lt 5 -and -not $noPlay) {
             Write-Host "Исход ясен после $($g.trickNumber)-й взятки — дальше не играли"
         }
         foreach ($res in $g.result) {
             $verdict = 'ПРОИГРАЛ'
             if ($res.won) { $verdict = 'ВЫИГРАЛ' }
-            Write-Host "ИТОГ: $($res.playerName) ($($res.declaration)) — взяток $($res.tricks), $verdict, $($res.delta)"
+            $how = "взяток $($res.tricks)"
+            if ($res.garba) { $how = 'ГАРБА, без розыгрыша' }
+            elseif ($res.instant) { $how = 'Q K A козыря, без розыгрыша (не ГАРБА)' }
+            Write-Host "ИТОГ: $($res.playerName) ($($res.declaration)) — $how, $verdict, $($res.delta)"
         }
         Write-Host "Кон: $($g.konBeforeSettlement) -> $($g.kon). Следующую раздачу сдаёт $($g.dealerName)"
     }
@@ -279,6 +291,26 @@ switch ($Command) {
         Show-State
     }
 
+    'kontrump' {
+        # Бот, выигравший КОН, называет козырь. -Suit не задан — берёт масть РАЗ.
+        $r = Get-RoomState $null
+        if (-not $r.game -or $r.game.stage -ne 'kon_trump') {
+            Write-Host "Сейчас никто не выбирает козырь для КОНА, стадия: $($r.game.stage)"
+            break
+        }
+        $konId = $r.game.mains[0].playerId
+        $b = $bots | Where-Object { $_.id -eq $konId }
+        if (-not $b) {
+            Write-Host "КОН у живого игрока ($($r.game.mains[0].playerName)). Выбирай козырь в приложении."
+            break
+        }
+        $pick = $Suit
+        if (-not $pick) { $pick = $r.game.razSuit }
+        Send-Json "$base/rooms/$Room/kon-trump" @{ playerId = $b.id; suit = $pick } | Out-Null
+        Write-Host "$($b.name) (КОН) назвал козырь: $pick"
+        Show-State
+    }
+
     'vote' {
         # Все боты, которые ещё не голосовали, голосуют одинаково.
         # Сервер объявит итог, как только его нельзя будет изменить.
@@ -299,6 +331,9 @@ switch ($Command) {
         Show-State
     }
 }
+
+
+
 
 
 

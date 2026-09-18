@@ -4,7 +4,7 @@
 // Места за столом — массив id в порядке против часовой стрелки:
 // следующий элемент = сосед справа, предыдущий = сосед слева.
 
-import { canPlayCard, trickWinner } from './rules.js';
+import { canPlayCard, isGarba, trickWinner } from './rules.js';
 import type { Card, Suit } from './types.js';
 
 export const TRICKS_PER_ROUND = 5;
@@ -48,6 +48,28 @@ export function winnerOfTrick(trick: TrickCard[], trumpSuit: Suit): string {
   const winner = trickWinner(trick, trumpSuit);
   if (!winner) throw new Error('empty trick has no winner');
   return winner;
+}
+
+// Дама, король и туз козыря на руках у главного. Три старших козыря побить нечем,
+// поэтому раздача не разыгрывается: главный выигрывает сразу (RULES.md §8).
+//
+// При РАЗ и КОНЕ это ГАРБА — с анимацией и записью в статистику.
+// При ДВА — тоже победа сразу, но это не ГАРБА: без анимации и не в статистику,
+// потому что у ДВА нет риска РАЗ.
+export const GARBA_DECLARATIONS: ReadonlyArray<string> = ['РАЗ', 'КОН'];
+
+export function countsAsGarba(declaration: string): boolean {
+  return GARBA_DECLARATIONS.includes(declaration);
+}
+
+// Индекс главного, который выигрывает сразу, без розыгрыша, или -1.
+// Двух таких быть не может: дама, король и туз козыря в колоде по одной.
+export function instantWinIndex(
+  mains: { playerId: string; declaration: string }[],
+  hands: Record<string, Card[]>,
+  trumpSuit: Suit,
+): number {
+  return mains.findIndex((m) => isGarba(hands[m.playerId] ?? [], trumpSuit));
 }
 
 export type MainStatus = 'won' | 'lost' | 'open';

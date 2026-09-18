@@ -15,18 +15,15 @@ export function dealsUntilNextVote(
   return Math.max(0, playerCount - dealsSinceContinue);
 }
 
-// Итог голосования. Решает большинство, при ничьей — продолжаем.
-// Итог объявляется, как только его уже нельзя изменить оставшимися голосами:
-// большинство за «делим» набрано, или «продолжаем» набрало половину (тогда в
-// худшем случае ничья, а ничья — это тоже «продолжаем»).
+// Итог голосования. Делим, только если согласны все; хоть один против — продолжаем
+// (RULES.md §12.2): у игрока есть шанс выиграть на КОНЕ и потом сказать ДВА.
+// Итог объявляется, как только его уже нельзя изменить: первый же голос
+// «продолжаем» решает всё, а «делим» — только когда так проголосовали все.
 export function tallyVote(
   votes: VoteChoice[],
   playerCount: number,
 ): VoteChoice | 'pending' {
-  const split = votes.filter((v) => v === 'split').length;
-  const cont = votes.filter((v) => v === 'continue').length;
-
-  if (split * 2 > playerCount) return 'split';
-  if (cont * 2 >= playerCount) return 'continue';
+  if (votes.includes('continue')) return 'continue';
+  if (votes.length >= playerCount) return 'split';
   return 'pending';
 }

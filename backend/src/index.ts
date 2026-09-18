@@ -11,6 +11,7 @@ import {
   COIN_STEP,
   collectAnte,
   ENTRY_STEP,
+  konAvailable,
   konUnlockAt,
   lowestEntryFor,
   MAX_ENTRY,
@@ -30,6 +31,7 @@ import {
   allowedBidsFor,
   dvaSuitOptions,
   isBiddingOver,
+  konTrumpOptions,
   razSuitFor,
   resolveBidding,
   type Bid,
@@ -41,6 +43,8 @@ import {
 import { dealsUntilNextVote, tallyVote, type VoteChoice } from './vote.js';
 import {
   firstLeader,
+  countsAsGarba,
+  instantWinIndex,
   mainStatus,
   nextSeat,
   playableCards,
@@ -81,11 +85,13 @@ type RevealCard = Card & {
 // playing       — главный определён, идёт розыгрыш 5 взяток
 // round_done    — раздача сыграна, деньги посчитаны, следующий раздающий должен раздать
 // awaiting_deal — пересдача: все спасовали, новый раздающий должен раздать
+// kon_trump     — торги выиграл КОН, он называет козырь: РАЗ или ДВА (§6.7)
 // vote          — кон не по карману никому: голосуем, продолжаем или делим (§12.2)
 // room_done     — комната закрыта: кон забрали (§12.1) или поделили по голосованию (§12.2)
 type Stage =
   | 'dealer_found'
   | 'bidding'
+  | 'kon_trump'
   | 'playing'
   | 'round_done'
   | 'awaiting_deal'
@@ -96,6 +102,10 @@ type MainResult = MainPlayer & {
   tricks: number;
   won: boolean;
   delta: number; // сколько монет получил (+) или положил в кон (−)
+  // Выиграл сразу, без розыгрыша: дама, король и туз козыря на руках (§8).
+  instant: boolean;
+  // Это ГАРБА — только при РАЗ и КОНЕ: анимация и статистика. При ДВА — нет.
+  garba: boolean;
 };
 
 // Пустая раздача — никто не играет: все спасовали (§6.5) или три раза подряд
@@ -137,6 +147,8 @@ type GameState = {
   // до начала розыгрыша (§6.3): в публичное состояние не попадает никогда —
   // когда ДВА становится главным, она раскрывается через trumpSuit.
   dvaSuit: Suit | null;
+  // Выиграл КОН — как он назвал козырь: по РАЗ (масть РАЗ) или по ДВА (§6.7).
+  konAs: 'РАЗ' | 'ДВА' | null;
 
   // Розыгрыш.
   turnPlayerId: string | null;
@@ -245,6 +257,7 @@ function makeDealerSelection(room: Room): GameState {
     lastRedeal: null,
     izzhoga: [],
     dvaSuit: null,
+    konAs: null,
     ...emptyPlayState(),
     hands: {},
     bids: [],
@@ -279,6 +292,10 @@ function walletOf(room: Room, playerId: string): Wallet {
     balance: player?.balance ?? 0,
     razStake: stakeFor('РАЗ', kon, base),
     dvaStake: stakeFor('ДВА', kon, base),
+    // КОН открыт, только когда кон дорос до порога (§6.7), и стоит базовый кон.
+    konStake: konAvailable(kon, base, room.settings.konThreshold)
+      ? stakeFor('КОН', kon, base)
+      : null,
   };
 }
 
@@ -324,6 +341,7 @@ function startVoteIfNobodyCanPlay(room: Room) {
   if (game.kon === 0) return; // пустой кон заново соберут взносом
   if (game.stage !== 'round_done' && game.stage !== 'awaiting_deal') return;
 
+  // Смотрим только на РАЗ и ДВА: заявка КОН голосованию не мешает (§12.2).
   const cheapest = cheapestStake(room.capacity, game.kon, roomBaseKon(room));
   const balances = room.players.map((p) => p.balance);
   if (!nobodyCanPlay(balances, cheapest)) return;
@@ -422,6 +440,7 @@ function beginBidding(room: Room) {
   game.lastRedeal = null;
   game.izzhoga = [];
   game.dvaSuit = null;
+  game.konAs = null;
   Object.assign(game, emptyPlayState());
   game.konBeforeSettlement = null;
 
@@ -517,6 +536,7 @@ function emptyRound(room: Room, reason: EmptyRoundReason) {
   game.razSuit = null;
   game.trumpSuit = null;
   game.dvaSuit = null;
+  game.konAs = null;
   game.mains = [];
   game.hands = {};
   game.bids = [];
@@ -530,8 +550,41 @@ function emptyRound(room: Room, reason: EmptyRoundReason) {
   startVoteIfNobodyCanPlay(room);
 }
 
+// Главные и козырь известны — начинается розыгрыш.
+// Первым ходит сосед слева от первого главного (RULES.md §10.4, §10.5).
+// Но если у главного дама, король и туз козыря, разыгрывать нечего: он выигрывает
+// сразу (§8). При РАЗ и КОНЕ это ГАРБА, при ДВА — просто победа без розыгрыша.
+function startPlay(room: Room) {
+  const game = room.game!;
+  const seatIds = room.players.map((p) => p.id);
+
+  Object.assign(game, emptyPlayState());
+  game.tricksWon = Object.fromEntries(seatIds.map((id) => [id, 0]));
+
+  const instantIndex = instantWinIndex(game.mains, game.hands, game.trumpSuit!);
+  if (instantIndex >= 0) {
+    // Ни одной взятки не сыграно — trickNumber остаётся 0.
+    finishRound(
+      room,
+      game.mains.map((_, i) => i === instantIndex),
+      instantIndex,
+    );
+    const main = game.mains[instantIndex];
+    console.log(
+      countsAsGarba(main.declaration)
+        ? `[ROOM ${room.id}] ГАРБА у ${main.playerName}`
+        : `[ROOM ${room.id}] ${main.playerName} (${main.declaration}): Q K A козыря — без розыгрыша`,
+    );
+    return;
+  }
+
+  game.stage = 'playing';
+  game.trickNumber = 1;
+  game.turnPlayerId = firstLeader(seatIds, game.mains[0].playerId);
+}
+
 // Торги закончились: либо определился главный, либо все спасовали.
-function finishBidding(room: Room): 'main' | 'all_pass' {
+function finishBidding(room: Room): 'main' | 'kon' | 'all_pass' {
   const game = room.game;
   if (!game || !game.razSuit) {
     throw new Error('finishBidding called outside of bidding');
@@ -551,16 +604,25 @@ function finishBidding(room: Room): 'main' | 'all_pass' {
     game.trumpSuit = outcome.trumpSuit;
     // Кто-то сыграл — счётчик пустых раздач обнуляется (RULES.md §9.3).
     game.emptyStreak = 0;
-
-    // Главный определён — сразу начинается розыгрыш.
-    // Первым ходит сосед слева от первого главного (RULES.md §10.4, §10.5).
-    const seatIds = room.players.map((p) => p.id);
-    game.stage = 'playing';
-    Object.assign(game, emptyPlayState());
-    game.trickNumber = 1;
-    game.tricksWon = Object.fromEntries(seatIds.map((id) => [id, 0]));
-    game.turnPlayerId = firstLeader(seatIds, outcome.mains[0].playerId);
+    startPlay(room);
     return 'main';
+  }
+
+  // Торги выиграл КОН. Козырь он называет отдельным шагом после торгов —
+  // по РАЗ или по ДВА (§6.7). При 4 игроках выбора нет: козырь всегда черви.
+  if (outcome.kind === 'kon') {
+    game.mains = [outcome.main];
+    game.emptyStreak = 0;
+
+    const options = konTrumpOptions(room.capacity as Capacity, game.razSuit);
+    if (options.length === 1) {
+      game.konAs = options[0].as;
+      game.trumpSuit = options[0].suit;
+      startPlay(room);
+    } else {
+      game.stage = 'kon_trump';
+    }
+    return 'kon';
   }
 
   // Все спасовали — пересдача (RULES.md §6.5).
@@ -626,7 +688,8 @@ function playCard(
 
 // Раздача сыграна: считаем деньги, передаём раздачу, проверяем конец комнаты.
 // won[i] — выиграл ли game.mains[i].
-function finishRound(room: Room, won: boolean[]) {
+// instantIndex — индекс главного, выигравшего сразу, без розыгрыша, или -1.
+function finishRound(room: Room, won: boolean[], instantIndex = -1) {
   const game = room.game!;
   const base = roomBaseKon(room);
 
@@ -654,6 +717,8 @@ function finishRound(room: Room, won: boolean[]) {
     tricks: game.tricksWon[m.playerId] ?? 0,
     won: won[i],
     delta: settlement.deltas[m.playerId] ?? 0,
+    instant: i === instantIndex,
+    garba: i === instantIndex && countsAsGarba(m.declaration),
   }));
 
   updateClosing(room);
@@ -732,8 +797,24 @@ function publicRoom(room: Room, viewerId?: string) {
       razStake: stakeFor('РАЗ', room.game.kon, roomBaseKon(room)),
       dvaStake: stakeFor('ДВА', room.game.kon, roomBaseKon(room)),
       konBeforeSettlement: room.game.konBeforeSettlement,
-      // С какого кона откроется заявка КОН (сама заявка — этап 6).
+      // С какого кона открывается заявка КОН, открыта ли она сейчас и сколько стоит (§6.7).
       konUnlockAt: konUnlockAt(roomBaseKon(room), room.settings.konThreshold),
+      konAvailable: konAvailable(
+        room.game.kon,
+        roomBaseKon(room),
+        room.settings.konThreshold,
+      ),
+      konStake: stakeFor('КОН', room.game.kon, roomBaseKon(room)),
+      // Как КОН назвал козырь — видно всем, когда козырь уже объявлен.
+      konAs: room.game.trumpSuit ? room.game.konAs : null,
+      // Выбор козыря — только игроку, выигравшему КОН, пока он выбирает.
+      myKonTrumpOptions:
+        room.game.stage === 'kon_trump' &&
+        viewerId !== undefined &&
+        viewerId === room.game.mains[0]?.playerId &&
+        room.game.razSuit
+          ? konTrumpOptions(room.capacity as Capacity, room.game.razSuit)
+          : [],
       emptyStreak: room.game.emptyStreak,
       lastAnte: room.game.lastAnte,
       closing: room.game.closing,
@@ -1143,12 +1224,17 @@ app.post('/rooms/:id/bid', (req, res) => {
   room.game.bidIndex += 1;
 
   if (isBiddingOver(room.game.bids, room.game.bidOrder.length)) {
-    if (finishBidding(room) === 'main') {
+    const outcome = finishBidding(room);
+    if (outcome === 'main') {
       const mains = room.game.mains
         .map((m) => `${m.playerName} (${m.declaration})`)
         .join(', ');
       console.log(
         `[ROOM ${room.id}] bidding finished, main: ${mains}, trump=${room.game.trumpSuit}`,
+      );
+    } else if (outcome === 'kon') {
+      console.log(
+        `[ROOM ${room.id}] bidding finished, КОН: ${room.game.mains[0].playerName}`,
       );
     } else {
       console.log(
@@ -1215,6 +1301,44 @@ app.post('/rooms/:id/play', (req, res) => {
       .join(', ');
     console.log(`[ROOM ${room.id}] round done: ${summary}`);
   }
+
+  return res.json(publicRoom(room, String(playerId)));
+});
+
+// Выигравший КОН называет козырь: по РАЗ (масть РАЗ) или по ДВА (§6.7).
+// До этого момента козырь не знает никто — trumpSuit пуст.
+app.post('/rooms/:id/kon-trump', (req, res) => {
+  const room = rooms.get(req.params.id);
+
+  if (!room || !room.game) {
+    return res.status(404).json({ error: 'room/game not found' });
+  }
+
+  const game = room.game;
+  const { playerId, suit } = req.body ?? {};
+
+  if (game.stage !== 'kon_trump' || !game.razSuit) {
+    return res.status(409).json({ error: 'not choosing КОН trump', stage: game.stage });
+  }
+
+  if (game.mains[0]?.playerId !== String(playerId)) {
+    return res.status(403).json({ error: 'only the КОН player chooses trump' });
+  }
+
+  const options = konTrumpOptions(room.capacity as Capacity, game.razSuit);
+  const choice = options.find((o) => o.suit === suit);
+
+  if (!choice) {
+    return res.status(400).json({ error: 'choose a trump suit', options });
+  }
+
+  game.konAs = choice.as;
+  game.trumpSuit = choice.suit;
+  startPlay(room);
+
+  console.log(
+    `[ROOM ${room.id}] КОН ${game.mains[0].playerName}: козырь ${choice.suit} (по ${choice.as})`,
+  );
 
   return res.json(publicRoom(room, String(playerId)));
 });

@@ -25,7 +25,7 @@ export function lowestEntryFor(ante: number): number {
 // округляется вниз до сотни (RULES.md §11.4).
 export const COIN_STEP = 100;
 
-export type Declaration = 'РАЗ' | 'ДВА';
+export type Declaration = 'РАЗ' | 'ДВА' | 'КОН';
 
 // Базовый кон = число игроков × взнос (RULES.md §9.1).
 export function baseKon(playerCount: number, ante: number): number {
@@ -39,8 +39,10 @@ export function baseKon(playerCount: number, ante: number): number {
 // ДВА — половина кона, но только когда кон дорос до ×2 базового. Пока кон
 // меньше ×2 базового, делить нечего: ДВА стоит весь кон, как и РАЗ (RULES.md §11.4).
 // Пример: 5 × 100, кон 800 — меньше 1000, поэтому РАЗ и ДВА оба стоят 800.
+// КОН — всегда базовый кон, сколько бы ни лежало (RULES.md §6.7, §11.6).
 export function stakeFor(declaration: Declaration, kon: number, base: number): number {
   if (declaration === 'РАЗ') return kon;
+  if (declaration === 'КОН') return base;
   if (kon >= 2 * base) {
     // Половина округляется вниз до сотни, чтобы в коне всегда оставалось
     // не меньше, чем забирает ДВА: кон 1500 → ДВА 700, в коне 800.
@@ -116,17 +118,23 @@ export function collectAnte(
   return { paid, total, brokePlayerIds };
 }
 
-// С какого кона открывается заявка КОН (RULES.md §6.7). Сама заявка — этап 6.
+// С какого кона открывается заявка КОН (RULES.md §6.7).
 export function konUnlockAt(base: number, threshold: number): number {
   return base * threshold;
 }
 
-// Самая дешёвая заявка при этом коне. При 4 игроках ДВА нет — только РАЗ.
-// При 5+ — ДВА (с кона ×2 базового он вдвое дешевле РАЗ, до этого стоит столько же).
-// Когда появится КОН (этап 6), он тоже должен попасть сюда — см. RULES.md §15.
+// Открыт ли КОН при этом коне. Порог проверяется в каждой раздаче заново.
+export function konAvailable(kon: number, base: number, threshold: number): boolean {
+  return kon >= konUnlockAt(base, threshold);
+}
+
+// Самая дешёвая из заявок РАЗ и ДВА при этом коне — по ней решается, можно ли
+// голосовать «продолжаем / делим» (RULES.md §12.2).
+// При 4 игроках ДВА нет — только РАЗ. При 5+ — ДВА (с кона ×2 базового он вдвое
+// дешевле РАЗ, до этого стоит столько же).
+// КОН сюда намеренно не входит: по правилам заявка КОН голосованию не мешает.
 export function cheapestStake(capacity: number, kon: number, base: number): number {
-  if (capacity === 4) return stakeFor('РАЗ', kon, base);
-  return stakeFor('ДВА', kon, base);
+  return capacity === 4 ? stakeFor('РАЗ', kon, base) : stakeFor('ДВА', kon, base);
 }
 
 // Кон никто не может взять: ни у кого не хватает даже на самую дешёвую заявку.

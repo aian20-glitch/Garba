@@ -16,7 +16,7 @@ import type { Suit } from '../src/types.js';
 
 
 // Богатый игрок: деньги не ограничивают, проверяем только правила.
-const rich: Wallet = { balance: 1e9, razStake: 0, dvaStake: 0 };
+const rich: Wallet = { balance: 1e9, razStake: 0, dvaStake: 0, konStake: null };
 
 
 // Прогоняет торги: заявки идут по очереди, пока isBiddingOver не скажет стоп.
