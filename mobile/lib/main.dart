@@ -3958,20 +3958,6 @@ class _GameTableScreenState extends State<GameTableScreen> {
 
       // Центр стола: открытая карта и масть РАЗ в торгах, козырь в розыгрыше.
       final centerParts = <Widget>[
-        // Кон — как банк в центре покерного стола.
-        Container(
-          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 3),
-          margin: const EdgeInsets.only(bottom: 6),
-          decoration: BoxDecoration(
-            color: const Color(0xCC0B1620),
-            borderRadius: BorderRadius.circular(14),
-            border: Border.all(color: gold.withValues(alpha: 0.6)),
-          ),
-          child: Text(
-            'КОН 🪙 ${fmtCoins(kon)}',
-            style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w900, color: gold),
-          ),
-        ),
         if (openCard != null && !isPlaying && !isRoundDone)
           SmallTrumpCard(
             rank: openCard['rank'].toString(),
@@ -4120,14 +4106,39 @@ class _GameTableScreenState extends State<GameTableScreen> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              Text(
-                'Раздающий: $dealerName',
-                textAlign: TextAlign.center,
-                style: const TextStyle(
-                  color: Color(0xFFD4A94F),
-                  fontSize: 18,
-                  fontWeight: FontWeight.w800,
-                ),
+              // Кон — над столом: в центре стола его закрывали карты взятки при 6–7 игроках.
+              Row(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  Flexible(
+                    child: Text(
+                      'Раздающий: $dealerName',
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                        color: Color(0xFFD4A94F),
+                        fontSize: 16,
+                        fontWeight: FontWeight.w800,
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 12),
+                  Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 3),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFF14503F),
+                      borderRadius: BorderRadius.circular(14),
+                      border: Border.all(color: const Color(0xFFD4A94F)),
+                    ),
+                    child: Text(
+                      'КОН 🪙 ${fmtCoins(kon)}',
+                      style: const TextStyle(
+                        fontSize: 15,
+                        fontWeight: FontWeight.w900,
+                        color: Color(0xFFD4A94F),
+                      ),
+                    ),
+                  ),
+                ],
               ),
               if (paused && !isRoomDone)
                 Container(
