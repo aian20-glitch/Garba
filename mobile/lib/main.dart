@@ -3731,7 +3731,7 @@ class _GameTableScreenState extends State<GameTableScreen> {
     // Круглый стол (RULES.md §2): я внизу, остальные — по кругу против часовой стрелки.
     // Следующий в room.players — сосед справа: на экране он правее меня, дальше вверх и
     // влево, и так обратно ко мне. Карта взятки лежит перед игроком, ближе к центру.
-    Widget roundTable() {
+    Widget roundTable(double maxHeight) {
       final n = players.length;
       final myIndex = math.max(
         0,
@@ -3991,7 +3991,7 @@ class _GameTableScreenState extends State<GameTableScreen> {
       return LayoutBuilder(
         builder: (context, constraints) {
           final width = constraints.maxWidth;
-          final height = (width * 1.2).clamp(330.0, 480.0);
+          final height = math.min((width * 1.2).clamp(330.0, 480.0), maxHeight);
           return SizedBox(
             height: height,
             child: Stack(
@@ -4128,13 +4128,13 @@ class _GameTableScreenState extends State<GameTableScreen> {
               ),
               const SizedBox(height: 14),
               Expanded(
-                child: Container(
-                  // Прокрутка: при 7 игроках, взятке и истории взяток стол не влезает
-                  // по высоте на телефон.
-                  child: SingleChildScrollView(
+                // Стол — по свободной высоте экрана, чтобы моё место внизу не обрезалось.
+                // Под столом прокручиваются итоги и история взяток.
+                child: LayoutBuilder(
+                  builder: (context, box) => SingleChildScrollView(
                     child: Column(
                     children: [
-                      roundTable(),
+                      roundTable(box.maxHeight),
                       const SizedBox(height: 16),
                       footer,
                       // Смайлики — только когда раздача сыграна или комната закрыта
