@@ -125,6 +125,16 @@ cd C:\Garba\mobile && "C:\Users\Gold Lombard\Desktop\flutter\bin\flutter.bat" an
    упадёт — `npm approve-scripts esbuild` (или переустановить), а не искать ошибку в коде.
 5. На Mac `adb exec-out screencap` скорее всего работает нормально — чёрный кадр был
    особенностью этого ПК.
+6. **Mac владельца: Apple M2, macOS Tahoe 26.5.1** — годится для последнего Xcode и выпуска
+   в App Store; Android-эмулятор на M2 — ARM-образ, работает быстро.
+7. **До первого запуска на симуляторе iPhone** поправить в приложении:
+   - `apiBase` сейчас `http://10.0.2.2:3000` — это адрес ПК только из Android-эмулятора.
+     Симулятору iPhone нужен `http://localhost:3000`: выбирать по платформе
+     (`Platform.isIOS`), а для настоящих телефонов — адрес компьютера в сети или сервер в интернете;
+   - iOS запрещает обычный http (App Transport Security): для разработки в `ios/Runner/Info.plist`
+     разрешить `NSAllowsLocalNetworking`; к выпуску сервер должен быть на https;
+   - iOS-плагины (image_picker, share_plus, app_links, shared_preferences) ставятся через
+     CocoaPods: `pod install` делает `flutter run` сам, если CocoaPods установлен.
 
 ---
 
