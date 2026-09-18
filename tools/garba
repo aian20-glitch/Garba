@@ -1,0 +1,4 @@
+#!/bin/sh
+# Боты для ручной проверки на Mac/Linux — обёртка над backend/scripts/garba.ts.
+# На Windows — tools/garba.ps1. Команды: см. начало backend/scripts/garba.ts.
+cd "$(dirname "$0")/../backend" && exec npx tsx scripts/garba.ts "$@"

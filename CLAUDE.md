@@ -8,13 +8,13 @@
 ## 1. Стек и структура
 
 ```
-C:\Garba\backend                 Node.js + TypeScript, Express, порт 3000
-C:\Garba\backend\src\index.ts    основной файл backend (вся логика сейчас здесь)
-C:\Garba\mobile                  Flutter приложение (Android)
-C:\Garba\mobile\lib\main.dart    основной файл Flutter (весь UI сейчас здесь)
+~/Garba/backend                  Node.js + TypeScript, Express, порт 3000
+~/Garba/backend/src/index.ts     основной файл backend (вся логика сейчас здесь)
+~/Garba/mobile                   Flutter приложение (Android)
+~/Garba/mobile/lib/main.dart     основной файл Flutter (весь UI сейчас здесь)
 ```
 
-Модули в `backend\src` — что подключено к `index.ts`, а что нет:
+Модули в `backend/src` — что подключено к `index.ts`, а что нет:
 
 | Файл | Оценка |
 |---|---|
@@ -48,28 +48,34 @@ C:\Garba\mobile\lib\main.dart    основной файл Flutter (весь UI 
 
 ---
 
-## 2. Окружение (Windows)
+## 2. Окружение (MacBook, с 19.09.2026)
 
-- Node.js v26.5.0, npm 11.17.0
-- Android SDK: `C:\Android\Sdk`, NDK `28.2.13676358` — не трогать
-- ADB: `C:\Android\Sdk\platform-tools\adb.exe`
-- Эмулятор: Pixel 8, Android 16 / API 36, id `emulator-5554`
-- **Flutter НЕ в PATH.** Всегда полной командой:
-  `"C:\Users\Gold Lombard\Desktop\flutter\bin\flutter.bat"`
-- Flutter ходит на backend по `http://10.0.2.2:3000` (это localhost ПК из эмулятора)
+Проект переехал с Windows-ПК на MacBook: Apple M2, 16 ГБ памяти, macOS Tahoe 26.5.1.
+Всё ставилось через Homebrew.
+
+- Node.js 26.9 (`brew install node`), npm 11.19
+- Flutter 3.47.4 (`brew install --cask flutter`), в PATH — просто `flutter`
+- Android SDK: `~/Library/Android/sdk` (без Android Studio: `brew install --cask
+  android-commandlinetools`, дальше `sdkmanager`). NDK `28.2.13676358` Gradle докачал сам.
+- ADB: `~/Library/Android/sdk/platform-tools/adb` (в PATH не прописан)
+- Эмулятор: `Pixel_8`, Android 16 / API 36, ARM-образ `google_apis;arm64-v8a`, id `emulator-5554`
+- Java 25 уже стояла в системе — Gradle 9.3.1 с ней работает, отдельная JDK не нужна
+- Xcode и CocoaPods **не установлены** (для iOS нужны; на диске свободно ~20 ГБ, Xcode ~15–20 ГБ)
+- Flutter ходит на backend по `http://10.0.2.2:3000` (это localhost Mac из Android-эмулятора)
 
 Запуск:
 
-```bat
-cd C:\Garba\backend && npm run dev
-cd C:\Garba\mobile && "C:\Users\Gold Lombard\Desktop\flutter\bin\flutter.bat" run -d emulator-5554
+```bash
+cd ~/Garba/backend && npm run dev
+~/Library/Android/sdk/emulator/emulator -avd Pixel_8 &
+cd ~/Garba/mobile && flutter run -d emulator-5554
 ```
 
 Проверка после каждого этапа:
 
-```bat
-cd C:\Garba\backend && npm test
-cd C:\Garba\mobile && "C:\Users\Gold Lombard\Desktop\flutter\bin\flutter.bat" analyze
+```bash
+cd ~/Garba/backend && npm test
+cd ~/Garba/mobile && flutter analyze
 ```
 
 `npm run test:live` — живая проверка сервера, два файла:
@@ -91,50 +97,36 @@ cd C:\Garba\mobile && "C:\Users\Gold Lombard\Desktop\flutter\bin\flutter.bat" an
 `flutter analyze` сейчас всегда показывает 2 старые проблемы, не связанные с кодом игры:
 в `pubspec.yaml` нет `flutter_lints`, а шаблонный `test/widget_test.dart` ссылается на `MyApp`.
 
-### Эмулятор: что выяснилось при автоматической проверке
+### Эмулятор на Mac
 
-- **На этом ПК 3,8 ГБ оперативной памяти.** Эмулятор (≈2 ГБ) вместе с сервером, Gradle и
-  Claude Code её исчерпывает: эмулятор падает (код 139), система сама гасит фоновые процессы.
-  Перед запуском эмулятора закрывать всё лишнее. Для регулярной проверки — настоящий
-  телефон по USB (но тогда нужен адрес ПК в сети вместо `10.0.2.2` в `apiBase`).
-- **`adb exec-out screencap` отдаёт чёрный кадр.** Снимать экран через консоль эмулятора:
-  `adb -s emulator-5554 emu screenrecord screenshot C:\путь\файл.png` — файл появляется
-  чуть позже ответа `OK`.
-- Эмулятор, поднятый из сохранённого снимка, может «застыть» (кадр не обновляется). Тогда
-  холодный старт: `emulator -avd Pixel_8 -no-snapshot -gpu swiftshader_indirect`.
-- Экран блокировки мешает нажатиям: `adb shell locksettings set-disabled true`,
-  но применяется не сразу — проще один раз провести мышью вверх в окне эмулятора.
-- Установка APK на эмулятор с программной графикой занимает около 4,5 минут.
+- `adb exec-out screencap -p > файл.png` работает (на Windows-ПК отдавал чёрный кадр).
+- Приложение: `com.example.garba_mobile`, запуск —
+  `adb shell am start -n com.example.garba_mobile/.MainActivity`.
+- Первая сборка APK — около 7 минут (Gradle докачивает NDK, CMake, Platform 35), дальше быстрее.
 - Нажатия: `adb shell input tap X Y` в пикселях экрана 1080×2400.
+- `npm install` пишет «install scripts not covered by allowScripts: esbuild» — это не мешает,
+  `tsx` работает.
 
-### Переезд на MacBook (запланирован)
+### Живая проверка после переезда (19.09.2026)
 
-Этот ПК слишком слаб (3,8 ГБ памяти), разработка переезжает на MacBook. При переезде:
+- `npm test` — 340 из 340; `npm run test:live` — 64 + 23, всё прошло.
+  Одна проверка в `live-socket.ts` устарела (ждала карточку игрока без `stats`/`rating`) — поправлена.
+- Приложение собрано и открыто на эмуляторе. **Экраны этапов 7–9.7 руками ещё не пройдены.**
+- **До первого запуска на симуляторе iPhone** поправить в приложении:
+  - `apiBase` сейчас `http://10.0.2.2:3000` — это адрес компьютера только из Android-эмулятора.
+    Симулятору iPhone нужен `http://localhost:3000`: выбирать по платформе
+    (`Platform.isIOS`), а для настоящих телефонов — адрес компьютера в сети или сервер в интернете;
+  - iOS запрещает обычный http (App Transport Security): для разработки в `ios/Runner/Info.plist`
+    разрешить `NSAllowsLocalNetworking`; к выпуску сервер должен быть на https;
+  - iOS-плагины (image_picker, share_plus, app_links, shared_preferences) ставятся через
+    CocoaPods: `pod install` делает `flutter run` сам, если CocoaPods установлен.
 
-1. **Первым делом проверить то, что здесь ни разу не запускалось живьём:**
-   этап 7 (спецкарты), этап 8 (Socket.IO), этап 9.1 (аккаунты, токены, экран имени), 9.2
-   (сохранение комнат, пауза при отключении), 9.3 (бонус, подарки,
-   приглашения), 9.4 (профиль, друзья,
-   статистика), 9.5 (аватар — выбор фото на телефоне, экран правил), 9.6 (рейтинг) и 9.7 (смайлики, ссылки-приглашения). Порядок: `npm test` → `npm run test:live` →
-   эмулятор с ботами. Логика покрыта тестами, но склейка с сервером и экраны — нет.
-2. Поправить пути под Mac: Flutter (здесь `C:\Users\Gold Lombard\Desktop\flutter`), ADB, `C:\Garba`.
-3. `tools/garba.ps1` написан под Windows PowerShell 5.1 (UTF-8 с BOM). На Mac нужен `pwsh`
-   или переписать на bash/node. Ловушка с кодировкой curl в Git Bash — только Windows.
-4. `npm install` (npm 11) может написать «allow-scripts: esbuild postinstall pending».
-   Здесь `tsx` работал только потому, что бинарник esbuild уже стоял. Если на Mac `tsx`
-   упадёт — `npm approve-scripts esbuild` (или переустановить), а не искать ошибку в коде.
-5. На Mac `adb exec-out screencap` скорее всего работает нормально — чёрный кадр был
-   особенностью этого ПК.
-6. **Mac владельца: Apple M2, macOS Tahoe 26.5.1** — годится для последнего Xcode и выпуска
-   в App Store; Android-эмулятор на M2 — ARM-образ, работает быстро.
-7. **До первого запуска на симуляторе iPhone** поправить в приложении:
-   - `apiBase` сейчас `http://10.0.2.2:3000` — это адрес ПК только из Android-эмулятора.
-     Симулятору iPhone нужен `http://localhost:3000`: выбирать по платформе
-     (`Platform.isIOS`), а для настоящих телефонов — адрес компьютера в сети или сервер в интернете;
-   - iOS запрещает обычный http (App Transport Security): для разработки в `ios/Runner/Info.plist`
-     разрешить `NSAllowsLocalNetworking`; к выпуску сервер должен быть на https;
-   - iOS-плагины (image_picker, share_plus, app_links, shared_preferences) ставятся через
-     CocoaPods: `pod install` делает `flutter run` сам, если CocoaPods установлен.
+### Старый Windows-ПК (история)
+
+Там было 3,8 ГБ памяти — эмулятор падал, живьём проверить этапы 7–9.7 не удалось.
+Flutter не был в PATH (`C:\Users\Gold Lombard\Desktop\flutter\bin\flutter.bat`), SDK в
+`C:\Android\Sdk`, скриншоты только через `adb emu screenrecord screenshot`.
+Для ботов на Windows остаётся `tools\garba.ps1` (см. раздел 4).
 
 ---
 
@@ -426,52 +418,45 @@ pause: null | { players: [{ id, name, secondsLeft }] }   — на уровне �
 - `id` — стабильный идентификатор карты, уникальный в пределах колоды.
   Нужен, чтобы клиент мог сослаться на конкретную карту при ходе.
 
-### Тестирование через curl — важная ловушка
+### Боты для ручной проверки
 
-**Git Bash перекодирует аргументы для `curl.exe` из UTF-8 в системную кодовую
-страницу Windows.** Кириллица в `-d '...'` приходит на сервер битой: имена игроков
-превращаются в мусор, а заявка `РАЗ` отклоняется как невалидная. Сервер тут ни при чём.
+**На Mac — `tools/garba`** (обёртка над `backend/scripts/garba.ts`, Node + встроенный `fetch`,
+новых зависимостей нет). Запускать из корня проекта; адрес сервера — переменная `GARBA_URL`
+(по умолчанию `http://127.0.0.1:3000`).
 
-PowerShell 5.1 не спасает: он ещё и срезает кавычки при передаче `-d` в `curl.exe`,
-тело приходит битым JSON.
-
-**Готовое решение — `tools\garba.ps1`.** Запросы идут нативным `Invoke-RestMethod`
-с явным UTF-8, кириллица доезжает целой.
-
-```powershell
-.\tools\garba.ps1 join    -Room 12345              добрать ботов до полной комнаты
-.\tools\garba.ps1 state   -Room 12345              показать состояние
-.\tools\garba.ps1 deal    -Room 12345              раздать, если раздающий — бот
-.\tools\garba.ps1 passall -Room 12345              боты пасуют до твоего хода
-.\tools\garba.ps1 playall -Room 12345              боты ходят картами до твоего хода
-.\tools\garba.ps1 vote    -Room 12345 -Choice split   все боты голосуют (continue | split)
-.\tools\garba.ps1 bid     -Room 12345 -Bid РАЗ -Bot 1
+```bash
+./tools/garba join     12345              добрать ботов до полной комнаты + держать им связь
+./tools/garba state    12345              показать состояние
+./tools/garba deal     12345              раздать, если раздающий — бот
+./tools/garba passall  12345              боты пасуют до твоего хода
+./tools/garba playall  12345              боты ходят картами до твоего хода
+./tools/garba bid      12345 РАЗ --bot 1  заявка бота (ДВА при 6–7: --suit clubs)
+./tools/garba vote     12345 split        все боты голосуют (continue | split)
+./tools/garba kontrump 12345 diamonds     бот-КОН называет козырь (без масти — масть РАЗ)
+./tools/garba special  12345 2            бот берёт спецкарту за ×2 (без числа — пас)
+./tools/garba discard  12345              бот-владелец спецкарты сбрасывает карту
+./tools/garba online   12345              снова дать ботам связь
+./tools/garba offline                     «отключить» ботов — проверка паузы (§13)
 ```
 
+**На Windows — `tools\garba.ps1`** с теми же командами (`.\tools\garba.ps1 join -Room 12345`,
+`-Bid РАЗ -Bot 1`, `-Choice split`, `-Suit`, `-Risk`). Причина его появления — Git Bash
+перекодирует аргументы `curl.exe` в кодовую страницу Windows и ломает кириллицу, а
+PowerShell 5.1 срезает кавычки в `-d`. Файл сохранён в **UTF-8 с BOM** — без BOM PowerShell 5.1
+прочитает кириллицу как ANSI. При правке BOM не потерять. На Mac curl кириллицу не портит.
+
 Боты: 1 — Айдар, 2 — Дана, 3 — Ержан, 4 — Асель, 5 — Тимур, 6 — Мадина.
-С этапа 9.1 у каждого бота настоящий аккаунт; токены лежат в `tools\.bots.json` (в git не
+С этапа 9.1 у каждого бота настоящий аккаунт; токены лежат в `tools/.bots.json` (в git не
 попадает). Сервер их не знает (база стёрта) — скрипт сам заводит аккаунты заново. Бот застрял
 в старой недоигранной комнате — `join` заводит ему новый аккаунт с тем же именем.
 В розыгрыше бот кладёт первую разрешённую сервером карту, без стратегии.
 
-**Боты и пауза (9.2).** Бот без сокета через 10 секунд считается отключившимся. Поэтому
-`join` сам открывает свёрнутое окно `npm run bots -- <комната>` (`backend/scripts/bots-online.ts`) —
-оно держит ботам соединение. Закрыл окно — боты «отключились», через 5 минут игра закроется.
-
-Файл сохранён в **UTF-8 с BOM** — без BOM PowerShell 5.1 прочитает кириллицу
-как ANSI и сломает её. При правке скрипта BOM не потерять.
-
-Если нужен именно curl из Git Bash — тело только файлом:
-
-```bash
-printf '%s' '{"bid":"РАЗ"}' > /tmp/bid.json
-curl -s -X POST http://127.0.0.1:3000/rooms/12345/bid \
-  -H "Content-Type: application/json" -H "Authorization: Bearer $TOKEN" \
-  --data-binary "@/tmp/bid.json"
-```
-
-Запросы без кириллицы (`/health`, `/start`, `/dealer/continue`) работают и напрямую
-(с заголовком `Authorization`).
+**Боты и пауза (9.2).** Бот без сокета через 10 секунд считается отключившимся. Соединение
+им держит `npm run bots -- <комната>` (`backend/scripts/bots-online.ts`), `join` запускает его
+сам: на Mac — в фоне (pid в `tools/.bots-online.pid`, журнал `tools/.bots-online.log`, оба в git
+не попадают), на Windows — в свёрнутом окне. Боты «отключились» — через 5 минут игра закроется.
+Живой игрок, которого изображаешь curl-запросами, тоже без сокета: держать его на связи
+опросом `GET /rooms/:id` раз в пару секунд, иначе игра встанет на паузу.
 
 ---
 

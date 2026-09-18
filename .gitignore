@@ -18,3 +18,7 @@ backend/data/
 
 # Токены ботов из tools/garba.ps1 — у каждой машины свои
 tools/.bots.json
+
+# Фоновое соединение ботов из tools/garba (Mac/Linux)
+tools/.bots-online.pid
+tools/.bots-online.log

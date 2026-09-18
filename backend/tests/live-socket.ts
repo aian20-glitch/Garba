@@ -162,7 +162,9 @@ async function main() {
   check('на главном экране: сегодня уже взят', (await request('GET', '/me', a.token)).body.daily.claimedToday, true);
 
   const bMe = (await request('GET', '/me', b.token)).body;
-  check('найти игрока по коду перед подарком', (await request('GET', `/players/${bMe.code}`, a.token)).body, { code: bMe.code, name: 'Ержан' });
+  // карточка с 9.4 шире (stats, isFriend, avatar, rating) — здесь важны только код и имя
+  const card = (await request('GET', `/players/${bMe.code}`, a.token)).body;
+  check('найти игрока по коду перед подарком', { code: card.code, name: card.name }, { code: bMe.code, name: 'Ержан' });
   check('больше 1 000 подарить нельзя', (await post('/gifts', a.token, { toCode: bMe.code, amount: 1_100 })).body.error, 'bad amount');
   check('себе — нельзя', (await post('/gifts', a.token, { toCode: aMe.code, amount: 400 })).body.error, 'self');
   const gift = await post('/gifts', a.token, { toCode: bMe.code, amount: 400 });
