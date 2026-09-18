@@ -34,7 +34,8 @@ const bots = JSON.parse(readFileSync(botsFile, 'utf8').replace(/^﻿/, '')) as B
 // Паузы — чтобы живой игрок успевал видеть, что происходит за столом.
 const STEP_MS = 1_200; // заявка, ход картой, голос
 const DEAL_MS = 2_500; // раздача после вскрытия на туза или пересдачи
-const NEXT_DEAL_MS = 6_000; // следующая раздача — сначала посмотреть итог и смайлики
+const NEXT_DEAL_MS = 10_000; // следующая раздача — сначала прочитать итог и отправить смайлик
+const REDEAL_MS = 6_000; // пересдача после всеобщего ПАСа — прочитать, кто сколько долил
 
 const card = (c: any) => `${c.rank} ${c.suit}`;
 
@@ -60,7 +61,7 @@ function nextAction(bot: Bot, room: any): Action | null {
         path: `${at}/dealer/continue`,
         body: {},
         say: 'раздаёт карты',
-        delay: g.stage === 'round_done' ? NEXT_DEAL_MS : DEAL_MS,
+        delay: g.stage === 'round_done' ? NEXT_DEAL_MS : g.stage === 'awaiting_deal' ? REDEAL_MS : DEAL_MS,
       };
 
     case 'bidding': {
