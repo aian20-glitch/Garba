@@ -2305,24 +2305,32 @@ class _LobbyScreenState extends State<LobbyScreen> {
                 );
               }),
             const SizedBox(height: 20),
-            ...players.map((p) {
-              final isOwner = p['id'].toString() == creatorId;
-              return PlayerTile(
-                name: p['name'].toString(),
-                subtitle: '${isOwner ? 'Создатель' : 'Игрок'} • ⭐ ${fmtRating(p['rating'])}',
-                ready: true,
-                avatar: p['avatar']?.toString(),
-              );
-            }),
-            ...List.generate(
-              capacity - players.length,
-              (_) => const PlayerTile(
-                name: 'Свободное место',
-                subtitle: 'Ожидание игрока',
-                ready: false,
+            // Список прокручивается: при 6–7 игроках он не влезает, и кнопки
+            // «НАЧАТЬ ИГРУ» / «ЗАКРЫТЬ КОМНАТУ» уходили за край экрана.
+            Expanded(
+              child: ListView(
+                children: [
+                  ...players.map((p) {
+                    final isOwner = p['id'].toString() == creatorId;
+                    return PlayerTile(
+                      name: p['name'].toString(),
+                      subtitle: '${isOwner ? 'Создатель' : 'Игрок'} • ⭐ ${fmtRating(p['rating'])}',
+                      ready: true,
+                      avatar: p['avatar']?.toString(),
+                    );
+                  }),
+                  ...List.generate(
+                    capacity - players.length,
+                    (_) => const PlayerTile(
+                      name: 'Свободное место',
+                      subtitle: 'Ожидание игрока',
+                      ready: false,
+                    ),
+                  ),
+                ],
               ),
             ),
-            const Spacer(),
+            const SizedBox(height: 12),
             OutlinedButton.icon(
               onPressed: () => SharePlus.instance.share(
                 ShareParams(
