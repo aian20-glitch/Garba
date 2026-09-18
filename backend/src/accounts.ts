@@ -12,6 +12,7 @@ import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { STARTING_COINS } from './config.js';
 import { ensureRoomTable } from './roomDb.js';
 import { makePlayerCode } from './bonus.js';
+import { ensureAvatarTable } from './avatars.js';
 
 export type Account = {
   id: string;
@@ -53,7 +54,17 @@ export function openDb(file: string): DatabaseSync {
     )
   `);
   db.exec('CREATE INDEX IF NOT EXISTS gifts_from_day ON gifts (from_id, day)');
+  // Друзья (этап 9.4): дружба взаимная — строка в обе стороны.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS friends (
+      owner_id    TEXT NOT NULL,
+      friend_id   TEXT NOT NULL,
+      created_at  INTEGER NOT NULL,
+      PRIMARY KEY (owner_id, friend_id)
+    )
+  `);
   ensureRoomTable(db); // комнаты — этап 9.2
+  ensureAvatarTable(db); // аватары — этап 9.5
   return db;
 }
 
@@ -197,6 +208,41 @@ export function recordGift(db: DatabaseSync, fromId: string, toId: string, amoun
 export function invitedCount(db: DatabaseSync, id: string): number {
   const row = db.prepare('SELECT COUNT(*) AS n FROM accounts WHERE invited_by = ?').get(id) as { n: number };
   return Number(row.n);
+}
+
+// --- Друзья (этап 9.4) ---
+// Добавил по коду — дружба сразу взаимная: у обоих в списке. Удалил — у обоих пропала.
+
+export function areFriends(db: DatabaseSync, a: string, b: string): boolean {
+  return db.prepare('SELECT 1 FROM friends WHERE owner_id = ? AND friend_id = ?').get(a, b) !== undefined;
+}
+
+export function addFriend(db: DatabaseSync, a: string, b: string) {
+  const now = Date.now();
+  const insert = db.prepare('INSERT OR IGNORE INTO friends (owner_id, friend_id, created_at) VALUES (?, ?, ?)');
+  transaction(db, () => {
+    insert.run(a, b, now);
+    insert.run(b, a, now);
+  });
+}
+
+export function removeFriend(db: DatabaseSync, a: string, b: string) {
+  const del = db.prepare('DELETE FROM friends WHERE owner_id = ? AND friend_id = ?');
+  transaction(db, () => {
+    del.run(a, b);
+    del.run(b, a);
+  });
+}
+
+export function listFriends(db: DatabaseSync, ownerId: string): Account[] {
+  const rows = db
+    .prepare(
+      `SELECT ${ACCOUNT_FIELDS.split(', ').map((c) => 'a.' + c).join(', ')}
+       FROM friends f JOIN accounts a ON a.id = f.friend_id
+       WHERE f.owner_id = ? ORDER BY a.name`,
+    )
+    .all(ownerId) as Record<string, unknown>[];
+  return rows.map((r) => toAccount(r)!);
 }
 
 // Токен из заголовка «Authorization: Bearer <токен>».

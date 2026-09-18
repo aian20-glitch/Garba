@@ -10,7 +10,8 @@ import {
   type PresenceState,
 } from '../src/presence.js';
 import { createAccount, getAccount, openDb } from '../src/accounts.js';
-import { loadUnfinishedRooms, roomIdTaken, saveRoom } from '../src/roomDb.js';
+import { loadUnfinishedRooms, profileStats, roomIdTaken, saveRoom } from '../src/roomDb.js';
+import { emptyStats, type PlayerStats } from '../src/stats.js';
 
 const opts = { graceMs: OFFLINE_GRACE_MS, timeoutMs: DISCONNECT_TIMEOUT_MS };
 const ids = ['a', 'b', 'c', 'd'];
@@ -70,3 +71,30 @@ check('свободный номер свободен', roomIdTaken(db, '33333')
 saveRoom(db, { id: '11111', status: 'finished', players: [{ id: x.id, balance: 10_300 }, { id: y.id, balance: 9_500 }] });
 check('та же комната перезаписывается, а не дублируется', loadUnfinishedRooms(db).length, 0);
 check('итоговые балансы на аккаунтах', [getAccount(db, x.id)?.balance, getAccount(db, y.id)?.balance], [10_300, 9_500]);
+
+section('статистика в профиле (этап 9.4)');
+const st = (over: Partial<PlayerStats>): PlayerStats => ({ ...emptyStats(), ...over });
+check('новый игрок — всё по нулям', profileStats(db, x.id), { ...emptyStats(), rooms: 0 });
+
+saveRoom(db, {
+  id: '44444', status: 'started', players: [{ id: x.id, balance: 10_800 }],
+  stats: { [x.id]: st({ deals: 3, mains: 1, wins: 1, raz: 1, coinsWon: 500, coinsLost: 100, maxWin: 500, maxRisk: 1 }) },
+});
+check('идущая комната уже в профиле, но не считается доигранной',
+  [profileStats(db, x.id).deals, profileStats(db, x.id).rooms], [3, 0]);
+
+saveRoom(db, {
+  id: '44444', status: 'finished', players: [{ id: x.id, balance: 10_800 }],
+  stats: { [x.id]: st({ deals: 5, mains: 2, wins: 1, losses: 1, raz: 2, coinsWon: 500, coinsLost: 1_100, maxWin: 500, maxRisk: 1 }) },
+});
+saveRoom(db, {
+  id: '55555', status: 'finished', players: [{ id: x.id, balance: 12_800 }],
+  stats: { [x.id]: st({ deals: 4, mains: 1, wins: 1, dva: 1, garba: 0, coinsWon: 2_000, maxWin: 2_000, maxRisk: 3 }) },
+});
+const profile = profileStats(db, x.id);
+check('комната перезаписалась, а не прибавилась дважды; две доигранные комнаты',
+  [profile.rooms, profile.deals, profile.mains, profile.wins, profile.losses], [2, 9, 3, 2, 1]);
+check('монеты — сумма, максимумы — максимум',
+  [profile.coinsWon, profile.coinsLost, profile.maxWin, profile.maxRisk], [2_500, 1_100, 2_000, 3]);
+check('РАЗ и ДВА по отдельности', [profile.raz, profile.dva], [2, 1]);
+check('у другого игрока своя статистика', profileStats(db, y.id).deals, 0);

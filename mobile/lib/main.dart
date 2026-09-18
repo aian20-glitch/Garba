@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:http/http.dart' as http;
+import 'package:image_picker/image_picker.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:socket_io_client/socket_io_client.dart' as io;
 
@@ -393,9 +394,9 @@ class _HomeScreenState extends State<HomeScreen> with RouteAware {
   String? roomId;
   String code = '';
   int dailyStreak = 0;
-  bool giftSentToday = false;
   int invitedCount = 0;
   bool claimingBonus = false;
+  String? avatar;
 
   @override
   void initState() {
@@ -432,7 +433,7 @@ class _HomeScreenState extends State<HomeScreen> with RouteAware {
         roomId = me['roomId']?.toString();
         code = me['code'].toString();
         dailyStreak = (daily['streak'] as num).toInt();
-        giftSentToday = me['giftSentToday'] == true;
+        avatar = me['avatar']?.toString();
         invitedCount = (me['invitedCount'] as num?)?.toInt() ?? 0;
       });
       // Первый вход за день — бонус забирается сам (ТЗ §3: «за ежедневный вход»).
@@ -514,15 +515,28 @@ class _HomeScreenState extends State<HomeScreen> with RouteAware {
                 ],
               ),
               const SizedBox(height: 8),
-              Text(
-                Session.name,
-                style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w700),
+              Row(
+                children: [
+                  AvatarView(avatar: avatar, name: Session.name, radius: 24),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          Session.name,
+                          style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w700),
+                        ),
+                        if (code.isNotEmpty)
+                          Text(
+                            'Ваш код: $code · бонус: день $dailyStreak/7',
+                            style: const TextStyle(color: Colors.white70),
+                          ),
+                      ],
+                    ),
+                  ),
+                ],
               ),
-              if (code.isNotEmpty)
-                Text(
-                  'Ваш код: $code · бонус: день $dailyStreak/7',
-                  style: const TextStyle(color: Colors.white70),
-                ),
               const SizedBox(height: 16),
               // Кнопок много — на небольшом экране они прокручиваются.
               Expanded(
@@ -567,11 +581,7 @@ class _HomeScreenState extends State<HomeScreen> with RouteAware {
                         onTap: () => Navigator.push(
                           context,
                           MaterialPageRoute(
-                            builder: (_) => GiftScreen(
-                              balance: balance ?? 0,
-                              giftSentToday: giftSentToday,
-                              inRoom: roomId != null,
-                            ),
+                            builder: (_) => const GiftScreen(),
                           ),
                         ),
                       ),
@@ -586,9 +596,50 @@ class _HomeScreenState extends State<HomeScreen> with RouteAware {
                         ),
                       ),
                       const SizedBox(height: 14),
-                      GarbaButton(label: 'РЕЙТИНГ', onTap: () {}),
+                      GarbaButton(
+                        label: 'ДРУЗЬЯ',
+                        onTap: () => Navigator.push(
+                          context,
+                          MaterialPageRoute(builder: (_) => const FriendsScreen()),
+                        ),
+                      ),
                       const SizedBox(height: 14),
-                      GarbaButton(label: 'ПРОФИЛЬ', onTap: () {}),
+                      // Формула рейтинга по ТЗ §37 определяется на этапе балансировки.
+                      GarbaButton(
+                        label: 'РЕЙТИНГ',
+                        onTap: () => showDialog<void>(
+                          context: context,
+                          builder: (dialogContext) => AlertDialog(
+                            title: const Text('Рейтинг'),
+                            content: const Text(
+                              'Рейтинг появится, когда будет утверждена формула. '
+                              'Статистика для него уже собирается — её видно в профиле.',
+                            ),
+                            actions: [
+                              TextButton(
+                                onPressed: () => Navigator.pop(dialogContext),
+                                child: const Text('ПОНЯТНО'),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+                      const SizedBox(height: 14),
+                      GarbaButton(
+                        label: 'ПРОФИЛЬ',
+                        onTap: () => Navigator.push(
+                          context,
+                          MaterialPageRoute(builder: (_) => const ProfileScreen()),
+                        ),
+                      ),
+                      const SizedBox(height: 14),
+                      GarbaButton(
+                        label: 'ПРАВИЛА',
+                        onTap: () => Navigator.push(
+                          context,
+                          MaterialPageRoute(builder: (_) => const RulesScreen()),
+                        ),
+                      ),
                     ],
                   ),
                 ),
@@ -610,16 +661,10 @@ class _HomeScreenState extends State<HomeScreen> with RouteAware {
 // Подарок монет другому игроку по его коду (ТЗ §5): до 1 000, раз в сутки.
 // Все проверки — на сервере; экран только подсказывает заранее.
 class GiftScreen extends StatefulWidget {
-  final int balance;
-  final bool giftSentToday;
-  final bool inRoom;
+  // Код получателя, если подарок открыт из карточки друга.
+  final String? initialCode;
 
-  const GiftScreen({
-    super.key,
-    required this.balance,
-    required this.giftSentToday,
-    required this.inRoom,
-  });
+  const GiftScreen({super.key, this.initialCode});
 
   @override
   State<GiftScreen> createState() => _GiftScreenState();
@@ -632,6 +677,36 @@ class _GiftScreenState extends State<GiftScreen> {
   String? recipientName;
   String? error;
   bool sending = false;
+  // С сервера (GET /me): сколько монет, дарил ли сегодня, сидит ли в комнате.
+  int balance = 0;
+  bool giftSentToday = false;
+  bool inRoom = false;
+  bool loaded = false;
+
+  @override
+  void initState() {
+    super.initState();
+    codeController.text = widget.initialCode ?? '';
+    loadMe();
+    if (widget.initialCode != null) findRecipient();
+  }
+
+  Future<void> loadMe() async {
+    try {
+      final response = await http.get(Uri.parse('$apiBase/me'), headers: authHeaders());
+      if (response.statusCode != 200) throw Exception(response.body);
+      final me = jsonDecode(response.body) as Map<String, dynamic>;
+      if (!mounted) return;
+      setState(() {
+        balance = (me['balance'] as num).toInt();
+        giftSentToday = me['giftSentToday'] == true;
+        inRoom = me['roomId'] != null;
+        loaded = true;
+      });
+    } catch (_) {
+      if (mounted) setState(() => error = 'Нет связи с сервером');
+    }
+  }
 
   static const _gifts = [100, 200, 300, 400, 500, 600, 700, 800, 900, 1000];
 
@@ -707,9 +782,16 @@ class _GiftScreenState extends State<GiftScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final blocked = widget.giftSentToday
+    if (!loaded) {
+      return Scaffold(
+        appBar: AppBar(title: const Text('Подарить монеты')),
+        body: Center(child: error == null ? const CircularProgressIndicator() : Text(error!)),
+      );
+    }
+
+    final blocked = giftSentToday
         ? _errors['already gifted today']
-        : widget.inRoom
+        : inRoom
             ? _errors['finish your game first']
             : null;
 
@@ -761,7 +843,7 @@ class _GiftScreenState extends State<GiftScreen> {
                     return ChoiceChip(
                       label: Text(fmtCoins(n)),
                       selected: amount == n,
-                      onSelected: n <= widget.balance ? (_) => setState(() => amount = n) : null,
+                      onSelected: n <= balance ? (_) => setState(() => amount = n) : null,
                     );
                   }).toList(),
                 ),
@@ -853,6 +935,560 @@ class InviteScreen extends StatelessWidget {
             ],
           ),
         ),
+      ),
+    );
+  }
+}
+
+// Статистика игрока (ТЗ §2): считает сервер, экран только показывает.
+class StatsView extends StatelessWidget {
+  final Map<String, dynamic> stats;
+
+  const StatsView({super.key, required this.stats});
+
+  int v(String key) => (stats[key] as num?)?.toInt() ?? 0;
+
+  @override
+  Widget build(BuildContext context) {
+    final rows = <(String, String)>[
+      if (stats.containsKey('rooms')) ('Сыграно комнат', '${v('rooms')}'),
+      ('Сыграно партий', '${v('deals')}'),
+      ('Был главным', '${v('mains')}'),
+      ('Победы', '${v('wins')}'),
+      ('Поражения', '${v('losses')}'),
+      ('Играл РАЗ', '${v('raz')}'),
+      ('Играл ДВА', '${v('dva')}'),
+      ('Играл КОН', '${v('kon')}'),
+      ('ГАРБА', '${v('garba')}'),
+      ('Выиграно монет', fmtCoins(v('coinsWon'))),
+      ('Проиграно монет', fmtCoins(v('coinsLost'))),
+      ('Максимальный выигрыш', fmtCoins(v('maxWin'))),
+      ('Максимальный выигранный риск', v('maxRisk') == 0 ? '—' : '×${v('maxRisk')}'),
+    ];
+    return Column(
+      children: rows
+          .map((r) => Padding(
+                padding: const EdgeInsets.symmetric(vertical: 5),
+                child: Row(
+                  children: [
+                    Expanded(child: Text(r.$1, style: const TextStyle(color: Colors.white70))),
+                    Text(r.$2, style: const TextStyle(fontWeight: FontWeight.w800)),
+                  ],
+                ),
+              ))
+          .toList(),
+    );
+  }
+}
+
+// Свой профиль (ТЗ §2). Аватара пока нет, рейтинг — после утверждения формулы (§37).
+class ProfileScreen extends StatefulWidget {
+  const ProfileScreen({super.key});
+
+  @override
+  State<ProfileScreen> createState() => _ProfileScreenState();
+}
+
+class _ProfileScreenState extends State<ProfileScreen> {
+  Map<String, dynamic>? profile;
+  String? error;
+
+  @override
+  void initState() {
+    super.initState();
+    load();
+  }
+
+  Future<void> load() async {
+    try {
+      final response = await http.get(Uri.parse('$apiBase/me/profile'), headers: authHeaders());
+      if (response.statusCode != 200) throw Exception(response.body);
+      if (!mounted) return;
+      setState(() => profile = jsonDecode(response.body) as Map<String, dynamic>);
+    } catch (_) {
+      if (mounted) setState(() => error = 'Нет связи с сервером');
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final p = profile;
+    return Scaffold(
+      appBar: AppBar(title: const Text('Профиль')),
+      body: p == null
+          ? Center(child: error == null ? const CircularProgressIndicator() : Text(error!))
+          : ListView(
+              padding: const EdgeInsets.all(20),
+              children: [
+                Center(
+                  child: GestureDetector(
+                    onTap: () async {
+                      final avatar = await pickAndUploadAvatar(context);
+                      if (avatar != null && mounted) setState(() => p['avatar'] = avatar);
+                    },
+                    child: Stack(
+                      children: [
+                        AvatarView(avatar: p['avatar']?.toString(), name: p['name'].toString(), radius: 56),
+                        const Positioned(
+                          right: 0,
+                          bottom: 0,
+                          child: CircleAvatar(radius: 16, child: Icon(Icons.photo_camera, size: 18)),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 4),
+                const Center(
+                  child: Text('Нажмите на фото, чтобы сменить', style: TextStyle(color: Colors.white54)),
+                ),
+                const SizedBox(height: 12),
+                Text(
+                  p['name'].toString(),
+                  style: const TextStyle(fontSize: 28, fontWeight: FontWeight.w900),
+                ),
+                const SizedBox(height: 4),
+                Text('Код игрока: ${p['code']}', style: const TextStyle(color: Colors.white70)),
+                const SizedBox(height: 12),
+                Text(
+                  'Баланс: ${fmtCoins((p['balance'] as num).toInt())} 🪙',
+                  style: const TextStyle(fontSize: 20, fontWeight: FontWeight.w700),
+                ),
+                Text('Друзей: ${p['friendsCount']}', style: const TextStyle(color: Colors.white70)),
+                const Text(
+                  'Рейтинг появится, когда будет утверждена формула.',
+                  style: TextStyle(color: Colors.white54),
+                ),
+                const Divider(height: 32),
+                StatsView(stats: Map<String, dynamic>.from(p['stats'] as Map)),
+              ],
+            ),
+    );
+  }
+}
+
+// Друзья (ТЗ §2): список, добавить по коду, открыть карточку друга.
+class FriendsScreen extends StatefulWidget {
+  const FriendsScreen({super.key});
+
+  @override
+  State<FriendsScreen> createState() => _FriendsScreenState();
+}
+
+class _FriendsScreenState extends State<FriendsScreen> {
+  final codeController = TextEditingController();
+  List<Map<String, dynamic>>? friends;
+  String? error;
+  bool adding = false;
+
+  static const _errors = <String, String>{
+    'player not found': 'Игрока с таким кодом нет',
+    'self': 'Это ваш собственный код',
+    'already friends': 'Уже в друзьях',
+  };
+
+  @override
+  void initState() {
+    super.initState();
+    load();
+  }
+
+  @override
+  void dispose() {
+    codeController.dispose();
+    super.dispose();
+  }
+
+  Future<void> load() async {
+    try {
+      final response = await http.get(Uri.parse('$apiBase/friends'), headers: authHeaders());
+      if (response.statusCode != 200) throw Exception(response.body);
+      final body = jsonDecode(response.body) as Map<String, dynamic>;
+      if (!mounted) return;
+      setState(() {
+        friends = (body['friends'] as List).map((e) => Map<String, dynamic>.from(e as Map)).toList();
+        error = null;
+      });
+    } catch (_) {
+      if (mounted) setState(() => error = 'Нет связи с сервером');
+    }
+  }
+
+  Future<void> addFriend() async {
+    final code = codeController.text.trim();
+    if (code.isEmpty || adding) return;
+    setState(() {
+      adding = true;
+      error = null;
+    });
+    try {
+      final response = await http.post(
+        Uri.parse('$apiBase/friends'),
+        headers: authHeaders(),
+        body: jsonEncode({'code': code}),
+      );
+      if (response.statusCode != 201) {
+        final body = jsonDecode(response.body);
+        final key = body is Map ? body['error']?.toString() : null;
+        if (mounted) setState(() => error = _errors[key] ?? 'Ошибка: ${response.body}');
+        return;
+      }
+      codeController.clear();
+      await load();
+    } catch (_) {
+      if (mounted) setState(() => error = 'Нет связи с сервером');
+    } finally {
+      if (mounted) setState(() => adding = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final list = friends;
+    return Scaffold(
+      appBar: AppBar(title: const Text('Друзья')),
+      body: SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.all(20),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              TextField(
+                controller: codeController,
+                textCapitalization: TextCapitalization.characters,
+                decoration: InputDecoration(
+                  labelText: 'Код игрока',
+                  border: const OutlineInputBorder(),
+                  suffixIcon: IconButton(
+                    icon: const Icon(Icons.person_add),
+                    onPressed: addFriend,
+                  ),
+                ),
+                onSubmitted: (_) => addFriend(),
+              ),
+              const SizedBox(height: 6),
+              const Text(
+                'Добавили по коду — дружба сразу у обоих.',
+                style: TextStyle(color: Colors.white54),
+              ),
+              if (error != null)
+                Padding(
+                  padding: const EdgeInsets.only(top: 8),
+                  child: Text(error!, style: const TextStyle(color: Colors.redAccent)),
+                ),
+              const SizedBox(height: 12),
+              Expanded(
+                child: list == null
+                    ? const Center(child: CircularProgressIndicator())
+                    : list.isEmpty
+                        ? const Center(
+                            child: Text(
+                              'Друзей пока нет.\nПопросите у друга его код — он есть в профиле.',
+                              textAlign: TextAlign.center,
+                              style: TextStyle(color: Colors.white70),
+                            ),
+                          )
+                        : ListView(
+                            children: list.map((f) {
+                              final stats = Map<String, dynamic>.from(f['stats'] as Map);
+                              final roomId = f['roomId']?.toString();
+                              return ListTile(
+                                leading: AvatarView(avatar: f['avatar']?.toString(), name: f['name'].toString()),
+                                title: Text(f['name'].toString()),
+                                subtitle: Text(
+                                  'Код ${f['code']} · партий ${stats['deals']} · побед ${stats['wins']}'
+                                  '${roomId != null ? ' · сейчас в комнате #$roomId' : ''}',
+                                ),
+                                trailing: const Icon(Icons.chevron_right),
+                                onTap: () async {
+                                  await Navigator.push(
+                                    context,
+                                    MaterialPageRoute(
+                                      builder: (_) => PlayerScreen(code: f['code'].toString()),
+                                    ),
+                                  );
+                                  load();
+                                },
+                              );
+                            }).toList(),
+                          ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+// Карточка другого игрока: статистика, дружба, подарок.
+class PlayerScreen extends StatefulWidget {
+  final String code;
+
+  const PlayerScreen({super.key, required this.code});
+
+  @override
+  State<PlayerScreen> createState() => _PlayerScreenState();
+}
+
+class _PlayerScreenState extends State<PlayerScreen> {
+  Map<String, dynamic>? player;
+  String? error;
+  bool busy = false;
+
+  @override
+  void initState() {
+    super.initState();
+    load();
+  }
+
+  Future<void> load() async {
+    try {
+      final response = await http.get(
+        Uri.parse('$apiBase/players/${Uri.encodeComponent(widget.code)}'),
+        headers: authHeaders(),
+      );
+      if (response.statusCode != 200) throw Exception(response.body);
+      if (!mounted) return;
+      setState(() => player = jsonDecode(response.body) as Map<String, dynamic>);
+    } catch (_) {
+      if (mounted) setState(() => error = 'Нет связи с сервером');
+    }
+  }
+
+  Future<void> toggleFriend(bool isFriend) async {
+    if (busy) return;
+    setState(() => busy = true);
+    try {
+      final response = isFriend
+          ? await http.delete(
+              Uri.parse('$apiBase/friends/${Uri.encodeComponent(widget.code)}'),
+              headers: authHeaders(),
+            )
+          : await http.post(
+              Uri.parse('$apiBase/friends'),
+              headers: authHeaders(),
+              body: jsonEncode({'code': widget.code}),
+            );
+      if (response.statusCode >= 300) throw Exception(response.body);
+      await load();
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Не получилось: $e')));
+      }
+    } finally {
+      if (mounted) setState(() => busy = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final p = player;
+    return Scaffold(
+      appBar: AppBar(title: Text(p?['name']?.toString() ?? 'Игрок')),
+      body: p == null
+          ? Center(child: error == null ? const CircularProgressIndicator() : Text(error!))
+          : ListView(
+              padding: const EdgeInsets.all(20),
+              children: [
+                Center(child: AvatarView(avatar: p['avatar']?.toString(), name: p['name'].toString(), radius: 56)),
+                const SizedBox(height: 12),
+                Text(
+                  p['name'].toString(),
+                  style: const TextStyle(fontSize: 28, fontWeight: FontWeight.w900),
+                ),
+                Text('Код игрока: ${p['code']}', style: const TextStyle(color: Colors.white70)),
+                const SizedBox(height: 12),
+                Row(
+                  children: [
+                    Expanded(
+                      child: OutlinedButton(
+                        onPressed: busy ? null : () => toggleFriend(p['isFriend'] == true),
+                        child: Text(p['isFriend'] == true ? 'УДАЛИТЬ ИЗ ДРУЗЕЙ' : 'ДОБАВИТЬ В ДРУЗЬЯ'),
+                      ),
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: FilledButton(
+                        onPressed: () => Navigator.push(
+                          context,
+                          MaterialPageRoute(
+                            builder: (_) => GiftScreen(initialCode: p['code'].toString()),
+                          ),
+                        ),
+                        child: const Text('ПОДАРИТЬ'),
+                      ),
+                    ),
+                  ],
+                ),
+                const Divider(height: 32),
+                StatsView(stats: Map<String, dynamic>.from(p['stats'] as Map)),
+              ],
+            ),
+    );
+  }
+}
+
+// Аватар игрока (этап 9.5): фото с сервера или первая буква имени.
+// avatar — адрес от сервера вида /avatars/<id>?v=<версия> или null.
+class AvatarView extends StatelessWidget {
+  final String? avatar;
+  final String name;
+  final double radius;
+
+  const AvatarView({super.key, required this.avatar, required this.name, this.radius = 20});
+
+  @override
+  Widget build(BuildContext context) {
+    final letter = name.isEmpty ? '?' : name.characters.first.toUpperCase();
+    return CircleAvatar(
+      radius: radius,
+      backgroundColor: const Color(0xFF2A3B45),
+      foregroundImage: avatar == null ? null : NetworkImage('$apiBase$avatar'),
+      child: Text(letter, style: TextStyle(fontSize: radius * 0.9, fontWeight: FontWeight.w800)),
+    );
+  }
+}
+
+// Выбрать фото в галерее и загрузить как аватар. Телефон сам уменьшает фото
+// до 256 точек — сервер принимает не больше 300 КБ. Возвращает новый адрес или null.
+Future<String?> pickAndUploadAvatar(BuildContext context) async {
+  final messenger = ScaffoldMessenger.of(context);
+  try {
+    final picked = await ImagePicker().pickImage(
+      source: ImageSource.gallery,
+      maxWidth: 256,
+      maxHeight: 256,
+      imageQuality: 85,
+    );
+    if (picked == null) return null; // передумал
+    final bytes = await picked.readAsBytes();
+    final response = await http.put(
+      Uri.parse('$apiBase/me/avatar'),
+      headers: {
+        'Content-Type': 'application/octet-stream',
+        'Authorization': 'Bearer ${Session.token}',
+      },
+      body: bytes,
+    );
+    if (response.statusCode == 413) {
+      messenger.showSnackBar(const SnackBar(content: Text('Фото слишком большое')));
+      return null;
+    }
+    if (response.statusCode == 400) {
+      messenger.showSnackBar(const SnackBar(content: Text('Это не похоже на фото')));
+      return null;
+    }
+    if (response.statusCode != 200) throw Exception(response.body);
+    return (jsonDecode(response.body) as Map)['avatar']?.toString();
+  } catch (e) {
+    messenger.showSnackBar(SnackBar(content: Text('Не удалось загрузить фото: $e')));
+    return null;
+  }
+}
+
+// Правила для игроков (ТЗ §39: кнопка «ПРАВИЛА»). Текст — по RULES.md.
+class RulesScreen extends StatelessWidget {
+  const RulesScreen({super.key});
+
+  static const _sections = <(String, String)>[
+    (
+      'Монеты — не деньги',
+      'Все монеты в ГАРБЕ — игровые. Это не деньги: их нельзя купить, обналичить, '
+          'продать или обменять на призы. Игра создана только для того, чтобы хорошо '
+          'провести время с друзьями.',
+    ),
+    (
+      'Главное правило',
+      'Кто сказал РАЗ, ДВА или КОН — становится главным и играет один против всех. '
+          'Ему нужно взять 3 взятки из 5.\n\n'
+          'Остальные играют вместе против него: их задача — не дать главному взять эти '
+          '3 взятки.\n\n'
+          'Взял 3 взятки — главный забирает деньги из кона. Не взял — сам кладёт в кон.',
+    ),
+    (
+      'Торги',
+      'После раздачи каждый по очереди говорит заявку. Первым — сосед справа от '
+          'раздающего, раздающий — последним. Старшинство: РАЗ, потом ДВА, потом КОН. '
+          'Сказать заявку ниже уже прозвучавшей нельзя. Все сказали ПАС — пересдача, '
+          'и все доливают взнос в кон.',
+    ),
+    (
+      'РАЗ',
+      'РАЗ — это масть открытой карты, она становится козырем. При 4 игроках козырь '
+          'всегда черви, какая бы карта ни открылась.\n\n'
+          'РАЗ — самая сильная заявка. Если РАЗ скажут двое, играют оба, а на втором '
+          'РАЗ торги сразу заканчиваются.',
+    ),
+    (
+      'ДВА',
+      'ДВА бывает при 5, 6 и 7 игроках. Это другая масть, которая в этом составе тоже '
+          'может стать козырем. Кто сказал ДВА, меняет козырь на свою масть.\n\n'
+          'При 6 и 7 игроках масть для ДВА игрок выбирает сам, и до начала розыгрыша её '
+          'никто не видит.\n\n'
+          'Если после ДВА кто-то скажет РАЗ — ДВА не играет. Второго ДВА быть не может. '
+          'Когда кон вырос вдвое от базового, ДВА играет на половину кона.',
+    ),
+    (
+      'ИЗЖОГА',
+      'ИЗЖОГА — масть, которая в этом составе не может стать козырем (бывает при 5 и 6 '
+          'игроках). Если при открытии козыря вышла ИЗЖОГА, карту возвращают в колоду и '
+          'открывают следующую — до трёх раз. Три ИЗЖОГИ подряд — пересдача.\n\n'
+          'В игре ИЗЖОГА — оружие против главного: когда ходят в ИЗЖОГУ, а у главного '
+          'её нет, он обязан бить козырем и тратить свои сильные карты.',
+    ),
+    (
+      'КОН',
+      'КОН — заявка для случая, когда кон сильно вырос и на РАЗ уже не у всех хватает '
+          'денег. Кнопка появляется, когда кон дорос до порога, который выбрал создатель '
+          'комнаты.\n\n'
+          'Кто сказал КОН, играет не на весь кон, а только на базовый (число игроков × '
+          'взнос). КОН — самая младшая заявка: если потом кто-то скажет РАЗ или ДВА, '
+          'КОН не играет. Козырь — по РАЗ или по ДВА — он называет после торгов.',
+    ),
+    (
+      'Как ходить',
+      'Первый во взятке ходит любой картой. Остальные обязаны:\n'
+          '1. Положить карту той же масти, если она есть.\n'
+          '2. Если этой масти нет — обязательно положить козырь.\n'
+          '3. Только если нет ни масти, ни козыря — можно положить любую карту.\n\n'
+          'Каким козырем бить, игрок решает сам. Взятку забирает старший козырь, '
+          'а если козырей не было — старшая карта масти хода. Кто взял взятку, '
+          'тот ходит следующим.',
+    ),
+    (
+      'ГАРБА',
+      'ГАРБА — дама, король и туз козыря у одного игрока. Главный с ГАРБОЙ '
+          'выигрывает сразу, без розыгрыша.',
+    ),
+  ];
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: const Text('Правила')),
+      body: ListView(
+        padding: const EdgeInsets.all(20),
+        children: _sections
+            .map((s) => Padding(
+                  padding: const EdgeInsets.only(bottom: 20),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        s.$1,
+                        style: const TextStyle(
+                          fontSize: 20,
+                          fontWeight: FontWeight.w900,
+                          color: Color(0xFFD4A94F),
+                        ),
+                      ),
+                      const SizedBox(height: 6),
+                      Text(s.$2, style: const TextStyle(fontSize: 16, height: 1.35)),
+                    ],
+                  ),
+                ))
+            .toList(),
       ),
     );
   }
@@ -1419,6 +2055,7 @@ class _LobbyScreenState extends State<LobbyScreen> {
                 name: p['name'].toString(),
                 subtitle: isOwner ? 'Создатель • Готов' : 'Игрок • Готов',
                 ready: true,
+                avatar: p['avatar']?.toString(),
               );
             }),
             ...List.generate(
@@ -2338,12 +2975,25 @@ class _GameTableScreenState extends State<GameTableScreen> {
     final Widget footer;
     if (isRoomDone) {
       // Итог комнаты: кто сколько выиграл или проиграл за всю игру.
+      // Победителя (§36) определяет сервер, статистику за комнату (§35) — тоже.
+      final winnerIds = ((game['winnerIds'] as List?) ?? const []).map((e) => e.toString()).toSet();
+      final roomStats = data['stats'] is Map ? Map<String, dynamic>.from(data['stats'] as Map) : const {};
       final rows = players.map((p) {
         final start = (p['startBalance'] as num?)?.toInt() ?? 0;
         final end = (p['balance'] as num?)?.toInt() ?? 0;
-        return (name: p['name'].toString(), start: start, end: end, diff: end - start);
+        final id = p['id'].toString();
+        final st = roomStats[id] is Map ? Map<String, dynamic>.from(roomStats[id] as Map) : <String, dynamic>{};
+        return (
+          id: id,
+          name: p['name'].toString(),
+          start: start,
+          end: end,
+          diff: end - start,
+          stats: st,
+        );
       }).toList()
         ..sort((a, b) => b.diff.compareTo(a.diff));
+      int stat(Map<String, dynamic> st, String key) => (st[key] as num?)?.toInt() ?? 0;
 
       footer = Column(
         mainAxisSize: MainAxisSize.min,
@@ -2410,10 +3060,15 @@ class _GameTableScreenState extends State<GameTableScreen> {
             }),
           const SizedBox(height: 8),
           ...rows.map((r) {
-            final isWinner = r == rows.first && r.diff > 0;
+            final isWinner = winnerIds.contains(r.id);
+            final st = r.stats;
+            final maxRisk = stat(st, 'maxRisk');
             return Padding(
-              padding: const EdgeInsets.symmetric(vertical: 3),
-              child: Row(
+              padding: const EdgeInsets.symmetric(vertical: 4),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
                 children: [
                   Expanded(
                     child: Text(
@@ -2435,6 +3090,17 @@ class _GameTableScreenState extends State<GameTableScreen> {
                       color: r.diff >= 0 ? Colors.greenAccent : Colors.redAccent,
                     ),
                   ),
+                ],
+              ),
+                  if (st.isNotEmpty)
+                    Text(
+                      'выиграно ${fmtCoins(stat(st, 'coinsWon'))} · проиграно ${fmtCoins(stat(st, 'coinsLost'))} · '
+                      'побед ${stat(st, 'wins')}, поражений ${stat(st, 'losses')} · '
+                      'главным ${stat(st, 'mains')} (РАЗ ${stat(st, 'raz')}, ДВА ${stat(st, 'dva')}) · '
+                      'ГАРБА ${stat(st, 'garba')}'
+                      '${maxRisk > 0 ? ' · макс. риск ×$maxRisk' : ''}',
+                      style: const TextStyle(color: Colors.white54, fontSize: 11),
+                    ),
                 ],
               ),
             );
@@ -2903,6 +3569,12 @@ class _GameTableScreenState extends State<GameTableScreen> {
                           padding: const EdgeInsets.symmetric(vertical: 5),
                           child: Row(
                             children: [
+                              AvatarView(
+                                avatar: p['avatar']?.toString(),
+                                name: p['name'].toString(),
+                                radius: 16,
+                              ),
+                              const SizedBox(width: 6),
                               Icon(
                                 isMain
                                     ? Icons.star
@@ -3526,21 +4198,24 @@ class PlayerTile extends StatelessWidget {
   final String name;
   final String subtitle;
   final bool ready;
+  // Адрес фото игрока; null — фото нет или место свободно.
+  final String? avatar;
 
   const PlayerTile({
     super.key,
     required this.name,
     required this.subtitle,
     required this.ready,
+    this.avatar,
   });
 
   @override
   Widget build(BuildContext context) {
     return Card(
       child: ListTile(
-        leading: CircleAvatar(
-          child: Icon(ready ? Icons.person : Icons.person_outline),
-        ),
+        leading: ready
+            ? AvatarView(avatar: avatar, name: name)
+            : const CircleAvatar(child: Icon(Icons.person_outline)),
         title: Text(name),
         subtitle: Text(subtitle),
         trailing: Icon(

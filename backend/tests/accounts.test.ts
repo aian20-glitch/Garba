@@ -6,6 +6,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { check, section } from './check.js';
 import {
+  addFriend,
+  areFriends,
   cleanName,
   createAccount,
   findAccountByCode,
@@ -13,8 +15,10 @@ import {
   getAccount,
   giftedOn,
   invitedCount,
+  listFriends,
   openDb,
   recordGift,
+  removeFriend,
   setBalance,
   setDaily,
   tokenFromHeader,
@@ -74,6 +78,18 @@ check('получатель при этом может дарить сам', gif
 
 setDaily(db, account.id, '2026-09-18', 3);
 check('серия бонусов сохраняется', [getAccount(db, account.id)?.dailyDay, getAccount(db, account.id)?.dailyStreak], ['2026-09-18', 3]);
+
+section('друзья (этап 9.4)');
+const third = createAccount(db, 'Ержан').account;
+check('сначала не друзья', areFriends(db, account.id, third.id), false);
+addFriend(db, account.id, third.id);
+check('добавил — дружба взаимная', [areFriends(db, account.id, third.id), areFriends(db, third.id, account.id)], [true, true]);
+addFriend(db, third.id, account.id);
+check('повторное добавление не дублирует', listFriends(db, account.id).map((a) => a.name), ['Ержан']);
+addFriend(db, account.id, friend.id);
+check('список друзей по имени', listFriends(db, account.id).map((a) => a.name), ['Дана', 'Ержан']);
+removeFriend(db, third.id, account.id);
+check('удалил — пропало у обоих', [listFriends(db, account.id).map((a) => a.name), listFriends(db, third.id)], [['Дана'], []]);
 
 // База, созданная на этапе 9.1 (без кодов и бонусов), открывается без потери аккаунтов.
 const oldFile = join(tmpdir(), `garba-migrate-${Date.now()}.db`);

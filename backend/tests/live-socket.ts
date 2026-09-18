@@ -180,6 +180,42 @@ async function main() {
   check('и не считаются выигрышем за столом', serikAfter.startBalance - serikBefore.startBalance, 1_300);
   check('баланс аккаунта совпадает с комнатой', (await request('GET', '/me', serik.token)).body.balance, serikAfter.balance);
 
+  section('профиль и друзья (этап 9.4)');
+  const profile = (await request('GET', '/me/profile', serik.token)).body;
+  check('профиль: имя, код, статистика', [profile.name, typeof profile.stats?.deals, profile.stats?.coinsLost], ['Серик', 'number', 100]);
+  check('в комнате видна статистика за стол (взнос уже учтён)',
+    (await request('GET', `/rooms/${roomId}`, serik.token)).body.stats?.[serik.id]?.coinsLost, 100);
+
+  check('добавить в друзья по коду', (await post('/friends', a.token, { code: bMe.code })).status, 201);
+  check('повторно — уже друзья', (await post('/friends', a.token, { code: bMe.code })).body.error, 'already friends');
+  check('себя — нельзя', (await post('/friends', a.token, { code: aMe.code })).body.error, 'self');
+  check('дружба взаимная: Дана у Ержана в списке',
+    (await request('GET', '/friends', b.token)).body.friends.map((f: any) => f.name), ['Дана']);
+  check('в карточке игрока видно, что это друг', (await request('GET', `/players/${bMe.code}`, a.token)).body.isFriend, true);
+  check('удалить из друзей', (await request('DELETE', `/friends/${bMe.code}`, a.token)).status, 200);
+  check('пропал у обоих', (await request('GET', '/friends', b.token)).body.friends, []);
+
+  section('аватар (этап 9.5)');
+  const photo = new Uint8Array([0xff, 0xd8, 0xff, 0xe0, ...new Array(500).fill(7)]);
+  const put = async (bytes: Uint8Array, type = 'image/jpeg') => {
+    const r = await fetch(BASE + '/me/avatar', {
+      method: 'PUT',
+      headers: { 'Content-Type': type, Authorization: `Bearer ${serik.token}` },
+      body: new Blob([bytes as BlobPart]),
+    });
+    return { status: r.status, body: (await r.json()) as any };
+  };
+  check('не картинка — отказ', (await put(new TextEncoder().encode('<script>'), 'image/jpeg')).status, 400);
+  check('слишком большая — 413', (await put(new Uint8Array(400 * 1024).fill(0xff))).status, 413);
+  const uploaded = await put(photo, 'application/octet-stream');
+  check('фото загружено, адрес с версией', /^\/avatars\/[\w-]+\?v=\d+$/.test(uploaded.body.avatar ?? ''), true);
+  const img = await fetch(BASE + uploaded.body.avatar);
+  check('картинка отдаётся как JPEG, байт в байт',
+    [img.headers.get('content-type'), (await img.arrayBuffer()).byteLength], ['image/jpeg', photo.length]);
+  const seat = (await request('GET', `/rooms/${roomId}`, serik.token)).body.players.find((p: any) => p.id === serik.id);
+  check('за столом у игрока видно фото', seat.avatar, uploaded.body.avatar);
+  check('у кого фото нет — null', (await request('GET', '/me', a.token)).body.avatar, null);
+
   for (const w of [serikWatch, botWatch, ghost, stranger]) w.socket.close();
 }
 

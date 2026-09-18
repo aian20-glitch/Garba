@@ -142,6 +142,12 @@ async function main() {
   check('Ержан свободен для новой комнаты', (await request('GET', '/me', erzhan.token)).body.roomId, null);
   check('деньги не потерялись: сумма балансов после расчёта', closed.players.reduce((a: number, p: any) => a + p.balance, 0), 40_000);
 
+  const profile = (await request('GET', '/me/profile', serik.token)).body;
+  check('комната доиграна — в профиле 1 комната, взнос и доля кона учтены',
+    [profile.stats.rooms, profile.stats.coinsLost, profile.stats.coinsWon > 0], [1, 100, true]);
+  check('у ушедшего тоже 1 комната в профиле', (await request('GET', '/me/profile', erzhan.token)).body.stats.rooms, 1);
+  check('победитель комнаты отмечен сервером', Array.isArray(closed.game?.winnerIds) && closed.game.winnerIds.length > 0, true);
+
   for (const s of sockets.values()) s.close();
 }
 

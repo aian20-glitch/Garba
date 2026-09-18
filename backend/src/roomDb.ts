@@ -6,12 +6,31 @@
 // При старте сервера недоигранные комнаты поднимаются из базы обратно в память.
 
 import type { DatabaseSync } from 'node:sqlite';
+import { emptyStats, type PlayerStats } from './stats.js';
 
 export type StoredRoom = {
   id: string;
   status: string;
   players: { id: string; balance: number }[];
+  // Статистика игроков за эту комнату (этап 9.4). Нет — игра ещё не начиналась.
+  stats?: Record<string, PlayerStats>;
 };
+
+// Колонки статистики в базе и поля PlayerStats — в одном порядке.
+const STAT_COLUMNS: [string, keyof PlayerStats][] = [
+  ['deals', 'deals'],
+  ['mains', 'mains'],
+  ['wins', 'wins'],
+  ['losses', 'losses'],
+  ['raz', 'raz'],
+  ['dva', 'dva'],
+  ['kon', 'kon'],
+  ['garba', 'garba'],
+  ['coins_won', 'coinsWon'],
+  ['coins_lost', 'coinsLost'],
+  ['max_win', 'maxWin'],
+  ['max_risk', 'maxRisk'],
+];
 
 export function ensureRoomTable(db: DatabaseSync) {
   db.exec(`
@@ -22,6 +41,18 @@ export function ensureRoomTable(db: DatabaseSync) {
       updated_at  INTEGER NOT NULL
     )
   `);
+
+  // Статистика игрока за одну комнату (этап 9.4). Профиль — сумма по всем комнатам.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS room_stats (
+      room_id    TEXT NOT NULL,
+      player_id  TEXT NOT NULL,
+      finished   INTEGER NOT NULL,
+      ${STAT_COLUMNS.map(([c]) => `${c} INTEGER NOT NULL`).join(', ')},
+      PRIMARY KEY (room_id, player_id)
+    )
+  `);
+  db.exec('CREATE INDEX IF NOT EXISTS room_stats_player ON room_stats (player_id)');
 }
 
 // Записать комнату и балансы её игроков — без своей транзакции,
@@ -35,6 +66,35 @@ export function writeRoom(db: DatabaseSync, room: StoredRoom) {
 
   const setBalance = db.prepare('UPDATE accounts SET balance = ? WHERE id = ?');
   for (const p of room.players) setBalance.run(p.balance, p.id);
+
+  if (room.stats) {
+    const cols = STAT_COLUMNS.map(([c]) => c);
+    const upsert = db.prepare(
+      `INSERT INTO room_stats (room_id, player_id, finished, ${cols.join(', ')})
+       VALUES (?, ?, ?, ${cols.map(() => '?').join(', ')})
+       ON CONFLICT(room_id, player_id) DO UPDATE SET finished = excluded.finished,
+         ${cols.map((c) => `${c} = excluded.${c}`).join(', ')}`,
+    );
+    const finished = room.status === 'finished' ? 1 : 0;
+    for (const [playerId, st] of Object.entries(room.stats)) {
+      upsert.run(room.id, playerId, finished, ...STAT_COLUMNS.map(([, k]) => st[k]));
+    }
+  }
+}
+
+// Статистика игрока за всё время (ТЗ §2): сумма по комнатам, максимумы — максимум.
+// rooms — сколько комнат он доиграл до конца.
+export function profileStats(db: DatabaseSync, playerId: string): PlayerStats & { rooms: number } {
+  const sums = STAT_COLUMNS.map(([c]) =>
+    c.startsWith('max_') ? `COALESCE(MAX(${c}), 0) AS ${c}` : `COALESCE(SUM(${c}), 0) AS ${c}`,
+  );
+  const row = db
+    .prepare(`SELECT COALESCE(SUM(finished), 0) AS rooms, ${sums.join(', ')} FROM room_stats WHERE player_id = ?`)
+    .get(playerId) as Record<string, number>;
+
+  const stats = emptyStats();
+  for (const [c, k] of STAT_COLUMNS) stats[k] = Number(row[c]);
+  return { ...stats, rooms: Number(row.rooms) };
 }
 
 // Комната и балансы её игроков — одной транзакцией.

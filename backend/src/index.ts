@@ -6,21 +6,27 @@ import { dirname } from 'node:path';
 import { Server as SocketServer } from 'socket.io';
 
 import {
+  addFriend,
+  areFriends,
   cleanName,
   createAccount,
   findAccountByCode,
   findAccountByToken,
   giftedOn,
   invitedCount,
+  listFriends,
   openDb,
   recordGift,
+  removeFriend,
   setDaily,
   tokenFromHeader,
   transaction,
   type Account,
 } from './accounts.js';
 import { createDeck, shuffle } from './deck.js';
-import { loadUnfinishedRooms, roomIdTaken, saveRoom, writeRoom } from './roomDb.js';
+import { loadUnfinishedRooms, profileStats, roomIdTaken, saveRoom, writeRoom } from './roomDb.js';
+import { addDeal, addMoney, emptyStats, roomWinners, type PlayerStats } from './stats.js';
+import { avatarPath, detectImageType, loadAvatar, MAX_AVATAR_BYTES, saveAvatar } from './avatars.js';
 import {
   dailyClaim,
   dayKey,
@@ -238,6 +244,8 @@ type GameState = {
   closeReason: 'kon_taken' | 'nobody_can_play' | 'player_left' | null;
   // Кто не вернулся за 5 минут — ему доля кона не положена (§13).
   leftPlayerIds?: string[];
+  // Победитель комнаты (ТЗ §36): лучший итог по монетам; при ничьей — несколько.
+  winnerIds?: string[];
   // Идущее голосование. resumeStage — куда вернуться, если решат продолжать.
   vote: {
     votes: Record<string, VoteChoice>;
@@ -272,6 +280,8 @@ type Room = {
   status: RoomStatus;
   createdAt: number;
   game?: GameState;
+  // Статистика игроков за эту комнату (ТЗ §35, этап 9.4). Заводится при старте игры.
+  stats?: Record<string, PlayerStats>;
 };
 
 const app = express();
@@ -406,6 +416,7 @@ app.get('/me', (req, res) => {
 
   return res.json({
     ...account,
+    avatar: avatarPath(db, account.id),
     roomId: activeRoomOf(account.id)?.id ?? null,
     daily: {
       claimedToday: !claim.claimable,
@@ -442,16 +453,143 @@ app.post('/me/daily-bonus', (req, res) => {
   });
 });
 
-// Найти игрока по коду — чтобы перед подарком показать, кому он уйдёт.
+// --- Аватар (ТЗ §2, этап 9.5) ---
+// Телефон присылает уже уменьшенную картинку как есть (не JSON). Тип картинки сервер
+// определяет сам по её байтам — присланному Content-Type не верим.
+app.put(
+  '/me/avatar',
+  express.raw({ type: () => true, limit: MAX_AVATAR_BYTES }),
+  (req, res) => {
+    const account = accountOf(req);
+    if (!account) {
+      return res.status(401).json({ error: 'unauthorized' });
+    }
+    const bytes = Buffer.isBuffer(req.body) ? new Uint8Array(req.body) : new Uint8Array();
+    const mime = detectImageType(bytes);
+    if (!mime) {
+      return res.status(400).json({ error: 'not an image' });
+    }
+    saveAvatar(db, account.id, mime, bytes);
+    console.log(`[ACCOUNT] ${account.name}: new avatar, ${bytes.length} bytes`);
+
+    // Игрок сидит за столом — пусть остальные сразу увидят новое фото.
+    const room = activeRoomOf(account.id);
+    if (room) broadcastRoom(room.id).catch((e) => console.error(`[ROOM ${room.id}] broadcast failed:`, e));
+
+    return res.json({ avatar: avatarPath(db, account.id) });
+  },
+);
+
+// Картинка аватара. Без токена: её грузит виджет картинки, а адрес знают только
+// те, кому сервер его отдал (id аккаунта угадать нельзя).
+app.get('/avatars/:id', (req, res) => {
+  const avatar = loadAvatar(db, req.params.id);
+  if (!avatar) {
+    return res.status(404).json({ error: 'no avatar' });
+  }
+  res.setHeader('Content-Type', avatar.mime);
+  // Адрес меняется с каждой новой фоткой (?v=...), поэтому кэшировать можно надолго.
+  res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+  return res.send(Buffer.from(avatar.data));
+});
+
+// Слишком большое фото — понятная ошибка вместо обрыва.
+app.use((err: unknown, _req: express.Request, res: express.Response, next: express.NextFunction) => {
+  if (err && typeof err === 'object' && (err as { type?: string }).type === 'entity.too.large') {
+    return res.status(413).json({ error: 'image too large', maxBytes: MAX_AVATAR_BYTES });
+  }
+  return next(err);
+});
+
+// Мой профиль (ТЗ §2): аккаунт и статистика за всё время.
+app.get('/me/profile', (req, res) => {
+  const account = accountOf(req);
+  if (!account) {
+    return res.status(401).json({ error: 'unauthorized' });
+  }
+  return res.json({
+    id: account.id,
+    name: account.name,
+    code: account.code,
+    balance: account.balance,
+    createdAt: account.createdAt,
+    avatar: avatarPath(db, account.id),
+    stats: profileStats(db, account.id),
+    friendsCount: listFriends(db, account.id).length,
+  });
+});
+
+// Игрок по коду: имя и статистика. Нужен перед подарком (кому он уйдёт)
+// и в списке друзей. Баланс чужого игрока не отдаём — вне стола он ни к чему.
 app.get('/players/:code', (req, res) => {
-  if (!accountOf(req)) {
+  const me = accountOf(req);
+  if (!me) {
     return res.status(401).json({ error: 'unauthorized' });
   }
   const player = findAccountByCode(db, normalizeCode(req.params.code));
   if (!player) {
     return res.status(404).json({ error: 'player not found' });
   }
-  return res.json({ code: player.code, name: player.name });
+  return res.json({
+    code: player.code,
+    name: player.name,
+    avatar: avatarPath(db, player.id),
+    stats: profileStats(db, player.id),
+    isFriend: areFriends(db, me.id, player.id),
+  });
+});
+
+// --- Друзья (ТЗ §2, этап 9.4) ---
+// Добавил по коду — дружба сразу взаимная, у обоих в списке.
+
+app.get('/friends', (req, res) => {
+  const me = accountOf(req);
+  if (!me) {
+    return res.status(401).json({ error: 'unauthorized' });
+  }
+  return res.json({
+    friends: listFriends(db, me.id).map((f) => ({
+      code: f.code,
+      name: f.name,
+      avatar: avatarPath(db, f.id),
+      stats: profileStats(db, f.id),
+      // В какой комнате сейчас сидит — чтобы можно было зайти к другу.
+      roomId: activeRoomOf(f.id)?.id ?? null,
+    })),
+  });
+});
+
+app.post('/friends', (req, res) => {
+  const me = accountOf(req);
+  if (!me) {
+    return res.status(401).json({ error: 'unauthorized' });
+  }
+  const friend = findAccountByCode(db, normalizeCode(req.body?.code));
+  if (!friend) {
+    return res.status(404).json({ error: 'player not found' });
+  }
+  if (friend.id === me.id) {
+    return res.status(400).json({ error: 'self' });
+  }
+  if (areFriends(db, me.id, friend.id)) {
+    return res.status(409).json({ error: 'already friends' });
+  }
+  addFriend(db, me.id, friend.id);
+  console.log(`[FRIENDS] ${me.name} + ${friend.name}`);
+  return res.status(201).json({ code: friend.code, name: friend.name });
+});
+
+app.delete('/friends/:code', (req, res) => {
+  const me = accountOf(req);
+  if (!me) {
+    return res.status(401).json({ error: 'unauthorized' });
+  }
+  const friend = findAccountByCode(db, normalizeCode(req.params.code));
+  if (!friend || !areFriends(db, me.id, friend.id)) {
+    return res.status(404).json({ error: 'not a friend' });
+  }
+  removeFriend(db, me.id, friend.id);
+  return res.json({ ok: true });
 });
 
 // Подарить монеты по коду игрока (ТЗ §5): до 1 000, не чаще раза в сутки.
@@ -637,12 +775,16 @@ function closeByDisconnect(room: Room, leftIds: string[]) {
     remaining.map((p) => ({ id: p.id, lost: p.startBalance - p.balance })),
   );
 
-  for (const p of remaining) p.balance += shares[p.id];
+  for (const p of remaining) {
+    p.balance += shares[p.id];
+    recordMoney(room, p.id, shares[p.id]);
+  }
 
   game.split = { kon: game.kon, perPlayer, remainder, remainderTo };
   game.kon = 0;
   game.stage = 'room_done';
   game.closeReason = 'player_left';
+  markWinners(room);
   game.leftPlayerIds = leftIds;
   game.activeBidderId = null;
   game.turnPlayerId = null;
@@ -722,6 +864,27 @@ function publicPause(room: Room) {
         secondsLeft: secondsLeft(disconnectedAt[p.id], now, presenceOpts.timeoutMs),
       })),
   };
+}
+
+// --- Статистика (ТЗ §2, §35, этап 9.4) ---
+// Комната копит статистику каждого игрока; при сохранении комнаты она пишется в базу,
+// профиль складывает её по всем комнатам. Бонусы и подарки сюда не попадают.
+
+function statsOf(room: Room, playerId: string): PlayerStats {
+  return room.stats?.[playerId] ?? emptyStats();
+}
+
+// Деньги за столом: взнос, расчёт раздачи, доля кона.
+function recordMoney(room: Room, playerId: string, delta: number) {
+  room.stats ??= {};
+  room.stats[playerId] = addMoney(statsOf(room, playerId), delta);
+}
+
+// Комната закрылась — отмечаем победителя (§36).
+function markWinners(room: Room) {
+  room.game!.winnerIds = roomWinners(
+    room.players.map((p) => ({ id: p.id, diff: p.balance - p.startBalance })),
+  );
 }
 
 function makeRoomId(): string {
@@ -821,6 +984,7 @@ function takeAnte(room: Room, reason: AnteRecord['reason']) {
 
   for (const p of room.players) {
     p.balance -= paid[p.id];
+    recordMoney(room, p.id, -paid[p.id]);
   }
   game.kon += total;
   game.lastAnte = {
@@ -907,12 +1071,14 @@ function closeWithSplit(room: Room) {
 
   for (const p of room.players) {
     p.balance += shares[p.id];
+    recordMoney(room, p.id, shares[p.id]);
   }
 
   game.split = { kon: game.kon, perPlayer, remainder, remainderTo };
   game.kon = 0;
   game.stage = 'room_done';
   game.closeReason = 'nobody_can_play';
+  markWinners(room);
   game.activeBidderId = null;
   game.turnPlayerId = null;
   room.status = 'finished';
@@ -1287,6 +1453,7 @@ function finishRound(room: Room, won: boolean[], instantIndex = -1) {
 
   for (const p of room.players) {
     p.balance += settlement.deltas[p.id] ?? 0;
+    recordMoney(room, p.id, settlement.deltas[p.id] ?? 0);
   }
 
   game.konBeforeSettlement = game.kon;
@@ -1301,12 +1468,22 @@ function finishRound(room: Room, won: boolean[], instantIndex = -1) {
     garba: i === instantIndex && countsAsGarba(m.declaration),
   }));
 
+  // Партия сыграна — у каждого за столом. Главным — ещё победа или поражение.
+  for (const p of room.players) {
+    const main = game.result.find((r) => r.playerId === p.id);
+    room.stats![p.id] = addDeal(
+      statsOf(room, p.id),
+      main ? { declaration: main.declaration, won: main.won, delta: main.delta, garba: main.garba, risk } : null,
+    );
+  }
+
   updateClosing(room);
 
   // Комната доигрывала последний кон, и его забрали — комната закрывается (§12.1).
   if (game.closing && game.kon === 0) {
     game.stage = 'room_done';
     game.closeReason = 'kon_taken';
+    markWinners(room);
     room.status = 'finished';
     console.log(`[ROOM ${room.id}] room finished`);
     return;
@@ -1335,8 +1512,7 @@ function publicRoom(room: Room, viewerId?: string) {
       // Открывавшиеся ИЗЖОГИ видели все — они открыты (§5.2).
       izzhoga: room.game.izzhoga,
       // Масть ДВА видит только тот, кто сказал ДВА (§6.3), остальным — null.
-      // Оговорка: авторизации пока нет (CLAUDE.md, слабое место №8) — кто знает
-      // чужой playerId, увидит и чужую руку, и эту масть. Закрывается на этапе 9.
+      // Кто смотрит — сервер знает по токену (этап 9.1), чужой не подсмотрит.
       myDvaSuit:
         viewerId !== undefined &&
         room.game.dvaSuit !== null &&
@@ -1400,6 +1576,7 @@ function publicRoom(room: Room, viewerId?: string) {
       closing: room.game.closing,
       closeReason: room.game.closeReason,
       leftPlayerIds: room.game.leftPlayerIds ?? [],
+      winnerIds: room.game.winnerIds ?? [],
       split: room.game.split,
       // Голосование «продолжаем или делим» (§12.2): сколько за что и кто уже голосовал.
       vote: room.game.vote
@@ -1509,10 +1686,13 @@ function publicRoom(room: Room, viewerId?: string) {
     capacity: room.capacity,
     creatorId: room.creatorId,
     settings: room.settings,
-    players: room.players,
+    // У каждого игрока — адрес его фото (этап 9.5) или null.
+    players: room.players.map((p) => ({ ...p, avatar: avatarPath(db, p.id) })),
     status: room.status,
     // Пауза из-за отключения (§13): кто отключился и сколько секунд у него осталось.
     pause: publicPause(room),
+    // Статистика игроков за комнату (ТЗ §35) — для экрана «ИТОГИ ИГРЫ».
+    stats: room.stats ?? null,
     createdAt: room.createdAt,
     game,
   };
@@ -1767,6 +1947,7 @@ app.post('/rooms/:id/start', (req, res) => {
   room.players = shuffle(room.players);
 
   room.game = makeDealerSelection(room);
+  room.stats = Object.fromEntries(room.players.map((p) => [p.id, emptyStats()]));
 
   console.log(
     `[ROOM ${room.id}] GAME STARTED, dealer=${room.game.dealerName}`,
