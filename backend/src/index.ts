@@ -123,6 +123,9 @@ type AnteRecord = {
   brokePlayerIds: string[];
 };
 
+// Завершённая взятка: какие карты легли и кто её забрал.
+type PlayedTrick = { cards: TrickCard[]; winnerId: string; winnerName: string };
+
 type GameState = {
   stage: Stage;
   dealerId: string;
@@ -155,7 +158,10 @@ type GameState = {
   trickNumber: number; // 1…5
   currentTrick: TrickCard[];
   // Последняя завершённая взятка — чтобы все успели увидеть, кто её забрал.
-  lastTrick: { cards: TrickCard[]; winnerId: string; winnerName: string } | null;
+  lastTrick: PlayedTrick | null;
+  // Все завершённые взятки раздачи по порядку. Сыгранные карты остаются на виду
+  // у всех до конца раздачи (RULES.md §10.6).
+  playedTricks: PlayedTrick[];
   tricksWon: Record<string, number>;
   result: MainResult[] | null;
 
@@ -426,6 +432,7 @@ function emptyPlayState() {
     trickNumber: 0,
     currentTrick: [] as TrickCard[],
     lastTrick: null,
+    playedTricks: [] as PlayedTrick[],
     tricksWon: {} as Record<string, number>,
     result: null,
   };
@@ -662,6 +669,7 @@ function playCard(
     winnerId,
     winnerName: winner.name,
   };
+  game.playedTricks.push(game.lastTrick);
   game.currentTrick = [];
 
   // Раздача заканчивается, как только исход ясен для всех главных, —
@@ -848,6 +856,8 @@ function publicRoom(room: Room, viewerId?: string) {
       trickNumber: room.game.trickNumber,
       currentTrick: room.game.currentTrick,
       lastTrick: room.game.lastTrick,
+      // Все завершённые взятки раздачи — сыгранные карты открыты всем (§10.6).
+      playedTricks: room.game.playedTricks,
       tricksWon: room.game.tricksWon,
       result: room.game.result,
       // Какими картами запросивший может пойти прямо сейчас. Решает сервер,

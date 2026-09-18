@@ -1197,6 +1197,54 @@ class _GameTableScreenState extends State<GameTableScreen> {
     }
   }
 
+  // Сыгранные взятки компактно, строкой на взятку: «1. Q♥ K♠ 9♦ → Дана» (RULES.md §10.6).
+  Widget trickHistory(List<Map<String, dynamic>> tricks) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        for (var i = 0; i < tricks.length; i++)
+          Padding(
+            padding: const EdgeInsets.symmetric(vertical: 2),
+            child: Row(
+              children: [
+                Text('${i + 1}.', style: const TextStyle(color: Colors.white54)),
+                const SizedBox(width: 6),
+                Expanded(
+                  child: Wrap(
+                    spacing: 4,
+                    runSpacing: 4,
+                    children: ((tricks[i]['cards'] as List?) ?? const []).map((t) {
+                      final card = Map<String, dynamic>.from((t as Map)['card'] as Map);
+                      final suit = card['suit'].toString();
+                      return Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 1),
+                        decoration: BoxDecoration(
+                          color: const Color(0xFFF4EFE2),
+                          borderRadius: BorderRadius.circular(4),
+                        ),
+                        child: Text(
+                          '${card['rank']}${suitSymbol(suit)}',
+                          style: TextStyle(
+                            fontSize: 12,
+                            fontWeight: FontWeight.w800,
+                            color: isRedSuit(suit) ? Colors.red.shade800 : Colors.black,
+                          ),
+                        ),
+                      );
+                    }).toList(),
+                  ),
+                ),
+                Text(
+                  '→ ${tricks[i]['winnerName']}',
+                  style: const TextStyle(color: Colors.white70, fontSize: 12),
+                ),
+              ],
+            ),
+          ),
+      ],
+    );
+  }
+
   // Карты одной взятки с именами игроков под ними.
   Widget trickRow(List<Map<String, dynamic>> trick, {bool dim = false}) {
     return Opacity(
@@ -1289,6 +1337,19 @@ class _GameTableScreenState extends State<GameTableScreen> {
     final currentTrick = ((game['currentTrick'] as List?) ?? const [])
         .map((e) => Map<String, dynamic>.from(e as Map))
         .toList();
+    // Все завершённые взятки раздачи — они остаются на виду до конца (RULES.md §10.6).
+    final playedTricks = ((game['playedTricks'] as List?) ?? const [])
+        .map((e) => Map<String, dynamic>.from(e as Map))
+        .toList();
+    // Мои сыгранные карты: остаются в руке, но серыми (§10.6).
+    final myPlayed = <Map<String, dynamic>>[
+      for (final t in [
+        for (final pt in playedTricks) ...(pt['cards'] as List),
+        ...((game['currentTrick'] as List?) ?? const []),
+      ])
+        if ((t as Map)['playerId'].toString() == widget.currentPlayerId)
+          Map<String, dynamic>.from(t['card'] as Map),
+    ];
     final lastTrickRaw = game['lastTrick'];
     final lastTrick =
         lastTrickRaw is Map ? Map<String, dynamic>.from(lastTrickRaw) : null;
@@ -1583,6 +1644,17 @@ class _GameTableScreenState extends State<GameTableScreen> {
               'Ждём первый ход',
               style: TextStyle(color: Colors.white54),
             ),
+          // Прошлые взятки: крупно показана только текущая (или последняя, пока
+          // новая пуста) — остальные строками ниже, чтобы все карты были на виду.
+          if (playedTricks.length > (currentTrick.isEmpty ? 1 : 0)) ...[
+            const SizedBox(height: 12),
+            trickHistory(
+              playedTricks.sublist(
+                0,
+                playedTricks.length - (currentTrick.isEmpty ? 1 : 0),
+              ),
+            ),
+          ],
         ],
       );
     } else if (isRoundDone) {
@@ -1643,6 +1715,11 @@ class _GameTableScreenState extends State<GameTableScreen> {
             'Следующую раздачу сдаёт $dealerName',
             style: const TextStyle(color: Colors.white60, fontSize: 13),
           ),
+          // Как прошла раздача — все сыгранные взятки.
+          if (playedTricks.isNotEmpty) ...[
+            const SizedBox(height: 12),
+            trickHistory(playedTricks),
+          ],
         ],
       );
     } else {
@@ -1772,7 +1849,10 @@ class _GameTableScreenState extends State<GameTableScreen> {
                       width: 2,
                     ),
                   ),
-                  child: Column(
+                  // Прокрутка: при 7 игроках, взятке и истории взяток стол не влезает
+                  // по высоте на телефон.
+                  child: SingleChildScrollView(
+                    child: Column(
                     children: [
                       const Text(
                         'ИГРОВОЙ СТОЛ',
@@ -1854,10 +1934,10 @@ class _GameTableScreenState extends State<GameTableScreen> {
                           ),
                         );
                       }),
-                      const Spacer(),
+                      const SizedBox(height: 16),
                       footer,
-                      const Spacer(),
                     ],
+                    ),
                   ),
                 ),
               ),
@@ -1873,7 +1953,7 @@ class _GameTableScreenState extends State<GameTableScreen> {
               const SizedBox(height: 8),
               SizedBox(
                 height: 128,
-                child: hand.isEmpty
+                child: hand.isEmpty && myPlayed.isEmpty
                     ? Center(
                         child: Text(
                           stage == 'awaiting_deal'
@@ -1885,9 +1965,30 @@ class _GameTableScreenState extends State<GameTableScreen> {
                       )
                     : ListView.separated(
                         scrollDirection: Axis.horizontal,
-                        itemCount: hand.length,
+                        itemCount: hand.length + myPlayed.length,
                         separatorBuilder: (_, __) => const SizedBox(width: 8),
                         itemBuilder: (_, index) {
+                          // Сначала карты на руках, за ними мои сыгранные —
+                          // серые и неактивные, но видны до конца раздачи (§10.6).
+                          if (index >= hand.length) {
+                            final played = myPlayed[index - hand.length];
+                            return Opacity(
+                              opacity: 0.45,
+                              child: ColorFiltered(
+                                colorFilter: const ColorFilter.matrix(<double>[
+                                  0.33, 0.33, 0.33, 0, 0,
+                                  0.33, 0.33, 0.33, 0, 0,
+                                  0.33, 0.33, 0.33, 0, 0,
+                                  0, 0, 0, 1, 0,
+                                ]),
+                                child: SmallCard(
+                                  rank: played['rank'].toString(),
+                                  suit: played['suit'].toString(),
+                                ),
+                              ),
+                            );
+                          }
+
                           final card = hand[index];
                           final cardId = card['id'].toString();
                           final myPlayTurn = isPlaying && myTurn;
