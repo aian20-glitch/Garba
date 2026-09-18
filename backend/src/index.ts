@@ -85,6 +85,7 @@ import {
 import { dealsUntilNextVote, tallyVote, type VoteChoice } from './vote.js';
 import {
   contestResult,
+  canConcede,
   nextActor,
   passUnaffordable,
   passCard,
@@ -166,6 +167,8 @@ type MainResult = MainPlayer & {
   instant: boolean;
   // Это ГАРБА — только при РАЗ и КОНЕ: анимация и статистика. При ДВА — нет.
   garba: boolean;
+  // Сдался до первого хода, взяв спецкарту (§7.6): платит как при проигрыше.
+  conceded: boolean;
 };
 
 // Пустая раздача — никто не играет: все спасовали (§6.5) или три раза подряд
@@ -1607,7 +1610,7 @@ function playCard(
 // Раздача сыграна: считаем деньги, передаём раздачу, проверяем конец комнаты.
 // won[i] — выиграл ли game.mains[i].
 // instantIndex — индекс главного, выигравшего сразу, без розыгрыша, или -1.
-function finishRound(room: Room, won: boolean[], instantIndex = -1) {
+function finishRound(room: Room, won: boolean[], instantIndex = -1, conceded = false) {
   const game = room.game!;
   const base = roomBaseKon(room);
 
@@ -1640,6 +1643,7 @@ function finishRound(room: Room, won: boolean[], instantIndex = -1) {
     delta: settlement.deltas[m.playerId] ?? 0,
     instant: i === instantIndex,
     garba: i === instantIndex && countsAsGarba(m.declaration),
+    conceded,
   }));
 
   // Партия сыграна — у каждого за столом. Главным — ещё победа или поражение.
@@ -1850,6 +1854,8 @@ function publicRoom(room: Room, viewerId?: string) {
               canAffordSpecial(room, viewerId, r),
             )
           : [],
+      // Может ли запросивший сдаться — взял спецкарту и ещё никто не ходил (§7.6).
+      myCanConcede: viewerId !== undefined && concedeAllowed(room.game, viewerId),
       // Владелец спецкарты сбрасывает одну свою карту — кроме самой спецкарты (§7.5).
       myDiscardOptions:
         room.game.stage === 'special_discard' &&
@@ -2427,6 +2433,38 @@ app.post('/rooms/:id/discard', (req, res) => {
   game.hands[String(playerId)] = hand.filter((c) => c.id !== card.id);
   game.discardedCard = card;
   startPlay(room);
+
+  return res.json(publicRoom(room, String(playerId)));
+});
+
+// Взял спецкарту и ещё никто не ходил — можно сдаться (§7.6).
+function concedeAllowed(game: GameState, playerId: string): boolean {
+  const outcome = game.special?.outcome;
+  return canConcede({
+    stage: game.stage,
+    isHolder: !!outcome && outcome !== 'nobody' && outcome.holderId === playerId,
+    cardsOnTable: game.playedTricks.length + game.currentTrick.length,
+  });
+}
+
+// Взявший спецкарту сдаётся до первого хода: раздача проиграна без розыгрыша,
+// платит как при обычном проигрыше — кон × риск (§7.6, §11.7).
+app.post('/rooms/:id/concede', (req, res) => {
+  const room = rooms.get(req.params.id);
+
+  if (!room || !room.game) {
+    return res.status(404).json({ error: 'room/game not found' });
+  }
+
+  const game = room.game;
+  const { playerId } = req.body ?? {};
+
+  if (!concedeAllowed(game, String(playerId))) {
+    return res.status(409).json({ error: 'cannot concede now', stage: game.stage });
+  }
+
+  finishRound(room, [false], -1, true);
+  console.log(`[ROOM ${room.id}] ${game.mains[0].playerName} сдался со спецкартой`);
 
   return res.json(publicRoom(room, String(playerId)));
 });

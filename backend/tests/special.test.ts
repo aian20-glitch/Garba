@@ -2,6 +2,7 @@
 
 import { check, section } from './check.js';
 import {
+  canConcede,
   contestResult,
   nextActor,
   passCard,
@@ -126,3 +127,10 @@ check('на ×2 хватило бы, на ×3 — нет: И4 пропущен �
 const nobodyRich = passUnaffordable(startContest('A', seats, 'И1'), () => false);
 check('не может никто — борьба кончается сразу, карту не взял никто', [nextActor(nobodyRich), contestResult(nobodyRich)], [null, null]);
 check('у кого хватает — спрашиваем как обычно', nextActor(passUnaffordable(startContest('K', seats, 'И1'), () => true)), 'И2');
+
+section('сдаться со спецкартой (§7.6, решение владельца правил)');
+check('взявший, пока сбрасывает карту — можно', canConcede({ stage: 'special_discard', isHolder: true, cardsOnTable: 0 }), true);
+check('взявший, розыгрыш начался, карт на столе нет — можно', canConcede({ stage: 'playing', isHolder: true, cardsOnTable: 0 }), true);
+check('первая карта легла на стол — уже нельзя', canConcede({ stage: 'playing', isHolder: true, cardsOnTable: 1 }), false);
+check('другой игрок (не взявший спецкарту) — нельзя', canConcede({ stage: 'playing', isHolder: false, cardsOnTable: 0 }), false);
+check('в торгах и после раздачи — нельзя', [canConcede({ stage: 'bidding', isHolder: true, cardsOnTable: 0 }), canConcede({ stage: 'round_done', isHolder: true, cardsOnTable: 0 })], [false, false]);

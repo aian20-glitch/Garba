@@ -2988,6 +2988,32 @@ class _GameTableScreenState extends State<GameTableScreen> {
     }
   }
 
+  // Сдаться со спецкартой до первого хода (RULES.md §7.6) — сначала спрашиваем.
+  Future<void> confirmConcede(int loss) async {
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Сдаться?'),
+        content: Text(
+          'Раздача будет проиграна без розыгрыша.\n'
+          'Вы положите в кон ${fmtCoins(loss)} — как при обычном проигрыше.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('ИГРАТЬ'),
+          ),
+          FilledButton(
+            style: FilledButton.styleFrom(backgroundColor: Colors.redAccent),
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('СДАТЬСЯ'),
+          ),
+        ],
+      ),
+    );
+    if (ok == true) await sendSpecial('concede', {});
+  }
+
   // Выигравший КОН называет козырь (RULES.md §6.7).
   Future<void> chooseKonTrump(String suit) async {
     if (choosingKonTrump) return;
@@ -4118,6 +4144,23 @@ class _GameTableScreenState extends State<GameTableScreen> {
       );
     }
 
+    // Взял спецкарту и видит, что не выиграет, — может сдаться до первого хода (§7.6).
+    // Разрешает сервер (myCanConcede); платит как при проигрыше — кон × риск.
+    final canConcede = game['myCanConcede'] == true;
+    final concedeLoss = kon * ((specialOutcome?['risk'] as num?)?.toInt() ?? 1);
+    Widget concedeButton() => Padding(
+          padding: const EdgeInsets.only(top: 6),
+          child: OutlinedButton.icon(
+            style: OutlinedButton.styleFrom(
+              foregroundColor: Colors.redAccent,
+              side: const BorderSide(color: Colors.redAccent),
+            ),
+            onPressed: sendingSpecial ? null : () => confirmConcede(concedeLoss),
+            icon: const Icon(Icons.flag),
+            label: Text('СДАТЬСЯ (в кон ${fmtCoins(concedeLoss)})'),
+          ),
+        );
+
     // Итог раздачи — поверх стола, чтобы не искать его под столом: кто что сказал,
     // выиграл или проиграл, сколько забрал из кона или положил в кон (RULES.md §11).
     Widget? resultPopup;
@@ -4139,7 +4182,9 @@ class _GameTableScreenState extends State<GameTableScreen> {
                   : r['declaration'] == 'КОН' && konAs != null
                       ? 'КОН по $konAs'
                       : r['declaration'].toString(),
-              how: r['garba'] == true
+              how: r['conceded'] == true
+                  ? 'сдался до первого хода'
+                  : r['garba'] == true
                   ? 'ГАРБА — без розыгрыша'
                   : r['instant'] == true
                       ? 'дама, король и туз козыря — без розыгрыша'
@@ -4474,15 +4519,21 @@ class _GameTableScreenState extends State<GameTableScreen> {
                   ),
                 )
               else if (isPlaying)
-                Text(
-                  myTurn
-                      ? 'Нажмите на карту, чтобы сходить'
-                      : 'Ходит $activeName',
-                  textAlign: TextAlign.center,
-                  style: TextStyle(
-                    fontWeight: FontWeight.w800,
-                    color: myTurn ? Colors.greenAccent : Colors.white60,
-                  ),
+                Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    Text(
+                      myTurn
+                          ? 'Нажмите на карту, чтобы сходить'
+                          : 'Ходит $activeName',
+                      textAlign: TextAlign.center,
+                      style: TextStyle(
+                        fontWeight: FontWeight.w800,
+                        color: myTurn ? Colors.greenAccent : Colors.white60,
+                      ),
+                    ),
+                    if (canConcede) concedeButton(),
+                  ],
                 )
               else if (isSpecial)
                 // Борьба за спецкарту: множители, которые можно назвать (с учётом
@@ -4529,17 +4580,23 @@ class _GameTableScreenState extends State<GameTableScreen> {
                         style: const TextStyle(color: Colors.white60),
                       )
               else if (isDiscard)
-                Text(
-                  myDiscardOptions.isNotEmpty
-                      ? 'Нажмите на карту, которую сбросить'
-                      : 'Ждём, пока сбросят карту',
-                  textAlign: TextAlign.center,
-                  style: TextStyle(
-                    fontWeight: FontWeight.w800,
-                    color: myDiscardOptions.isNotEmpty
-                        ? Colors.greenAccent
-                        : Colors.white60,
-                  ),
+                Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    Text(
+                      myDiscardOptions.isNotEmpty
+                          ? 'Нажмите на карту, которую сбросить'
+                          : 'Ждём, пока сбросят карту',
+                      textAlign: TextAlign.center,
+                      style: TextStyle(
+                        fontWeight: FontWeight.w800,
+                        color: myDiscardOptions.isNotEmpty
+                            ? Colors.greenAccent
+                            : Colors.white60,
+                      ),
+                    ),
+                    if (canConcede) concedeButton(),
+                  ],
                 )
               else if (stage == 'kon_trump')
                 // Выигравший КОН называет козырь: по РАЗ или по ДВА (RULES.md §6.7).

@@ -159,6 +159,18 @@ export function contestResult(c: Contest): { holderId: string; risk: number } | 
   return { holderId: c.holderId, risk: c.risk };
 }
 
+// Можно ли сдаться (§7.6, решение владельца правил): только взявший спецкарту и только
+// до первого хода — пока сбрасывает карту или пока ни одна карта не легла на стол.
+export function canConcede(g: {
+  stage: string;
+  isHolder: boolean;
+  cardsOnTable: number;
+}): boolean {
+  if (!g.isHolder) return false;
+  if (g.stage === 'special_discard') return true;
+  return g.stage === 'playing' && g.cardsOnTable === 0;
+}
+
 // Первый ход первой взятки в спецраздаче (RULES.md §10.4):
 // 6 — главный ходит сам; 10 — сосед справа от главного, чтобы главный был последним;
 // туз, король, дама — как обычно, сосед слева.
