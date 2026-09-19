@@ -68,6 +68,7 @@ import {
   splitKon,
   someoneBelowBase,
   stakeFor,
+  refillPointless,
 } from './money.js';
 import {
   allowedBidsFor,
@@ -184,6 +185,8 @@ type AnteRecord = {
   skipped: boolean;
   // У кого не хватило денег на взнос — из-за них доливка и отключилась.
   brokePlayerIds: string[];
+  // Всеобщий ПАС, а на РАЗ не хватает ни у кого — доливать бессмысленно (§9.2a).
+  noRaz?: boolean;
 };
 
 // Завершённая взятка: какие карты легли и кто её забрал.
@@ -1436,7 +1439,21 @@ function emptyRound(room: Room, reason: EmptyRoundReason) {
   const game = room.game!;
 
   game.emptyStreak += 1;
-  if (game.emptyStreak <= room.settings.emptyLimit) {
+  const balances = room.players.map((p) => p.balance);
+  if (
+    game.emptyStreak <= room.settings.emptyLimit &&
+    refillPointless(reason, balances, game.kon, roomBaseKon(room))
+  ) {
+    // На РАЗ не хватает ни у кого — кон всё равно никто не заберёт, не доливаем (§9.2a).
+    game.lastAnte = {
+      reason,
+      perPlayer: room.settings.ante,
+      total: 0,
+      skipped: true,
+      brokePlayerIds: [],
+      noRaz: true,
+    };
+  } else if (game.emptyStreak <= room.settings.emptyLimit) {
     takeAnte(room, reason);
   } else {
     game.lastAnte = null;

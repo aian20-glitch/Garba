@@ -137,6 +137,20 @@ export function cheapestStake(capacity: number, kon: number, base: number): numb
   return capacity === 4 ? stakeFor('РАЗ', kon, base) : stakeFor('ДВА', kon, base);
 }
 
+// Доливка после всеобщего ПАСа бессмысленна, если на РАЗ не хватает ни у кого: весь кон
+// всё равно никто не может забрать (§9.2a, решение владельца правил). ДВА не в счёт.
+// Смотрим на кон до доливки. Три ИЗЖОГИ — не касается, там доливаем как раньше.
+export function refillPointless(
+  reason: 'all_pass' | 'three_izzhoga',
+  balances: number[],
+  kon: number,
+  base: number,
+): boolean {
+  if (reason !== 'all_pass') return false;
+  const raz = stakeFor('РАЗ', kon, base);
+  return balances.every((b) => b < raz);
+}
+
 // Кон никто не может взять: ни у кого не хватает даже на самую дешёвую заявку.
 // Тогда голосуем: продолжаем или делим кон поровну (RULES.md §12.2).
 export function nobodyCanPlay(balances: number[], cheapest: number): boolean {

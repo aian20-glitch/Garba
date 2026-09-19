@@ -383,6 +383,8 @@ pause: null | { players: [{ id, name, secondsLeft }] }   — на уровне �
 - `game.lastAnte` — последний взнос: `{ reason: 'kon_empty' | 'all_pass', perPlayer, total,
   skipped, brokePlayerIds }`. Доливают все или никто: `skipped = true`, если у кого-то
   (`brokePlayerIds`) не хватило денег.
+  `noRaz: true` — всеобщий ПАС, а на РАЗ не хватает ни у кого: не доливали (§9.2a,
+  `refillPointless` в `money.ts`); после трёх ИЗЖОГ правило не действует.
 - `game.emptyStreak` — пустых раздач подряд; `game.closing` — доигрываем последний кон.
 - `game.closeReason` — `'kon_taken'` (§12.1) или `'nobody_can_play'` (§12.2);
   `game.split` — `{ kon, perPlayer, remainder, remainderTo }`, если кон поделили.

@@ -3646,7 +3646,10 @@ class _GameTableScreenState extends State<GameTableScreen> {
           (lastAnte['reason'] == 'all_pass' ||
               lastAnte['reason'] == 'three_izzhoga');
       final String anteText;
-      if (isRefill && lastAnte['skipped'] == true) {
+      if (isRefill && lastAnte['noRaz'] == true) {
+        // На РАЗ не хватает ни у кого — кон никто не заберёт, не доливаем (RULES.md §9.2a).
+        anteText = 'На РАЗ не хватает ни у кого — в кон не доливаем.';
+      } else if (isRefill && lastAnte['skipped'] == true) {
         // Доливают все или никто (RULES.md §9.2).
         final brokeIds = ((lastAnte['brokePlayerIds'] as List?) ?? const [])
             .map((e) => e.toString())

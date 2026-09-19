@@ -13,6 +13,7 @@ import {
   someoneBelowBase,
   stakeFor,
   type MainOutcome,
+  refillPointless,
 } from '../src/money.js';
 
 
@@ -141,3 +142,10 @@ let below = 0;
 for (let ante = 100; ante <= 1000; ante += 100) for (let n = 4; n <= 7; n++) if (lowestEntryFor(ante) < baseKon(n, ante)) below++;
 check('при любом взносе и составе минимум для входа не ниже базового кона', below, 0);
 
+
+section('всеобщий ПАС, на РАЗ нет ни у кого — не доливаем (§9.2a, решение владельца правил)');
+// 5 игроков по 100: базовый 500. Кон 4 000 — РАЗ стоит 4 000.
+check('у всех меньше 4 000 — доливать бессмысленно', refillPointless('all_pass', [3900, 2000, 1000, 3000, 500], 4000, 500), true);
+check('у одного есть 4 000 — доливаем как раньше', refillPointless('all_pass', [4000, 2000, 1000, 3000, 500], 4000, 500), false);
+check('на ДВА (2 000) хватает, на РАЗ нет — всё равно не доливаем', refillPointless('all_pass', [3000, 2500, 100, 100, 100], 4000, 500), true);
+check('три ИЗЖОГИ — правило не действует, доливаем', refillPointless('three_izzhoga', [100, 100, 100, 100, 100], 4000, 500), false);
