@@ -101,16 +101,19 @@ cd ~/Garba/mobile && flutter analyze
 Caddy (https сам), ежедневная копия базы, `setup-server.sh` (один раз), `deploy.sh`
 (каждое обновление, сначала гоняет `npm test`). SSH-ключ — `~/.ssh/garba_vps` на Mac.
 Сервер в продакшене — `node dist/index.js` (`npm run build`), слушает `HOST=127.0.0.1`.
+Ключ подписи Android — `~/garba-keys/garba-upload.jks` (пароль там же, `key.properties`;
+копия в `mobile/android/key.properties`, в git не попадает). **Потеря ключа = нельзя обновлять
+приложение у игроков** — владельцу хранить копию папки `~/garba-keys` отдельно.
 Приложение: `flutter build apk --release --dart-define=API_BASE=https://<домен>`; без
 `API_BASE` — `http://10.0.2.2:3000`. Обычный http разрешён только в отладке
-(`android/app/src/debug/AndroidManifest.xml`). Релиз пока подписан отладочным ключом.
+(`android/app/src/debug/AndroidManifest.xml`). Релиз подписан постоянным ключом.
 **Ждём от владельца:** IP сервера и домен.
 
 ### Эмулятор на Mac
 
 - `adb exec-out screencap -p > файл.png` работает (на Windows-ПК отдавал чёрный кадр).
-- Приложение: `com.example.garba_mobile`, запуск —
-  `adb shell am start -n com.example.garba_mobile/.MainActivity`.
+- Приложение: `kz.garba.app` (постоянное имя с 19.09.2026, iOS — тот же bundle id), запуск —
+  `adb shell am start -n kz.garba.app/.MainActivity`.
 - Первая сборка APK — около 7 минут (Gradle докачивает NDK, CMake, Platform 35), дальше быстрее.
 - Нажатия: `adb shell input tap X Y` в пикселях экрана 1080×2400.
 - **Клавиатура.** AVD из `avdmanager` создаётся с `hw.keyboard=no` — клавиатура Mac в эмулятор

@@ -1,3 +1,5 @@
+import java.util.Properties
+
 plugins {
     id("com.android.application")
     // The Flutter Gradle Plugin must be applied after the Android and Kotlin Gradle plugins.
@@ -5,7 +7,7 @@ plugins {
 }
 
 android {
-    namespace = "com.example.garba_mobile"
+    namespace = "kz.garba.app"
     compileSdk = flutter.compileSdkVersion
 
     compileOptions {
@@ -14,8 +16,9 @@ android {
     }
 
     defaultConfig {
-        // TODO: Specify your own unique Application ID (https://developer.android.com/studio/build/application-id.html).
-        applicationId = "com.example.garba_mobile"
+        // Постоянное имя приложения (решение владельца, 19.09.2026). Менять нельзя:
+        // для телефона и Google Play другое имя — это другое приложение.
+        applicationId = "kz.garba.app"
         // You can update the following values to match your application needs.
         // For more information, see: https://flutter.dev/to/review-gradle-config.
         minSdk = flutter.minSdkVersion
@@ -28,11 +31,27 @@ android {
         versionName = flutter.versionName
     }
 
+    // Постоянный ключ подписи: android/key.properties (в git не попадает) указывает на
+    // ~/garba-keys/garba-upload.jks. Потерять ключ — нельзя выпускать обновления.
+    // Нет файла (другой компьютер) — релиз подписывается отладочным ключом.
+    val keyProps = Properties().apply {
+        val f = rootProject.file("key.properties")
+        if (f.exists()) f.inputStream().use { load(it) }
+    }
+    signingConfigs {
+        if (keyProps.getProperty("storeFile") != null) {
+            create("release") {
+                storeFile = file(keyProps.getProperty("storeFile"))
+                storePassword = keyProps.getProperty("storePassword")
+                keyAlias = keyProps.getProperty("keyAlias")
+                keyPassword = keyProps.getProperty("keyPassword")
+            }
+        }
+    }
+
     buildTypes {
         release {
-            // TODO: Add your own signing config for the release build.
-            // Signing with the debug keys for now, so `flutter run --release` works.
-            signingConfig = signingConfigs.getByName("debug")
+            signingConfig = signingConfigs.findByName("release") ?: signingConfigs.getByName("debug")
         }
     }
 }

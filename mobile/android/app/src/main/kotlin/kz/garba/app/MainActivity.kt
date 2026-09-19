@@ -1,4 +1,4 @@
-package com.example.garba_mobile
+package kz.garba.app
 
 import io.flutter.embedding.android.FlutterActivity
 
