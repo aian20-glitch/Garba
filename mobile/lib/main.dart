@@ -20,6 +20,7 @@ part 'screens/profile.dart';
 part 'screens/rules.dart';
 part 'screens/rating.dart';
 part 'screens/create_join.dart';
+part 'screens/open_rooms.dart';
 part 'screens/lobby.dart';
 part 'screens/dealer_selection.dart';
 part 'screens/game_table.dart';

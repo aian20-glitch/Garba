@@ -18,6 +18,7 @@ import './reactions.test.js';
 import './endVote.test.js';
 import './turnTimer.test.js';
 import './rateLimit.test.js';
+import './openRooms.test.js';
 import { summary } from './check.js';
 
 process.exit(summary() === 0 ? 0 : 1);

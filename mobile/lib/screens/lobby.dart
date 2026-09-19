@@ -40,6 +40,27 @@ class _LobbyScreenState extends State<LobbyScreen> {
   String roomUrl() =>
       '$apiBase/rooms/${widget.roomCode}';
 
+  bool changingVisibility = false;
+
+  // Открыть комнату для всех или закрыть обратно (только создатель, до старта).
+  Future<void> setPublic(bool value) async {
+    setState(() => changingVisibility = true);
+    try {
+      final response = await http.post(
+        Uri.parse('$apiBase/rooms/${widget.roomCode}/visibility'),
+        headers: authHeaders(),
+        body: jsonEncode({'isPublic': value}),
+      );
+      if (response.statusCode != 200) throw Exception(response.body);
+      applyRoom(jsonDecode(response.body) as Map<String, dynamic>);
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Не получилось: $e')));
+    } finally {
+      if (mounted) setState(() => changingVisibility = false);
+    }
+  }
+
   Future<void> refreshRoom() async {
     try {
       final response = await http.get(Uri.parse(roomUrl()), headers: authHeaders());
@@ -223,6 +244,27 @@ class _LobbyScreenState extends State<LobbyScreen> {
                   ),
                 );
               }),
+            // Открытая комната — видна всем; создатель открывает и закрывает до старта.
+            if (isCreator)
+              SwitchListTile(
+                contentPadding: EdgeInsets.zero,
+                value: room!['isPublic'] == true,
+                onChanged: changingVisibility ? null : setPublic,
+                title: const Text('Открытая комната'),
+                subtitle: Text(
+                  room!['isPublic'] == true
+                      ? 'Видна всем — может зайти любой, без кода'
+                      : 'Только по коду. Откройте, если не хватает игроков',
+                ),
+              )
+            else if (room!['isPublic'] == true)
+              const Padding(
+                padding: EdgeInsets.only(top: 8),
+                child: Text(
+                  'Открытая комната — может зайти любой',
+                  style: TextStyle(color: Colors.white60),
+                ),
+              ),
             const SizedBox(height: 20),
             // Список прокручивается: при 6–7 игроках он не влезает, и кнопки
             // «НАЧАТЬ ИГРУ» / «ЗАКРЫТЬ КОМНАТУ» уходили за край экрана.

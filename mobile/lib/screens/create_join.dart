@@ -17,6 +17,8 @@ class _CreateRoomScreenState extends State<CreateRoomScreen> {
   int konThreshold = 10;
   // Минимум денег для входа: 1 000…10 000, не меньше взноса × 10 (RULES.md §9.1a).
   int minBalance = 1000;
+  // Открытая — видна всем в «Открытых комнатах», войти можно без кода.
+  bool isPublic = false;
   bool loading = false;
 
   int get lowestEntry => ante * 10 < 1000 ? 1000 : ante * 10;
@@ -43,6 +45,7 @@ class _CreateRoomScreenState extends State<CreateRoomScreen> {
           'emptyLimit': emptyLimit,
           'konThreshold': konThreshold,
           'minBalance': minBalance,
+          'isPublic': isPublic,
         }),
       );
 
@@ -101,6 +104,21 @@ class _CreateRoomScreenState extends State<CreateRoomScreen> {
                 child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
+            SwitchListTile(
+              contentPadding: EdgeInsets.zero,
+              value: isPublic,
+              onChanged: (v) => setState(() => isPublic = v),
+              title: const Text(
+                'Открытая комната',
+                style: TextStyle(fontSize: 18, fontWeight: FontWeight.w800),
+              ),
+              subtitle: Text(
+                isPublic
+                    ? 'Видна всем в «Открытых комнатах» — зайти может любой, без кода'
+                    : 'Только по коду — для своих. Открыть можно и потом, в лобби',
+              ),
+            ),
+            const SizedBox(height: 12),
             const Text(
               'Количество игроков',
               style: TextStyle(fontSize: 24, fontWeight: FontWeight.w800),

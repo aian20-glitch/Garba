@@ -176,6 +176,17 @@ class _HomeScreenState extends State<HomeScreen> with RouteAware {
                         ),
                         const SizedBox(height: 14),
                       ],
+                      // Играть с кем угодно, без кода (19.09.2026).
+                      GarbaButton(label: 'БЫСТРАЯ ИГРА', onTap: () => quickGame(context)),
+                      const SizedBox(height: 14),
+                      GarbaButton(
+                        label: 'ОТКРЫТЫЕ КОМНАТЫ',
+                        onTap: () => Navigator.push(
+                          context,
+                          MaterialPageRoute(builder: (_) => const OpenRoomsScreen()),
+                        ),
+                      ),
+                      const SizedBox(height: 14),
                       GarbaButton(
                         label: 'СОЗДАТЬ КОМНАТУ',
                         onTap: () => Navigator.push(

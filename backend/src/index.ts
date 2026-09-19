@@ -106,6 +106,7 @@ import {
 } from './special.js';
 import { canProposeEnd, endVoteOutcome, END_VOTE_MS, type EndVote } from './endVote.js';
 import { rateCheck } from './rateLimit.js';
+import { openRoomsFor, QUICK_ROOM } from './openRooms.js';
 import { addMiss, clockFor, pickRandom, TURN_MS, turnSecondsLeft, type TurnClock } from './turnTimer.js';
 import {
   canConcede,
@@ -322,6 +323,8 @@ type Room = {
   rating?: Record<string, { skill: number; startSkill: number; startDeals: number }>;
   // Последние реакции-смайлики (RULES.md §14, этап 9.7).
   reactions?: ReactionEntry[];
+  // Открытая комната — видна всем в списке, войти можно без кода (19.09.2026).
+  isPublic?: boolean;
 };
 
 const app = express();
@@ -2245,6 +2248,7 @@ function publicRoom(room: Room, viewerId?: string) {
     capacity: room.capacity,
     creatorId: room.creatorId,
     settings: room.settings,
+    isPublic: !!room.isPublic,
     // У каждого игрока — адрес его фото (этап 9.5) или null.
     // И рейтинг (этап 9.6): сейчас и с каким сел за стол — для итогов «4.0 → 4.9».
     players: room.players.map((p) => {
@@ -2354,37 +2358,140 @@ app.post('/rooms', (req, res) => {
     });
   }
 
-  const id = makeRoomId();
+  const room = makeRoom(
+    me(res),
+    cap,
+    { ante: anteValue, emptyLimit: limitValue, konThreshold: thresholdValue, minBalance: minBalanceValue },
+    req.body?.isPublic === true,
+  );
+  return res.status(201).json(publicRoom(room, String(playerId)));
+});
 
+// Новая комната с создателем за столом. Условия уже проверены.
+function makeRoom(account: Account, capacity: number, settings: RoomSettings, isPublic: boolean): Room {
+  const id = makeRoomId();
   const room: Room = {
     id,
-    capacity: cap,
-    creatorId: String(playerId),
-    settings: {
-      ante: anteValue,
-      emptyLimit: limitValue,
-      konThreshold: thresholdValue,
-      minBalance: minBalanceValue,
-    },
+    capacity,
+    creatorId: account.id,
+    settings,
     players: [
       {
-        id: String(playerId),
-        name: String(name),
+        id: account.id,
+        name: account.name,
         ready: true,
         joinedAt: Date.now(),
-        balance: creatorBalance,
-        startBalance: creatorBalance,
+        balance: account.balance,
+        startBalance: account.balance,
       },
     ],
     status: 'lobby',
     createdAt: Date.now(),
+    isPublic,
   };
 
   rooms.set(id, room);
   persistRoom(room);
-  console.log(`[ROOM ${id}] created ${room.players.length}/${room.capacity}`);
+  console.log(`[ROOM ${id}] created ${room.players.length}/${room.capacity}${isPublic ? ', открытая' : ''}`);
+  return room;
+}
 
-  return res.status(201).json(publicRoom(room, String(playerId)));
+// Войти в комнату: те же проверки для кнопки «Войти», ссылки и «Быстрой игры».
+function joinRoom(room: Room, account: Account): { status: number; body: unknown } {
+  if (room.status !== 'lobby') {
+    return { status: 409, body: { error: 'game already started' } };
+  }
+  if (room.players.some((p) => p.id === account.id)) {
+    return { status: 200, body: publicRoom(room, account.id) };
+  }
+  if (room.players.length >= room.capacity) {
+    return { status: 409, body: { error: 'room is full' } };
+  }
+  const busyIn = activeRoomOf(account.id);
+  if (busyIn) {
+    return { status: 409, body: { error: 'already in another room', roomId: busyIn.id } };
+  }
+  // Войти можно, только если денег не меньше минимума комнаты (RULES.md §9.1a).
+  if (account.balance < room.settings.minBalance) {
+    return {
+      status: 403,
+      body: { error: 'not enough coins to enter', minBalance: room.settings.minBalance, balance: account.balance },
+    };
+  }
+
+  room.players.push({
+    id: account.id,
+    name: account.name,
+    ready: true,
+    joinedAt: Date.now(),
+    balance: account.balance,
+    startBalance: account.balance,
+  });
+  console.log(`[ROOM ${room.id}] ${account.name} joined ${room.players.length}/${room.capacity}`);
+  return { status: 200, body: publicRoom(room, account.id) };
+}
+
+// Открытые комнаты, куда можно сесть: лобби, есть место, хватает монет (19.09.2026).
+function openRoomsForAccount(account: Account) {
+  return openRoomsFor(
+    [...rooms.values()].map((r) => ({
+      id: r.id,
+      isPublic: !!r.isPublic,
+      status: r.status,
+      capacity: r.capacity,
+      memberIds: r.players.map((p) => p.id),
+      minBalance: r.settings.minBalance,
+      createdAt: r.createdAt,
+    })),
+    account.balance,
+    account.id,
+  );
+}
+
+// Список открытых комнат для экрана «Открытые комнаты».
+app.get('/rooms/open', (req, res) => {
+  const list = openRoomsForAccount(me(res)).map((summary) => {
+    const room = rooms.get(summary.id)!;
+    return {
+      id: room.id,
+      capacity: room.capacity,
+      players: room.players.length,
+      creatorName: room.players.find((p) => p.id === room.creatorId)?.name ?? '',
+      settings: room.settings,
+    };
+  });
+  return res.json({ rooms: list });
+});
+
+// «Быстрая игра»: сесть в самую заполненную открытую комнату, куда хватает монет;
+// таких нет — создать открытую комнату (5 игроков, взнос 100) и ждать людей.
+app.post('/rooms/quick', (req, res) => {
+  const account = me(res);
+  const busyIn = activeRoomOf(account.id);
+  if (busyIn) {
+    return res.status(409).json({ error: 'already in another room', roomId: busyIn.id });
+  }
+
+  for (const summary of openRoomsForAccount(account)) {
+    const room = rooms.get(summary.id)!;
+    const joined = joinRoom(room, account);
+    if (joined.status === 200) {
+      persistRoom(room);
+      broadcastRoom(room.id).catch((e) => console.error(`[ROOM ${room.id}] broadcast failed:`, e));
+      return res.json(joined.body);
+    }
+  }
+
+  if (account.balance < QUICK_ROOM.minBalance) {
+    return res.status(403).json({
+      error: 'not enough coins to enter',
+      minBalance: QUICK_ROOM.minBalance,
+      balance: account.balance,
+    });
+  }
+  const { capacity, ...settings } = QUICK_ROOM;
+  const room = makeRoom(account, capacity, settings, true);
+  return res.status(201).json(publicRoom(room, account.id));
 });
 
 app.get('/rooms/:id', (req, res) => {
@@ -2405,54 +2512,26 @@ app.post('/rooms/:id/join', (req, res) => {
     return res.status(404).json({ error: 'room not found' });
   }
 
+  const joined = joinRoom(room, me(res));
+  return res.status(joined.status).json(joined.body);
+});
+
+// Открыть комнату для всех или закрыть обратно — только создатель и только в лобби.
+// Например, собрались вчетвером и ищут пятого (19.09.2026).
+app.post('/rooms/:id/visibility', (req, res) => {
+  const room = rooms.get(req.params.id);
+  if (!room) {
+    return res.status(404).json({ error: 'room not found' });
+  }
+  if (room.creatorId !== me(res).id) {
+    return res.status(403).json({ error: 'only the creator can change this' });
+  }
   if (room.status !== 'lobby') {
     return res.status(409).json({ error: 'game already started' });
   }
-
-  const { playerId, name } = req.body ?? {};
-
-  if (!playerId || !name) {
-    return res.status(400).json({ error: 'playerId and name are required' });
-  }
-
-  const existing = room.players.find((p) => p.id === String(playerId));
-  if (existing) {
-    return res.json(publicRoom(room, String(playerId)));
-  }
-
-  if (room.players.length >= room.capacity) {
-    return res.status(409).json({ error: 'room is full' });
-  }
-
-  const busyIn = activeRoomOf(String(playerId));
-  if (busyIn) {
-    return res.status(409).json({ error: 'already in another room', roomId: busyIn.id });
-  }
-
-  // Войти можно, только если денег не меньше минимума комнаты (RULES.md §9.1a).
-  const joiningBalance = me(res).balance;
-  if (joiningBalance < room.settings.minBalance) {
-    return res.status(403).json({
-      error: 'not enough coins to enter',
-      minBalance: room.settings.minBalance,
-      balance: joiningBalance,
-    });
-  }
-
-  room.players.push({
-    id: String(playerId),
-    name: String(name),
-    ready: true,
-    joinedAt: Date.now(),
-    balance: joiningBalance,
-    startBalance: joiningBalance,
-  });
-
-  console.log(
-    `[ROOM ${room.id}] ${name} joined ${room.players.length}/${room.capacity}`,
-  );
-
-  return res.json(publicRoom(room, String(playerId)));
+  room.isPublic = req.body?.isPublic === true;
+  console.log(`[ROOM ${room.id}] ${room.isPublic ? 'открыта для всех' : 'только по коду'}`);
+  return res.json(publicRoom(room, me(res).id));
 });
 
 // Выйти из комнаты, пока игра не началась. Иначе брошенная комната держала бы

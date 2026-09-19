@@ -40,6 +40,7 @@
 | `endVote.ts` | **Новый** (19.09.2026). Закончить игру по согласию (§12.3): кто может предложить, итог, 30 с. Чистые функции. |
 | `turnTimer.ts` | **Новый** (19.09.2026). Время на ход 20 с (§13a): часы хода, пропуски, «ушёл». Чистые функции. |
 | `rateLimit.ts` | **Новый** (19.09.2026). Ограничение частоты — новые аккаунты с одного адреса. Чистые функции. |
+| `openRooms.ts` | **Новый** (19.09.2026). Открытые комнаты и «Быстрая игра»: какие показываем, куда сажаем. Чистые функции. |
 | `special.ts` | **Новый** (этап 7). Спецкарты: какая карта, очередь, множители, итог борьбы, первый ход. |
 | `rules.ts` | **Используются** `canPlayCard`, `trickWinner` (этап 3) и `isGarba` (этап 6) — сверены с RULES.md. `specialKind`, `canDeclareMain` — ещё не проверены. |
 
@@ -214,13 +215,18 @@ POST /gifts                      { toCode, amount }  → { amount, balance, to: 
                                  first (дарить нельзя, пока сидишь в комнате); 404 player not found
 
 — дальше всё с токеном —
-POST /rooms                      { capacity, ante, emptyLimit, konThreshold, minBalance }
+POST /rooms                      { capacity, ante, emptyLimit, konThreshold, minBalance, isPublic? }
                                  capacity 4..7; ante 100..1000 кратно 100;
                                  emptyLimit 3..10; konThreshold 3..10;
                                  minBalance 1000..10000 кратно 1000, не меньше ante × 10
                                  (с этапа 4 обязательны)
                                  409 { error: 'already in another room', roomId } — см. ниже
                                  403 not enough coins to enter — баланс аккаунта меньше minBalance
+GET  /rooms/open                 → { rooms: [{ id, capacity, players, creatorName, settings }] } — открытые
+                                 лобби со свободным местом, куда хватает монет; почти полные сверху
+POST /rooms/quick                {} → комната: сесть в самую заполненную открытую, нет — создать
+                                 открытую (5 игроков, взнос 100); 409 already in another room; 403
+POST /rooms/:id/visibility       { isPublic } — открыть для всех / только по коду; создатель, в лобби
 GET  /rooms/:id
 POST /rooms/:id/join             {}   403 { error: 'not enough coins to enter',
                                            minBalance, balance }, если денег меньше минимума;
