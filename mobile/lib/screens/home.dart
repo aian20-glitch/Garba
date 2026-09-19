@@ -114,6 +114,20 @@ class _HomeScreenState extends State<HomeScreen> with RouteAware {
     }
   }
 
+  void go(Widget screen) =>
+      Navigator.push(context, MaterialPageRoute(builder: (_) => screen));
+
+  Widget tileRow(Widget left, Widget right) => Padding(
+        padding: const EdgeInsets.only(bottom: 12),
+        child: Row(
+          children: [
+            Expanded(child: left),
+            const SizedBox(width: 12),
+            Expanded(child: right),
+          ],
+        ),
+      );
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -179,83 +193,31 @@ class _HomeScreenState extends State<HomeScreen> with RouteAware {
                         ),
                         const SizedBox(height: 14),
                       ],
-                      // Играть с кем угодно, без кода (19.09.2026).
-                      GarbaButton(label: 'БЫСТРАЯ ИГРА', onTap: () => quickGame(context)),
-                      const SizedBox(height: 14),
-                      GarbaButton(
-                        label: 'ОТКРЫТЫЕ КОМНАТЫ',
-                        onTap: () => Navigator.push(
-                          context,
-                          MaterialPageRoute(builder: (_) => const OpenRoomsScreen()),
+                      // По две плитки в ряд (просьба владельца, 19.09.2026): короче экран,
+                      // всё видно сразу. «Вернуться в комнату» — выше, во всю ширину.
+                      tileRow(
+                        HomeTile(icon: Icons.bolt, label: 'БЫСТРАЯ ИГРА', onTap: () => quickGame(context)),
+                        HomeTile(icon: Icons.public, label: 'ОТКРЫТЫЕ КОМНАТЫ', onTap: () => go(const OpenRoomsScreen())),
+                      ),
+                      tileRow(
+                        HomeTile(icon: Icons.add_circle_outline, label: 'СОЗДАТЬ КОМНАТУ', onTap: () => go(const CreateRoomScreen())),
+                        HomeTile(icon: Icons.pin_outlined, label: 'ВОЙТИ ПО КОДУ', onTap: () => go(const JoinRoomScreen())),
+                      ),
+                      tileRow(
+                        HomeTile(icon: Icons.card_giftcard, label: 'ПОДАРИТЬ МОНЕТЫ', onTap: () => go(const GiftScreen())),
+                        HomeTile(
+                          icon: Icons.person_add_alt_1,
+                          label: 'ПРИГЛАСИТЬ ДРУГА',
+                          onTap: () => go(InviteScreen(code: code, invitedCount: invitedCount)),
                         ),
                       ),
-                      const SizedBox(height: 14),
-                      GarbaButton(
-                        label: 'СОЗДАТЬ КОМНАТУ',
-                        onTap: () => Navigator.push(
-                          context,
-                          MaterialPageRoute(builder: (_) => const CreateRoomScreen()),
-                        ),
+                      tileRow(
+                        HomeTile(icon: Icons.group, label: 'ДРУЗЬЯ', badge: friendRequests, onTap: () => go(const FriendsScreen())),
+                        HomeTile(icon: Icons.emoji_events_outlined, label: 'РЕЙТИНГ', onTap: () => go(const RatingScreen())),
                       ),
-                      const SizedBox(height: 14),
-                      GarbaButton(
-                        label: 'ВОЙТИ ПО КОДУ',
-                        onTap: () => Navigator.push(
-                          context,
-                          MaterialPageRoute(builder: (_) => const JoinRoomScreen()),
-                        ),
-                      ),
-                      const SizedBox(height: 14),
-                      GarbaButton(
-                        label: 'ПОДАРИТЬ МОНЕТЫ',
-                        onTap: () => Navigator.push(
-                          context,
-                          MaterialPageRoute(
-                            builder: (_) => const GiftScreen(),
-                          ),
-                        ),
-                      ),
-                      const SizedBox(height: 14),
-                      GarbaButton(
-                        label: 'ПРИГЛАСИТЬ ДРУГА',
-                        onTap: () => Navigator.push(
-                          context,
-                          MaterialPageRoute(
-                            builder: (_) => InviteScreen(code: code, invitedCount: invitedCount),
-                          ),
-                        ),
-                      ),
-                      const SizedBox(height: 14),
-                      GarbaButton(
-                        label: friendRequests > 0 ? 'ДРУЗЬЯ · заявок: $friendRequests' : 'ДРУЗЬЯ',
-                        onTap: () => Navigator.push(
-                          context,
-                          MaterialPageRoute(builder: (_) => const FriendsScreen()),
-                        ),
-                      ),
-                      const SizedBox(height: 14),
-                      GarbaButton(
-                        label: 'РЕЙТИНГ',
-                        onTap: () => Navigator.push(
-                          context,
-                          MaterialPageRoute(builder: (_) => const RatingScreen()),
-                        ),
-                      ),
-                      const SizedBox(height: 14),
-                      GarbaButton(
-                        label: 'ПРОФИЛЬ',
-                        onTap: () => Navigator.push(
-                          context,
-                          MaterialPageRoute(builder: (_) => const ProfileScreen()),
-                        ),
-                      ),
-                      const SizedBox(height: 14),
-                      GarbaButton(
-                        label: 'ПРАВИЛА',
-                        onTap: () => Navigator.push(
-                          context,
-                          MaterialPageRoute(builder: (_) => const RulesScreen()),
-                        ),
+                      tileRow(
+                        HomeTile(icon: Icons.person_outline, label: 'ПРОФИЛЬ', onTap: () => go(const ProfileScreen())),
+                        HomeTile(icon: Icons.menu_book_outlined, label: 'ПРАВИЛА', onTap: () => go(const RulesScreen())),
                       ),
                     ],
                   ),

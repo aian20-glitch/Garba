@@ -968,6 +968,14 @@ io.on('connection', (socket) => {
 
     socket.data.playerId = playerId;
     socket.join(roomId);
+
+    // Игрок сам открыл стол — значит, вернулся: «ушёл» снимается (§13a), иначе
+    // пауза держалась бы, пока он не найдёт кнопку «Я ЗДЕСЬ».
+    if (room.game?.awayAt?.[playerId] !== undefined && room.players.some((p) => p.id === playerId)) {
+      markBack(room, playerId);
+      persistRoom(room);
+      broadcastRoom(room.id).catch((e) => console.error(`[ROOM ${room.id}] broadcast failed:`, e));
+    }
     socket.emit('room', publicRoom(room, playerId));
   });
 });

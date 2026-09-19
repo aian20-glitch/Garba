@@ -1631,7 +1631,30 @@ class _GameTableScreenState extends State<GameTableScreen> {
       );
     }
 
-    return Scaffold(
+    // Выйти из-за стола посреди игры — не остановит её: за игрока пойдёт таймер хода,
+    // после двух пропусков — пауза и тратится запас 5 минут (§13a). Переспрашиваем.
+    return PopScope(
+      canPop: isRoomDone,
+      onPopInvokedWithResult: (didPop, _) async {
+        if (didPop) return;
+        final leave = await showDialog<bool>(
+          context: context,
+          builder: (ctx) => AlertDialog(
+            title: const Text('Выйти из-за стола?'),
+            content: const Text(
+              'Игра не остановится: пока вас нет, за вас ходит таймер. '
+              'Два пропуска подряд — игра встаёт на паузу, и тратится ваш запас 5 минут. '
+              'Кончится запас — комната закроется, а вы потеряете рейтинг.',
+            ),
+            actions: [
+              FilledButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('ОСТАТЬСЯ')),
+              TextButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('ВЫЙТИ')),
+            ],
+          ),
+        );
+        if (leave == true && context.mounted) Navigator.of(context).pop();
+      },
+      child: Scaffold(
       appBar: AppBar(title: Text('ГАРБА • #${widget.roomCode}')),
       body: SafeArea(
         child: Padding(
@@ -2224,6 +2247,7 @@ class _GameTableScreenState extends State<GameTableScreen> {
             ],
           ),
         ),
+      ),
       ),
     );
   }
