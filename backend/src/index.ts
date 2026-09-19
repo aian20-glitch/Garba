@@ -97,6 +97,7 @@ import {
   type Contest,
   type SpecialKind,
 } from './special.js';
+import { canProposeEnd, endVoteOutcome, END_VOTE_MS, type EndVote } from './endVote.js';
 import {
   canConcede,
   mainStatuses,
@@ -250,11 +251,16 @@ type GameState = {
   lastAnte: AnteRecord | null;
   // Главные, которые сдались в этой раздаче (§10.7). Нет в старых сохранённых комнатах.
   concededIds?: string[];
+  // Закончить игру по согласию (§12.3): идущее голосование, кто уже предлагал между
+  // этими раздачами, чем кончилось последнее. Нет в старых сохранённых комнатах.
+  endVote?: EndVote | null;
+  endProposedIds?: string[];
+  lastEndVote?: { result: 'rejected' | 'expired'; byName: string | null } | null;
   // Кто-то опустился ниже базового кона — доигрываем, пока кон не заберут (§12.1).
   closing: boolean;
   // Почему закрылась комната: кон забрали (§12.1), кон никто не может взять
   // и его поделили поровну (§12.2) или игрок отключился и не вернулся за 5 минут (§13).
-  closeReason: 'kon_taken' | 'nobody_can_play' | 'player_left' | null;
+  closeReason: 'kon_taken' | 'nobody_can_play' | 'player_left' | 'agreed_end' | null;
   // Кто не вернулся за 5 минут — ему доля кона не положена (§13).
   leftPlayerIds?: string[];
   // Победитель комнаты (ТЗ §36): лучший итог по монетам; при ничьей — несколько.
@@ -962,6 +968,19 @@ function sweepPresence() {
 
 setInterval(sweepPresence, 1000);
 
+// Голосование «закончить игру» без ответа 30 секунд — считается «нет» (§12.3).
+// Проверяем раз в секунду, иначе при раздающем-боте оно висело бы, пока кто-то не нажмёт.
+setInterval(() => {
+  for (const room of rooms.values()) {
+    if (!room.game?.endVote) continue;
+    settleEndVote(room);
+    if (!room.game.endVote) {
+      persistRoom(room);
+      broadcastRoom(room.id).catch((e) => console.error(`[ROOM ${room.id}] broadcast failed:`, e));
+    }
+  }
+}, 1000);
+
 // Запрос игрока к своей комнате — тоже знак, что он на месте (приложение без сокета
 // опрашивает сервер). На паузе ходы не принимаются: ждём отключившегося.
 const LOBBY_ACTIONS = ['/join', '/leave', '/start'];
@@ -1233,7 +1252,7 @@ function applyVoteIfDecided(room: Room) {
 }
 
 // Комната закрывается, кон делится поровну (RULES.md §12.2).
-function closeWithSplit(room: Room) {
+function closeWithSplit(room: Room, reason: 'nobody_can_play' | 'agreed_end' = 'nobody_can_play') {
   const game = room.game!;
   const { shares, perPlayer, remainder, remainderTo } = splitKon(
     game.kon,
@@ -1248,7 +1267,8 @@ function closeWithSplit(room: Room) {
   game.split = { kon: game.kon, perPlayer, remainder, remainderTo };
   game.kon = 0;
   game.stage = 'room_done';
-  game.closeReason = 'nobody_can_play';
+  game.closeReason = reason;
+  game.endVote = null;
   markWinners(room);
   game.activeBidderId = null;
   game.turnPlayerId = null;
@@ -1295,6 +1315,10 @@ function beginBidding(room: Room) {
   game.konAs = null;
   game.special = null;
   game.discardedCard = null;
+  // Новая раздача — предлагать закончить игру снова может каждый (§12.3).
+  game.endVote = null;
+  game.endProposedIds = [];
+  game.lastEndVote = null;
   Object.assign(game, emptyPlayState());
   game.konBeforeSettlement = null;
 
@@ -1879,6 +1903,35 @@ function publicRoom(room: Room, viewerId?: string) {
       myConcedeLoss: viewerId !== undefined ? concedeLoss(room, viewerId) : 0,
       // Кто из главных уже сдался — он доигрывает как обычный противник.
       concededIds: room.game.concededIds ?? [],
+      // Закончить игру по согласию (§12.3): идущее голосование, мой голос, могу ли предложить.
+      endVote: room.game.endVote
+        ? {
+            proposerName:
+              room.players.find((p) => p.id === room.game!.endVote!.proposerId)?.name ?? '',
+            yesIds: room.game.endVote.yes,
+            noIds: room.game.endVote.no,
+            secondsLeft: Math.max(
+              0,
+              Math.ceil((room.game.endVote.startedAt + END_VOTE_MS - Date.now()) / 1000),
+            ),
+          }
+        : null,
+      myEndVote: room.game.endVote && viewerId
+        ? room.game.endVote.yes.includes(viewerId)
+          ? 'yes'
+          : room.game.endVote.no.includes(viewerId)
+            ? 'no'
+            : null
+        : null,
+      myCanProposeEnd:
+        viewerId !== undefined &&
+        canProposeEnd({
+          stage: room.game.stage,
+          voteActive: !!room.game.endVote,
+          proposedIds: room.game.endProposedIds ?? [],
+          playerId: viewerId,
+        }),
+      lastEndVote: room.game.lastEndVote ?? null,
       // Владелец спецкарты сбрасывает одну свою карту — кроме самой спецкарты (§7.5).
       myDiscardOptions:
         room.game.stage === 'special_discard' &&
@@ -2219,6 +2272,15 @@ app.post('/rooms/:id/dealer/continue', (req, res) => {
     });
   }
 
+  // Идёт голосование «закончить игру» — раздавать нельзя, пока не решится (§12.3).
+  settleEndVote(room);
+  if (room.game.stage === 'room_done') {
+    return res.status(409).json({ error: 'room finished', stage: room.game.stage });
+  }
+  if (room.game.endVote) {
+    return res.status(409).json({ error: 'end vote in progress' });
+  }
+
   beginBidding(room);
 
   console.log(
@@ -2458,6 +2520,71 @@ app.post('/rooms/:id/discard', (req, res) => {
   startPlay(room);
 
   return res.json(publicRoom(room, String(playerId)));
+});
+
+// Подвести голосование «закончить игру», если оно решилось (§12.3): все «да» — делим кон
+// и закрываем комнату; «нет» или 30 секунд без ответа — играем дальше.
+function settleEndVote(room: Room) {
+  const game = room.game!;
+  const vote = game.endVote;
+  if (!vote) return;
+  const outcome = endVoteOutcome(vote, room.players.map((p) => p.id), Date.now());
+  if (outcome === 'pending') return;
+  if (outcome === 'ended') {
+    closeWithSplit(room, 'agreed_end');
+    console.log(`[ROOM ${room.id}] все согласились закончить игру`);
+    return;
+  }
+  const noId = vote.no[0];
+  game.lastEndVote = {
+    result: outcome,
+    byName: noId ? (room.players.find((p) => p.id === noId)?.name ?? null) : null,
+  };
+  game.endVote = null;
+}
+
+// Предложить закончить игру или ответить на предложение: choice — yes | no (§12.3).
+app.post('/rooms/:id/end-game', (req, res) => {
+  const room = rooms.get(req.params.id);
+
+  if (!room || !room.game) {
+    return res.status(404).json({ error: 'room/game not found' });
+  }
+
+  const game = room.game;
+  const { playerId, choice } = req.body ?? {};
+  const id = String(playerId);
+
+  if (choice !== 'yes' && choice !== 'no') {
+    return res.status(400).json({ error: 'choice must be yes or no' });
+  }
+
+  settleEndVote(room);
+  if (!game.endVote) {
+    // Голосования нет — это предложение закончить.
+    const allowed = canProposeEnd({
+      stage: game.stage,
+      voteActive: false,
+      proposedIds: game.endProposedIds ?? [],
+      playerId: id,
+    });
+    if (!allowed || choice !== 'yes') {
+      return res.status(409).json({ error: 'cannot propose ending now', stage: game.stage });
+    }
+    game.endProposedIds = [...(game.endProposedIds ?? []), id];
+    game.endVote = { proposerId: id, yes: [id], no: [], startedAt: Date.now() };
+    game.lastEndVote = null;
+  } else {
+    const vote = game.endVote;
+    if (vote.yes.includes(id) || vote.no.includes(id)) {
+      return res.status(409).json({ error: 'already voted' });
+    }
+    if (choice === 'yes') vote.yes.push(id);
+    else vote.no.push(id);
+  }
+  settleEndVote(room);
+
+  return res.json(publicRoom(room, id));
 });
 
 // Главный может сдаться в любой момент розыгрыша (§10.7).

@@ -52,6 +52,13 @@ function nextAction(bot: Bot, room: any): Action | null {
   if (!g || room.status === 'finished' || room.pause) return null;
   const at = `/rooms/${roomId}`;
 
+  // Кто-то предложил закончить игру (§12.3): боты согласны — решают живые игроки.
+  // Пока голосование идёт, раздавать нельзя.
+  if (g.endVote) {
+    if (g.myEndVote) return null;
+    return { path: `${at}/end-game`, body: { choice: 'yes' }, say: 'согласен закончить игру', delay: STEP_MS };
+  }
+
   switch (g.stage) {
     case 'dealer_found':
     case 'awaiting_deal':

@@ -2720,8 +2720,10 @@ class _GameTableScreenState extends State<GameTableScreen> {
     applyReactions((data['reactions'] as List?) ?? const []);
     applyAnnouncements(data);
 
-    // Пока пауза — перерисовываем раз в секунду, чтобы шёл обратный отсчёт.
-    if (data['pause'] is Map) {
+    // Пока пауза или голосование «закончить игру» — перерисовываем раз в секунду,
+    // чтобы шёл обратный отсчёт.
+    final gameRaw = data['game'];
+    if (data['pause'] is Map || (gameRaw is Map && gameRaw['endVote'] is Map)) {
       pauseTicker ??= Timer.periodic(const Duration(seconds: 1), (_) {
         if (mounted) setState(() {});
       });
@@ -3329,6 +3331,15 @@ class _GameTableScreenState extends State<GameTableScreen> {
         : <Map<String, dynamic>>[];
     final paused = pausedPlayers.isNotEmpty;
     final pauseElapsed = DateTime.now().difference(pauseReceivedAt).inSeconds;
+    // Закончить игру по согласию (RULES.md §12.3).
+    final endVoteRaw = game['endVote'];
+    final endVote = endVoteRaw is Map ? Map<String, dynamic>.from(endVoteRaw) : null;
+    final myEndVote = game['myEndVote']?.toString();
+    final canProposeEnd = game['myCanProposeEnd'] == true;
+    final lastEndVoteRaw = game['lastEndVote'];
+    final lastEndVote =
+        lastEndVoteRaw is Map ? Map<String, dynamic>.from(lastEndVoteRaw) : null;
+
     String countdown(Map<String, dynamic> p) {
       final left = ((p['secondsLeft'] as num?)?.toInt() ?? 0) - pauseElapsed;
       final safe = left < 0 ? 0 : left;
@@ -3411,8 +3422,11 @@ class _GameTableScreenState extends State<GameTableScreen> {
               color: Color(0xFFD4A94F),
             ),
           ),
-          // Кон никто не мог взять — его поделили поровну (RULES.md §12.2).
-          if (game['closeReason'] == 'nobody_can_play' && game['split'] is Map)
+          // Кон никто не мог взять или все устали и согласились закончить —
+          // его поделили поровну (RULES.md §12.2, §12.3).
+          if ((game['closeReason'] == 'nobody_can_play' ||
+                  game['closeReason'] == 'agreed_end') &&
+              game['split'] is Map)
             Builder(builder: (_) {
               final split = Map<String, dynamic>.from(game['split'] as Map);
               final splitKon = (split['kon'] as num).toInt();
@@ -3426,7 +3440,7 @@ class _GameTableScreenState extends State<GameTableScreen> {
               return Padding(
                 padding: const EdgeInsets.only(top: 6),
                 child: Text(
-                  'Кон ${fmtCoins(splitKon)} не по карману никому — '
+                  '${game['closeReason'] == 'agreed_end' ? 'Все согласились закончить игру. Кон ${fmtCoins(splitKon)}' : 'Кон ${fmtCoins(splitKon)} не по карману никому'} — '
                   'поделили поровну: по ${fmtCoins(perPlayer)}'
                   '${remainder > 0 ? ', остаток ${fmtCoins(remainder)} — $remainderName' : ''}',
                   textAlign: TextAlign.center,
@@ -4563,17 +4577,100 @@ class _GameTableScreenState extends State<GameTableScreen> {
                   child: const Text('В ГЛАВНОЕ МЕНЮ'),
                 )
               else if (stage == 'awaiting_deal' || isRoundDone)
-                FilledButton(
-                  onPressed: isDealer && !dealing && !paused ? dealCards : null,
-                  child: Text(
-                    dealing
-                        ? 'РАЗДАЁМ...'
-                        : isDealer
-                            ? (isRoundDone
-                                ? 'РАЗДАТЬ СЛЕДУЮЩУЮ'
-                                : 'РАЗДАТЬ КАРТЫ')
-                            : 'РАЗДАЁТ $dealerName',
-                  ),
+                Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    // Кто-то предложил закончить игру — все отвечают, решает единогласие.
+                    if (endVote != null)
+                      Container(
+                        margin: const EdgeInsets.only(bottom: 8),
+                        padding: const EdgeInsets.all(10),
+                        decoration: BoxDecoration(
+                          color: const Color(0xFF13232E),
+                          borderRadius: BorderRadius.circular(12),
+                          border: Border.all(color: const Color(0xFFD4A94F)),
+                        ),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.stretch,
+                          children: [
+                            Text(
+                              '${endVote['proposerName']} предлагает закончить игру',
+                              textAlign: TextAlign.center,
+                              style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w900),
+                            ),
+                            Text(
+                              'Кон поделят поровну. Нужно согласие всех: '
+                              '${(endVote['yesIds'] as List).length} из ${players.length} · '
+                              '${countdown({'secondsLeft': endVote['secondsLeft']})}',
+                              textAlign: TextAlign.center,
+                              style: const TextStyle(fontSize: 12, color: Colors.white70),
+                            ),
+                            const SizedBox(height: 8),
+                            if (myEndVote == null)
+                              Row(
+                                children: [
+                                  Expanded(
+                                    child: FilledButton(
+                                      onPressed: sendingSpecial
+                                          ? null
+                                          : () => sendSpecial('end-game', {'choice': 'yes'}),
+                                      child: const Text('ДА, ЗАКОНЧИТЬ'),
+                                    ),
+                                  ),
+                                  const SizedBox(width: 8),
+                                  Expanded(
+                                    child: OutlinedButton(
+                                      onPressed: sendingSpecial
+                                          ? null
+                                          : () => sendSpecial('end-game', {'choice': 'no'}),
+                                      child: const Text('НЕТ, ИГРАЕМ'),
+                                    ),
+                                  ),
+                                ],
+                              )
+                            else
+                              const Text(
+                                'Вы согласны. Ждём остальных.',
+                                textAlign: TextAlign.center,
+                                style: TextStyle(color: Colors.white70),
+                              ),
+                          ],
+                        ),
+                      ),
+                    if (endVote == null && lastEndVote != null)
+                      Padding(
+                        padding: const EdgeInsets.only(bottom: 6),
+                        child: Text(
+                          lastEndVote['result'] == 'rejected'
+                              ? '${lastEndVote['byName'] ?? 'Кто-то'} против — играем дальше'
+                              : 'Не все ответили — играем дальше',
+                          textAlign: TextAlign.center,
+                          style: const TextStyle(color: Colors.white60, fontSize: 13),
+                        ),
+                      ),
+                    FilledButton(
+                      onPressed: isDealer && !dealing && !paused && endVote == null
+                          ? dealCards
+                          : null,
+                      child: Text(
+                        dealing
+                            ? 'РАЗДАЁМ...'
+                            : isDealer
+                                ? (isRoundDone
+                                    ? 'РАЗДАТЬ СЛЕДУЮЩУЮ'
+                                    : 'РАЗДАТЬ КАРТЫ')
+                                : 'РАЗДАЁТ $dealerName',
+                      ),
+                    ),
+                    if (canProposeEnd)
+                      TextButton.icon(
+                        onPressed: sendingSpecial
+                            ? null
+                            : () => sendSpecial('end-game', {'choice': 'yes'}),
+                        icon: const Icon(Icons.bedtime_outlined, size: 18),
+                        label: const Text('ЗАКОНЧИТЬ ИГРУ'),
+                      ),
+                  ],
                 )
               else if (isPlaying)
                 Column(
