@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io' show Platform;
 import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -29,7 +30,12 @@ part 'widgets/deal_result.dart';
 part 'widgets/cards.dart';
 part 'widgets/common.dart';
 
-void main() => runApp(const GarbaApp());
+Future<void> main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  // Только вертикально: круглый стол и карты в руке под горизонталь не рассчитаны.
+  await SystemChrome.setPreferredOrientations([DeviceOrientation.portraitUp]);
+  runApp(const GarbaApp());
+}
 
 class GarbaApp extends StatelessWidget {
   const GarbaApp({super.key});

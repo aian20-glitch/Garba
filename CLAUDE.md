@@ -114,6 +114,19 @@ Caddy (https сам), ежедневная копия базы, `setup-server.sh
 (`android/app/src/debug/AndroidManifest.xml`). Релиз подписан постоянным ключом.
 **Ждём от владельца:** IP сервера и домен.
 
+### iPhone (готовится, 19.09.2026)
+
+Код под iPhone готов: bundle id `kz.garba.app`, иконки всех размеров, доступ к фото, схема
+`garba://`, только iPhone (`TARGETED_DEVICE_FAMILY = 1`) и только вертикально (Info.plist +
+`SystemChrome` в `main.dart` — и для Android), `NSAllowsLocalNetworking` для разработки.
+`apiBase` без `API_BASE`: симулятор iPhone — `http://localhost:3000`, Android-эмулятор — `10.0.2.2`.
+CocoaPods стоит (Homebrew), файлы Flutter для iOS скачаны.
+**Xcode не установлен:** `mas` ставит через sudo, а скачивание с сайта Apple — через вход
+в Apple ID; без владельца не обойти. Владелец: App Store → Xcode → «Получить», затем
+`./tools/ios-setup.sh` (один раз спросит пароль Mac). Дальше Claude собирает:
+`flutter build ios --simulator` и проверяет на симуляторе. Для TestFlight и App Store нужен
+аккаунт Apple Developer ($99/год) и команда подписи в Xcode.
+
 ### Эмулятор на Mac
 
 - `adb exec-out screencap -p > файл.png` работает (на Windows-ПК отдавал чёрный кадр).

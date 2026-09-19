@@ -2,8 +2,14 @@
 part of 'main.dart';
 
 // Адрес сервера задаётся при сборке: flutter build apk --dart-define=API_BASE=https://garba.kz
-// Без него — сервер на этом компьютере, как его видит Android-эмулятор (10.0.2.2).
-const apiBase = String.fromEnvironment('API_BASE', defaultValue: 'http://10.0.2.2:3000');
+const _apiBaseOverride = String.fromEnvironment('API_BASE');
+// Без API_BASE — сервер на этом компьютере: Android-эмулятор видит его как 10.0.2.2,
+// симулятор iPhone — как localhost.
+final apiBase = _apiBaseOverride.isNotEmpty
+    ? _apiBaseOverride
+    : Platform.isIOS
+        ? 'http://localhost:3000'
+        : 'http://10.0.2.2:3000';
 
 // Backend присылает масть именем ('hearts'), а не символом.
 // Символы живут только здесь, в слое отображения.
