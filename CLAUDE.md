@@ -189,6 +189,9 @@ GET  /me                         → { id, name, balance, createdAt, code, daily
                                  roomId — незаконченная комната игрока или null;
                                  daily = { claimedToday, streak, amount } — бонус сегодня (этап 9.3)
 POST /me/daily-bonus             → { amount, streak, balance }; 409 already claimed today
+DELETE /me                       → { ok } — удалить аккаунт навсегда (требование Apple/Google):
+                                 аккаунт, фото, друзья, статистика; в старых комнатах имя —
+                                 «Удалённый игрок». 409 finish your game first { roomId }
 GET  /players/:code              → { code, name, stats, isFriend }   карточка игрока; 404
 GET  /me/profile                 → { id, name, code, balance, createdAt, stats, friendsCount }
                                  stats — за всё время: rooms, deals, mains, wins, losses, raz, dva,

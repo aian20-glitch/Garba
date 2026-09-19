@@ -239,6 +239,13 @@ async function main() {
   check('имя с HTML-тегами на странице экранировано', [invitePage.includes('<script>x'), invitePage.includes('&lt;script&gt;x')], [false, true]);
   check('мусор вместо кода — 404', (await fetch(`${BASE}/i/%3Cb%3E`)).status, 404);
 
+  section('удалить аккаунт (требование Apple и Google)');
+  const busy = await request('DELETE', '/me', serik.token);
+  check('сидит за столом — нельзя, сначала доиграть', [busy.status, busy.body.roomId], [409, roomId]);
+  const leaving = await account('Уходящий');
+  check('свободный игрок — удалён', (await request('DELETE', '/me', leaving.token)).status, 200);
+  check('токен больше не работает', (await request('GET', '/me', leaving.token)).status, 401);
+
   for (const w of [serikWatch, botWatch, ghost, stranger]) w.socket.close();
 }
 

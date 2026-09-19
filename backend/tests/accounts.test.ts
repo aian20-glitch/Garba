@@ -7,6 +7,8 @@ import { join } from 'node:path';
 import { check, section } from './check.js';
 import {
   addFriend,
+  deleteAccountData,
+  DELETED_NAME,
   areFriends,
   cleanName,
   createAccount,
@@ -104,3 +106,24 @@ check('старому аккаунту выдан код', /^[A-Z2-9]{6}$/.test(
 check('серия бонусов у старого аккаунта — с нуля', [oldAccount?.dailyDay, oldAccount?.dailyStreak], [null, 0]);
 migrated.close();
 rmSync(oldFile, { force: true });
+
+section('удалить аккаунт навсегда (требование Apple и Google)');
+{
+  const db2 = openDb(':memory:');
+  const gone = createAccount(db2, 'Уходящий').account;
+  const stays = createAccount(db2, 'Остаётся', gone.id).account;
+  addFriend(db2, gone.id, stays.id);
+  db2.prepare("INSERT INTO avatars (account_id, mime, data, updated_at) VALUES (?, 'image/png', x'00', 0)").run(gone.id);
+  const room = { id: '12345', players: [{ id: gone.id, name: 'Уходящий' }, { id: stays.id, name: 'Остаётся' }],
+    game: { dealerId: gone.id, dealerName: 'Уходящий', mains: [{ playerId: gone.id, playerName: 'Уходящий' }] } };
+  db2.prepare("INSERT INTO rooms (id, status, data, updated_at) VALUES ('12345', 'finished', ?, 0)").run(JSON.stringify(room));
+  deleteAccountData(db2, gone.id);
+  const count = (sql: string, ...args: string[]) => (db2.prepare(sql).get(...args) as { n: number }).n;
+  check('аккаунта нет — токен больше не работает', getAccount(db2, gone.id), null);
+  check('друзья и фото стёрты', [count('SELECT COUNT(*) AS n FROM friends WHERE owner_id = ? OR friend_id = ?', gone.id, gone.id), count('SELECT COUNT(*) AS n FROM avatars WHERE account_id = ?', gone.id)], [0, 0]);
+  check('приглашённый им остался, без ссылки на него', getAccount(db2, stays.id)?.invitedBy, null);
+  const saved = JSON.parse((db2.prepare("SELECT data FROM rooms WHERE id = '12345'").get() as { data: string }).data);
+  check('в старой комнате имя заменено, у остальных — как было',
+    [saved.players[0].name, saved.players[1].name, saved.game.dealerName, saved.game.mains[0].playerName],
+    [DELETED_NAME, 'Остаётся', DELETED_NAME, DELETED_NAME]);
+}

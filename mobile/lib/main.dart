@@ -1075,6 +1075,53 @@ class _ProfileScreenState extends State<ProfileScreen> {
     }
   }
 
+  // Удалить аккаунт навсегда (требование Apple и Google). Сначала переспрашиваем.
+  Future<void> deleteAccount() async {
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Удалить аккаунт?'),
+        content: const Text(
+          'Аккаунт удалится навсегда: монеты, рейтинг, друзья, фото и статистика. '
+          'Восстановить его будет нельзя.',
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('ОТМЕНА')),
+          FilledButton(
+            style: FilledButton.styleFrom(backgroundColor: Colors.redAccent),
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('УДАЛИТЬ'),
+          ),
+        ],
+      ),
+    );
+    if (ok != true || !mounted) return;
+    try {
+      final response = await http.delete(Uri.parse('$apiBase/me'), headers: authHeaders());
+      if (!mounted) return;
+      if (response.statusCode == 409) {
+        final roomId = (jsonDecode(response.body) as Map)['roomId'];
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Сначала доиграйте игру в комнате #$roomId')),
+        );
+        return;
+      }
+      if (response.statusCode != 200) throw Exception(response.body);
+      await Session.clear();
+      if (!mounted) return;
+      Navigator.pushAndRemoveUntil(
+        context,
+        MaterialPageRoute(builder: (_) => const StartScreen()),
+        (_) => false,
+      );
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Не удалось удалить аккаунт: $e')),
+      );
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final p = profile;
@@ -1126,6 +1173,13 @@ class _ProfileScreenState extends State<ProfileScreen> {
                 ),
                 const Divider(height: 32),
                 StatsView(stats: Map<String, dynamic>.from(p['stats'] as Map)),
+                const SizedBox(height: 32),
+                TextButton.icon(
+                  onPressed: deleteAccount,
+                  style: TextButton.styleFrom(foregroundColor: Colors.redAccent),
+                  icon: const Icon(Icons.delete_forever),
+                  label: const Text('Удалить аккаунт'),
+                ),
               ],
             ),
     );

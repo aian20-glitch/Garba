@@ -7,6 +7,7 @@ import { dirname } from 'node:path';
 import { Server as SocketServer } from 'socket.io';
 
 import {
+  deleteAccountData,
   markReferralPaid,
   unpaidInviter,
   addFriend,
@@ -472,6 +473,22 @@ app.post('/accounts', (req, res) => {
   );
 
   return res.status(201).json({ ...account, token });
+});
+
+// Удалить аккаунт навсегда (требование Apple и Google). Пока игрок сидит в
+// незаконченной комнате — нельзя: его деньги в игре, сначала доиграть.
+app.delete('/me', (req, res) => {
+  const account = accountOf(req);
+  if (!account) {
+    return res.status(401).json({ error: 'unauthorized' });
+  }
+  const room = activeRoomOf(account.id);
+  if (room) {
+    return res.status(409).json({ error: 'finish your game first', roomId: room.id });
+  }
+  transaction(db, () => deleteAccountData(db, account.id));
+  console.log(`[ACCOUNT] deleted ${account.name} (${account.id})`);
+  return res.json({ ok: true });
 });
 
 // Кто я: по токену. roomId — незаконченная комната, если игрок в ней сидит.

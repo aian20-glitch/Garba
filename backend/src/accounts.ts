@@ -274,3 +274,36 @@ export function tokenFromHeader(header: unknown): string {
   const match = /^Bearer\s+(\S+)$/i.exec(header.trim());
   return match ? match[1] : '';
 }
+
+// Удалить аккаунт навсегда (требование Apple и Google): аккаунт, фото, друзья,
+// статистика. В сохранённых комнатах его имя заменяется на «Удалённый игрок» —
+// история у остальных игроков остаётся, но без его данных. Вызывать в transaction().
+export const DELETED_NAME = 'Удалённый игрок';
+
+export function deleteAccountData(db: DatabaseSync, id: string) {
+  db.prepare('DELETE FROM friends WHERE owner_id = ? OR friend_id = ?').run(id, id);
+  db.prepare('DELETE FROM avatars WHERE account_id = ?').run(id);
+  db.prepare('DELETE FROM room_stats WHERE player_id = ?').run(id);
+  db.prepare('UPDATE accounts SET invited_by = NULL WHERE invited_by = ?').run(id);
+
+  const rows = db
+    .prepare('SELECT id, data FROM rooms WHERE data LIKE ?')
+    .all(`%${id}%`) as { id: string; data: string }[];
+  const update = db.prepare('UPDATE rooms SET data = ? WHERE id = ?');
+  for (const row of rows) update.run(JSON.stringify(anonymize(JSON.parse(row.data), id)), row.id);
+
+  db.prepare('DELETE FROM accounts WHERE id = ?').run(id);
+}
+
+// Имя игрока — везде, где рядом его id: players[].name, playerName, dealerName, winnerName.
+function anonymize(value: unknown, id: string): unknown {
+  if (Array.isArray(value)) return value.map((v) => anonymize(v, id));
+  if (value === null || typeof value !== 'object') return value;
+  const obj = { ...(value as Record<string, unknown>) };
+  for (const [key, v] of Object.entries(obj)) obj[key] = anonymize(v, id);
+  if (obj.id === id && typeof obj.name === 'string') obj.name = DELETED_NAME;
+  if (obj.playerId === id && typeof obj.playerName === 'string') obj.playerName = DELETED_NAME;
+  if (obj.dealerId === id && typeof obj.dealerName === 'string') obj.dealerName = DELETED_NAME;
+  if (obj.winnerId === id && typeof obj.winnerName === 'string') obj.winnerName = DELETED_NAME;
+  return obj;
+}
