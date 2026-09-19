@@ -99,6 +99,18 @@ cd ~/Garba/mobile && flutter analyze
 `flutter analyze` сейчас всегда показывает 2 старые проблемы, не связанные с кодом игры:
 в `pubspec.yaml` нет `flutter_lints`, а шаблонный `test/widget_test.dart` ссылается на `MyApp`.
 
+### Сервер в интернете (готовится, 19.09.2026)
+
+Владелец выбрал **VPS в Казахстане** (данные граждан РК — в РК; уточнить у юриста перед
+публикацией). Всё для запуска — в `deploy/` (см. `deploy/README.md`): systemd-сервис,
+Caddy (https сам), ежедневная копия базы, `setup-server.sh` (один раз), `deploy.sh`
+(каждое обновление, сначала гоняет `npm test`). SSH-ключ — `~/.ssh/garba_vps` на Mac.
+Сервер в продакшене — `node dist/index.js` (`npm run build`), слушает `HOST=127.0.0.1`.
+Приложение: `flutter build apk --release --dart-define=API_BASE=https://<домен>`; без
+`API_BASE` — `http://10.0.2.2:3000`. Обычный http разрешён только в отладке
+(`android/app/src/debug/AndroidManifest.xml`). Релиз пока подписан отладочным ключом.
+**Ждём от владельца:** IP сервера и домен.
+
 ### Эмулятор на Mac
 
 - `adb exec-out screencap -p > файл.png` работает (на Windows-ПК отдавал чёрный кадр).

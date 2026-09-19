@@ -2975,6 +2975,9 @@ app.post('/rooms/:id/vote', (req, res) => {
 });
 
 // HTTP и Socket.IO слушают один и тот же порт.
-httpServer.listen(PORT, '0.0.0.0', () => {
+// HOST — какой адрес слушать. На сервере в интернете — 127.0.0.1: снаружи ходят только
+// через Caddy по https. Дома по умолчанию 0.0.0.0 — чтобы достучался эмулятор.
+const HOST = process.env.HOST ?? '0.0.0.0';
+httpServer.listen(PORT, HOST, () => {
   console.log(`GARBA backend running on :${PORT} (HTTP + Socket.IO)`);
 });

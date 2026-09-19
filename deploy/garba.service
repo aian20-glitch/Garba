@@ -1,0 +1,21 @@
+# Сервер ГАРБА: systemd сам запускает его при старте машины и поднимает после падения.
+[Unit]
+Description=GARBA backend (HTTP + Socket.IO)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=garba
+Group=garba
+WorkingDirectory=/opt/garba/backend
+Environment=NODE_ENV=production
+Environment=PORT=3000
+# Снаружи — только через Caddy по https.
+Environment=HOST=127.0.0.1
+Environment=GARBA_DB=/var/lib/garba/garba.db
+ExecStart=/usr/bin/node dist/index.js
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

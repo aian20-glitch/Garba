@@ -10,7 +10,9 @@ import 'package:share_plus/share_plus.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:socket_io_client/socket_io_client.dart' as io;
 
-const apiBase = 'http://10.0.2.2:3000';
+// Адрес сервера задаётся при сборке: flutter build apk --dart-define=API_BASE=https://garba.kz
+// Без него — сервер на этом компьютере, как его видит Android-эмулятор (10.0.2.2).
+const apiBase = String.fromEnvironment('API_BASE', defaultValue: 'http://10.0.2.2:3000');
 
 // Backend присылает масть именем ('hearts'), а не символом.
 // Символы живут только здесь, в слое отображения.

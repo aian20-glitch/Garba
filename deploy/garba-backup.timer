@@ -1,0 +1,10 @@
+# Копия базы каждую ночь в 04:00.
+[Unit]
+Description=Daily GARBA database backup
+
+[Timer]
+OnCalendar=*-*-* 04:00:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,6 @@
+# Caddy: https для домена (сертификат Let's Encrypt получает и продлевает сам)
+# и пересылка на сервер ГАРБА. Socket.IO (WebSocket) проходит без доп. настроек.
+{$GARBA_DOMAIN} {
+	encode gzip
+	reverse_proxy 127.0.0.1:3000
+}
