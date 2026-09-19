@@ -2,6 +2,7 @@
 
 import { check, section } from './check.js';
 import {
+  absenceStep,
   DISCONNECT_TIMEOUT_MS,
   OFFLINE_GRACE_MS,
   presenceStep,
@@ -98,3 +99,20 @@ check('монеты — сумма, максимумы — максимум',
   [profile.coinsWon, profile.coinsLost, profile.maxWin, profile.maxRisk], [2_500, 1_100, 2_000, 3]);
 check('РАЗ и ДВА по отдельности', [profile.raz, profile.dva], [2, 1]);
 check('у другого игрока своя статистика', profileStats(db, y.id).deals, 0);
+
+section('запас 5 минут на всю игру (§13, §13a, решение владельца правил)');
+const MIN = 60_000;
+const seats = ['Серик', 'Дана'];
+let a = absenceStep(seats, ['Серик'], {}, {}, 0, 5 * MIN);
+check('Серик ушёл — у него 5:00', a.msLeft.Серик, 5 * MIN);
+a = absenceStep(seats, ['Серик'], a.since, a.usedMs, 2 * MIN, 5 * MIN);
+check('через 2 минуты — осталось 3', a.msLeft.Серик, 3 * MIN);
+a = absenceStep(seats, [], a.since, a.usedMs, 2 * MIN, 5 * MIN);
+check('вернулся — потрачено 2 минуты, запас 3', [a.usedMs.Серик, a.msLeft.Серик], [2 * MIN, 3 * MIN]);
+a = absenceStep(seats, ['Серик'], a.since, a.usedMs, 30 * MIN, 5 * MIN);
+check('снова ушёл через полчаса — у него не 5, а 3 минуты', a.msLeft.Серик, 3 * MIN);
+a = absenceStep(seats, ['Серик'], a.since, a.usedMs, 33 * MIN, 5 * MIN);
+check('3 минуты вышли — комната закрывается', a.expired, ['Серик']);
+check('у Даны свой нетронутый запас', a.msLeft.Дана, 5 * MIN);
+const b = absenceStep(seats, ['Дана'], {}, { Дана: 5 * MIN }, 0, 5 * MIN);
+check('запас кончился раньше — следующий уход сразу закрывает', b.expired, ['Дана']);

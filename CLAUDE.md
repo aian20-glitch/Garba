@@ -315,6 +315,9 @@ pause: null | { players: [{ id, name, secondsLeft }] }   — на уровне �
 Любой POST самого игрока (в том числе `POST /rooms/:id/back` — «Я ЗДЕСЬ», разрешён на паузе)
 сбрасывает пропуски. В состоянии: `game.turnSecondsLeft`, `game.awaitedIds`,
 `pause.players[].reason` — `offline` | `away`. Для проверок: `GARBA_TURN_MS`.
+5 минут — **общий запас на всю игру** и на `offline`, и на `away` (`absenceStep` в `presence.ts`):
+потрачено — `game.absenceUsedMs` (в базе), текущий отрезок — в памяти; `pause.players[].secondsLeft`
+— остаток запаса.
 
 **Живые обновления — Socket.IO** (с этапа 8), тот же порт 3000:
 

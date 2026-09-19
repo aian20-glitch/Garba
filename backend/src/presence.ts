@@ -70,3 +70,46 @@ export function touch(state: PresenceState, playerId: string, now: number): Pres
 export function secondsLeft(disconnectedAt: number, now: number, timeoutMs: number): number {
   return Math.max(0, Math.ceil((disconnectedAt + timeoutMs - now) / 1000));
 }
+
+// Запас на отсутствие — 5 минут на всю игру (§13, §13a, решение владельца правил).
+// Его тратят и потеря связи, и «ушёл» (два хода подряд за игрока сходил таймер).
+// Отошёл на 2 минуты и вернулся — в следующий раз у него 3 минуты. Кончился — комната
+// закрывается при следующем же отсутствии.
+//   absentIds — кто сейчас отсутствует (нет связи или «ушёл»);
+//   since — с какого момента идёт текущее отсутствие (живёт в памяти);
+//   usedMs — сколько запаса уже потрачено за игру (хранится в комнате).
+export type AbsenceStep = {
+  since: Record<string, number>;
+  usedMs: Record<string, number>;
+  expired: string[];
+  msLeft: Record<string, number>;
+};
+
+export function absenceStep(
+  playerIds: string[],
+  absentIds: string[],
+  since: Record<string, number>,
+  usedMs: Record<string, number>,
+  now: number,
+  budgetMs: number,
+): AbsenceStep {
+  const nextSince = { ...since };
+  const nextUsed = { ...usedMs };
+  const expired: string[] = [];
+  const msLeft: Record<string, number> = {};
+  const absent = new Set(absentIds);
+
+  for (const id of playerIds) {
+    if (absent.has(id) && nextSince[id] === undefined) nextSince[id] = now;
+    if (!absent.has(id) && nextSince[id] !== undefined) {
+      // Вернулся — отсутствие списывается с запаса.
+      nextUsed[id] = (nextUsed[id] ?? 0) + (now - nextSince[id]);
+      delete nextSince[id];
+    }
+    const current = nextSince[id] !== undefined ? now - nextSince[id] : 0;
+    msLeft[id] = Math.max(0, budgetMs - (nextUsed[id] ?? 0) - current);
+    if (absent.has(id) && msLeft[id] <= 0) expired.push(id);
+  }
+
+  return { since: nextSince, usedMs: nextUsed, expired, msLeft };
+}

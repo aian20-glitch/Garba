@@ -39,6 +39,7 @@ import {
   REFERRAL_BONUS,
 } from './bonus.js';
 import {
+  absenceStep,
   DISCONNECT_TIMEOUT_MS,
   OFFLINE_GRACE_MS,
   presenceStep,
@@ -262,6 +263,8 @@ type GameState = {
   // с какого момента идёт его 5-минутный отсчёт. Нет в старых сохранённых комнатах.
   missedTurns?: Record<string, number>;
   awayAt?: Record<string, number>;
+  // Запас 5 минут на отсутствие — на всю игру (§13, §13a): сколько уже потрачено.
+  absenceUsedMs?: Record<string, number>;
   // Кто-то опустился ниже базового кона — доигрываем, пока кон не заберут (§12.1).
   closing: boolean;
   // Почему закрылась комната: кон забрали (§12.1), кон никто не может взять
@@ -897,6 +900,9 @@ const presenceOpts = {
   timeoutMs: Number(process.env.GARBA_DISCONNECT_MS ?? DISCONNECT_TIMEOUT_MS),
 };
 const presence = new Map<string, PresenceState>();
+// С какого момента идёт текущее отсутствие игрока — только в памяти: после перезапуска
+// сервера текущий отрезок не засчитывается (в пользу игрока).
+const absentSince = new Map<string, Record<string, number>>();
 
 function presenceOf(roomId: string): PresenceState {
   return presence.get(roomId) ?? { lastSeen: {}, disconnectedAt: {} };
@@ -905,6 +911,27 @@ function presenceOf(roomId: string): PresenceState {
 // Присутствие считается только за столом: в лобби игры ещё нет, после конца — уже нет.
 function tracksPresence(room: Room): boolean {
   return room.status === 'started' && !!room.game && room.game.stage !== 'room_done';
+}
+
+// Кто сейчас отсутствует: нет связи (§13) или «ушёл» по таймеру (§13a).
+function absentIds(room: Room): string[] {
+  const { disconnectedAt } = presenceOf(room.id);
+  const awayAt = room.game?.awayAt ?? {};
+  return room.players
+    .map((p) => p.id)
+    .filter((id) => disconnectedAt[id] !== undefined || awayAt[id] !== undefined);
+}
+
+// Запас 5 минут на всю игру: сколько у кого осталось и чьё время вышло.
+function absenceOf(room: Room, now: number) {
+  return absenceStep(
+    room.players.map((p) => p.id),
+    absentIds(room),
+    absentSince.get(room.id) ?? {},
+    room.game?.absenceUsedMs ?? {},
+    now,
+    presenceOpts.timeoutMs,
+  );
 }
 
 function isPaused(room: Room): boolean {
@@ -952,6 +979,7 @@ function closeByDisconnect(room: Room, leftIds: string[]) {
   game.awayAt = {};
   room.status = 'finished';
   presence.delete(room.id);
+  absentSince.delete(room.id);
   turnClocks.delete(room.id);
 
   const names = room.players.filter((p) => leftIds.includes(p.id)).map((p) => p.name);
@@ -974,15 +1002,17 @@ function sweepPresence() {
     );
     presence.set(room.id, { lastSeen: step.lastSeen, disconnectedAt: step.disconnectedAt });
 
-    // Ушедшие (два хода подряд за них ходил таймер, §13a) — те же 5 минут.
-    const awayExpired = Object.entries(room.game!.awayAt ?? {})
-      .filter(([, at]) => now - at >= presenceOpts.timeoutMs)
-      .map(([id]) => id);
-    const expired = [...new Set([...step.expired, ...awayExpired])];
+    // Общий запас 5 минут на всю игру — и на потерю связи, и на «ушёл» (§13, §13a).
+    const absence = absenceOf(room, now);
+    absentSince.set(room.id, absence.since);
+    const usedChanged =
+      JSON.stringify(absence.usedMs) !== JSON.stringify(room.game!.absenceUsedMs ?? {});
+    room.game!.absenceUsedMs = absence.usedMs;
+    const expired = absence.expired;
 
     if (expired.length > 0) {
       closeByDisconnect(room, expired);
-    } else if (step.changed) {
+    } else if (step.changed || usedChanged) {
       const off = room.players.filter((p) => step.disconnectedAt[p.id] !== undefined);
       console.log(
         off.length > 0
@@ -1041,6 +1071,7 @@ function publicPause(room: Room) {
   const now = Date.now();
   const { disconnectedAt } = presenceOf(room.id);
   const awayAt = room.game?.awayAt ?? {};
+  const absence = absenceOf(room, now);
   return {
     players: room.players
       .filter((p) => disconnectedAt[p.id] !== undefined || awayAt[p.id] !== undefined)
@@ -1050,11 +1081,8 @@ function publicPause(room: Room) {
         // offline — пропала связь (§13); away — связь есть, но два хода подряд за него
         // сходил таймер (§13a). Вернуться — нажать «Я ЗДЕСЬ».
         reason: disconnectedAt[p.id] !== undefined ? 'offline' : 'away',
-        secondsLeft: secondsLeft(
-          disconnectedAt[p.id] ?? awayAt[p.id],
-          now,
-          presenceOpts.timeoutMs,
-        ),
+        // Остаток общего запаса на всю игру (§13a): отходил раньше — осталось меньше 5 минут.
+        secondsLeft: Math.ceil((absence.msLeft[p.id] ?? 0) / 1000),
       })),
   };
 }
