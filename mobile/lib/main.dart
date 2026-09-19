@@ -3908,7 +3908,7 @@ class _GameTableScreenState extends State<GameTableScreen> {
               Stack(
                 clipBehavior: Clip.none,
                 children: [
-                  // Чей ход — зелёное кольцо со свечением, главный — золотое.
+                  // Чей ход — зелёное кольцо со свечением, главный — золотое со свечением.
                   Container(
                     padding: const EdgeInsets.all(2.5),
                     decoration: BoxDecoration(
@@ -3920,11 +3920,12 @@ class _GameTableScreenState extends State<GameTableScreen> {
                             : isMain
                                 ? gold
                                 : const Color(0xFF3A4A55),
-                        width: 3,
+                        width: isMain ? 4 : 3,
                       ),
-                      boxShadow: isActive
-                          ? [BoxShadow(color: Colors.greenAccent.withValues(alpha: 0.5), blurRadius: 12)]
-                          : null,
+                      boxShadow: [
+                        if (isMain) BoxShadow(color: gold.withValues(alpha: 0.7), blurRadius: 16, spreadRadius: 2),
+                        if (isActive) BoxShadow(color: Colors.greenAccent.withValues(alpha: 0.5), blurRadius: 12),
+                      ],
                     ),
                     child: AvatarView(
                       avatar: p['avatar']?.toString(),
@@ -3974,14 +3975,27 @@ class _GameTableScreenState extends State<GameTableScreen> {
               // Табличка: имя и монеты.
               Transform.translate(
                 offset: const Offset(0, -6),
+                // Главный — золотая табличка: его видно сразу.
                 child: Container(
                   width: seatWidth,
                   padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
                   decoration: BoxDecoration(
-                    color: const Color(0xE60B1620),
+                    color: isMain ? null : const Color(0xE60B1620),
+                    gradient: isMain
+                        ? const LinearGradient(
+                            begin: Alignment.topCenter,
+                            end: Alignment.bottomCenter,
+                            colors: [Color(0xFFF0CF7A), Color(0xFFC08A2E)],
+                          )
+                        : null,
                     borderRadius: BorderRadius.circular(8),
                     border: Border.all(
-                      color: isActive ? Colors.greenAccent : const Color(0xFF3A4A55),
+                      color: isActive
+                          ? Colors.greenAccent
+                          : isMain
+                              ? const Color(0xFFFFE9A8)
+                              : const Color(0xFF3A4A55),
+                      width: isActive || isMain ? 2 : 1,
                     ),
                   ),
                   child: Column(
@@ -3990,19 +4004,19 @@ class _GameTableScreenState extends State<GameTableScreen> {
                         p['name'].toString(),
                         maxLines: 1,
                         overflow: TextOverflow.ellipsis,
-                        style: const TextStyle(
+                        style: TextStyle(
                           fontSize: 12,
-                          fontWeight: FontWeight.w800,
-                          color: Colors.white,
+                          fontWeight: FontWeight.w900,
+                          color: isMain ? Colors.black : Colors.white,
                         ),
                       ),
                       Text(
                         '🪙 ${fmtCoins(balanceOf(pId))}  ⭐${fmtRating(p['rating'])}',
                         maxLines: 1,
-                        style: const TextStyle(
+                        style: TextStyle(
                           fontSize: 10,
                           fontWeight: FontWeight.w700,
-                          color: gold,
+                          color: isMain ? Colors.black87 : gold,
                         ),
                       ),
                     ],
@@ -4013,19 +4027,33 @@ class _GameTableScreenState extends State<GameTableScreen> {
               if (bidText.isNotEmpty)
                 Transform.translate(
                   offset: const Offset(0, -4),
+                  // Заявка главного — на красной плашке, остальные — золото / серый ПАС.
                   child: Container(
                     padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 1),
                     decoration: BoxDecoration(
-                      color: bidText == 'ПАС' ? const Color(0xFF3A4A55) : gold,
+                      color: isMain
+                          ? const Color(0xFFC62828)
+                          : bidText == 'ПАС'
+                              ? const Color(0xFF3A4A55)
+                              : gold,
                       borderRadius: BorderRadius.circular(10),
                     ),
-                    child: Text(
+                    // Длинная «КОН · взяток 0» ужимается, а не переносится.
+                    child: FittedBox(
+                      fit: BoxFit.scaleDown,
+                      child: Text(
                       bidText,
+                      maxLines: 1,
                       style: TextStyle(
                         fontSize: 11,
                         fontWeight: FontWeight.w900,
-                        color: bidText == 'ПАС' ? Colors.white70 : Colors.black,
+                        color: isMain
+                            ? Colors.white
+                            : bidText == 'ПАС'
+                                ? Colors.white70
+                                : Colors.black,
                       ),
+                    ),
                     ),
                   ),
                 ),
@@ -4041,35 +4069,53 @@ class _GameTableScreenState extends State<GameTableScreen> {
         );
       }
 
-      // Центр стола: открытая карта и масть РАЗ в торгах, козырь в розыгрыше.
+      // Центр стола: открытая карта лежит всю раздачу — чтобы не забыть, что открылось.
+      // Под ней — масть РАЗ в торгах или итоговый козырь (ДВА и КОН могут его сменить).
+      final shownSuit = trumpSuit ?? razSuit;
       final centerParts = <Widget>[
-        if (openCard != null && !isPlaying && !isRoundDone)
+        // В розыгрыше вокруг лежат карты взятки — открытая карта компактнее.
+        if (openCard != null && (isPlaying || isRoundDone))
+          cardChip(openCard, current: true)
+        else if (openCard != null)
           SmallTrumpCard(
             rank: openCard['rank'].toString(),
             suit: openCard['suit'].toString(),
           ),
-        if (trumpSuit != null || razSuit != null) ...[
-          const SizedBox(height: 2),
-          Text(
-            trumpSuit != null ? 'КОЗЫРЬ' : 'РАЗ',
-            style: const TextStyle(fontSize: 10, fontWeight: FontWeight.w900, color: gold),
-          ),
-          Text(
-            suitSymbol(trumpSuit ?? razSuit!),
-            style: TextStyle(
-              fontSize: 26,
-              height: 1.1,
-              color: isRedSuit(trumpSuit ?? razSuit!) ? Colors.redAccent : Colors.white,
+        if (shownSuit != null)
+          Container(
+            margin: const EdgeInsets.only(top: 3),
+            padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 1),
+            // Светлая подложка: чёрные ♣ ♠ на тёмном не видно.
+            decoration: BoxDecoration(
+              color: const Color(0xFFF4EFE2),
+              borderRadius: BorderRadius.circular(8),
+              border: Border.all(color: gold, width: 1.5),
+            ),
+            child: Text.rich(
+              TextSpan(
+                children: [
+                  TextSpan(
+                    text: trumpSuit != null ? 'КОЗЫРЬ ' : 'РАЗ ',
+                    style: const TextStyle(color: Colors.black87),
+                  ),
+                  TextSpan(
+                    text: suitSymbol(shownSuit),
+                    style: TextStyle(
+                      fontSize: 15,
+                      color: isRedSuit(shownSuit) ? Colors.red.shade800 : Colors.black,
+                    ),
+                  ),
+                ],
+              ),
+              style: const TextStyle(fontSize: 11, fontWeight: FontWeight.w900),
             ),
           ),
-        ],
         if (showLast)
           Text(
-            'забрал\n${lastTrick['winnerName']}',
+            'забрал ${lastTrick['winnerName']}',
             textAlign: TextAlign.center,
             style: const TextStyle(fontSize: 10, color: Colors.white70),
           ),
-        const Text('↺', style: TextStyle(fontSize: 16, color: Colors.white38)),
       ];
 
       return LayoutBuilder(
