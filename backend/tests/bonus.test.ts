@@ -1,7 +1,7 @@
 // Проверки bonus.ts. Запуск всех проверок: npm test
 
 import { check, section } from './check.js';
-import {
+import { referralDue,
   dailyClaim,
   dayKey,
   giftError,
@@ -53,3 +53,9 @@ const code = makePlayerCode();
 check('6 символов, без похожих 0 O 1 I L', /^[A-HJKMNP-Z2-9]{6}$/.test(code), true);
 check('ввод с пробелами и маленькими буквами понимается', normalizeCode(' ab c12 '), 'ABC12');
 check('не строка — пустой код', normalizeCode(null), '');
+
+section('бонус за приглашение — после 3 комнат друга (решение владельца правил)');
+check('друг только зарегистрировался — бонуса нет', referralDue(0, false), false);
+check('доиграл 2 комнаты — ещё нет', referralDue(2, false), false);
+check('доиграл 3 — пригласившему +1 000', referralDue(3, false), true);
+check('уже выплачено — второй раз нет', referralDue(7, true), false);

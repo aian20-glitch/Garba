@@ -153,11 +153,12 @@ async function main() {
   const invited = (await request('POST', '/accounts', undefined, { name: 'Асель', inviteCode: aMe.code.toLowerCase() })).body;
   check('пришла по приглашению — у неё обычные 10 000', invited.balance, 10_000);
   const aAfterInvite = (await request('GET', '/me', a.token)).body;
-  check('пригласившему +1 000', [aAfterInvite.balance, aAfterInvite.invitedCount], [11_000, 1]);
+  // Бонус пригласившему — только после 3 комнат друга (решение владельца, 19.09.2026).
+  check('пригласившему пока ничего — бонус после 3 комнат друга', [aAfterInvite.balance, aAfterInvite.invitedCount], [10_000, 1]);
 
   check('бонус ещё не взят: день 1/7, 1 000', aAfterInvite.daily, { claimedToday: false, streak: 1, amount: 1_000 });
   const bonus = await post('/me/daily-bonus', a.token);
-  check('забрал ежедневный бонус', [bonus.body.amount, bonus.body.streak, bonus.body.balance], [1_000, 1, 12_000]);
+  check('забрал ежедневный бонус', [bonus.body.amount, bonus.body.streak, bonus.body.balance], [1_000, 1, 11_000]);
   check('второй раз за день — нельзя', (await post('/me/daily-bonus', a.token)).status, 409);
   check('на главном экране: сегодня уже взят', (await request('GET', '/me', a.token)).body.daily.claimedToday, true);
 
@@ -168,7 +169,7 @@ async function main() {
   check('больше 1 000 подарить нельзя', (await post('/gifts', a.token, { toCode: bMe.code, amount: 1_100 })).body.error, 'bad amount');
   check('себе — нельзя', (await post('/gifts', a.token, { toCode: aMe.code, amount: 400 })).body.error, 'self');
   const gift = await post('/gifts', a.token, { toCode: bMe.code, amount: 400 });
-  check('подарил 400', [gift.status, gift.body.balance, gift.body.to?.name], [200, 11_600, 'Ержан']);
+  check('подарил 400', [gift.status, gift.body.balance, gift.body.to?.name], [200, 10_600, 'Ержан']);
   check('получатель получил', (await request('GET', '/me', b.token)).body.balance, 10_400);
   check('второй подарок в тот же день — нельзя', (await post('/gifts', a.token, { toCode: bMe.code, amount: 100 })).body.error, 'already gifted today');
 

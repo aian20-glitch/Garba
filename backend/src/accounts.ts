@@ -84,6 +84,12 @@ function migrateAccounts(db: DatabaseSync) {
   add('daily_streak', 'INTEGER NOT NULL DEFAULT 0');
   add('invited_by', 'TEXT');
   add('skill', `REAL NOT NULL DEFAULT ${START_SKILL}`); // рейтинг — этап 9.6
+  // Бонус за приглашение платится после 3 комнат друга (19.09.2026). Кого пригласили
+  // раньше, тем уже заплатили сразу при регистрации — помечаем оплаченными.
+  if (!columns.has('referral_paid')) {
+    db.exec('ALTER TABLE accounts ADD COLUMN referral_paid INTEGER NOT NULL DEFAULT 0');
+    db.exec('UPDATE accounts SET referral_paid = 1 WHERE invited_by IS NOT NULL');
+  }
 
   // Аккаунтам, созданным до этапа 9.3, выдаём коды.
   const withoutCode = db.prepare('SELECT id FROM accounts WHERE code IS NULL').all() as { id: string }[];
@@ -210,6 +216,18 @@ export function recordGift(db: DatabaseSync, fromId: string, toId: string, amoun
 }
 
 // Сколько человек пришло по приглашению этого игрока.
+// Кто пригласил игрока, если бонус за него ещё не выплачен.
+export function unpaidInviter(db: DatabaseSync, id: string): string | null {
+  const row = db
+    .prepare('SELECT invited_by FROM accounts WHERE id = ? AND invited_by IS NOT NULL AND referral_paid = 0')
+    .get(id) as { invited_by: string } | undefined;
+  return row ? String(row.invited_by) : null;
+}
+
+export function markReferralPaid(db: DatabaseSync, id: string) {
+  db.prepare('UPDATE accounts SET referral_paid = 1 WHERE id = ?').run(id);
+}
+
 export function invitedCount(db: DatabaseSync, id: string): number {
   const row = db.prepare('SELECT COUNT(*) AS n FROM accounts WHERE invited_by = ?').get(id) as { n: number };
   return Number(row.n);

@@ -357,6 +357,12 @@ class _StartScreenState extends State<StartScreen> {
         setState(() => error = 'Код приглашения не найден. Проверьте его или оставьте поле пустым.');
         return;
       }
+      // С одного адреса — не больше 5 новых аккаунтов в час (защита от накрутки).
+      if (response.statusCode == 429) {
+        setState(() => error = 'С вашего подключения недавно создавали много аккаунтов. '
+            'Попробуйте позже.');
+        return;
+      }
       if (response.statusCode != 201) throw Exception(response.body);
       await Session.save(jsonDecode(response.body) as Map<String, dynamic>);
       openHome();
@@ -920,7 +926,7 @@ class _GiftScreenState extends State<GiftScreen> {
 }
 
 // Приглашение друга (ТЗ §4): друг вводит этот код при первом входе в игру —
-// пригласивший получает 1 000 монет.
+// пригласивший получает 1 000 монет, когда друг доиграет 3 комнаты.
 class InviteScreen extends StatelessWidget {
   final String code;
   final int invitedCount;
@@ -978,7 +984,7 @@ class InviteScreen extends StatelessWidget {
               const SizedBox(height: 24),
               const Text(
                 'Друг устанавливает ГАРБУ и при первом входе вводит этот код. '
-                'Как только он создаст аккаунт — вы получите 1 000 монет.',
+                'Как только он доиграет 3 комнаты — вы получите 1 000 монет.',
                 style: TextStyle(fontSize: 16),
               ),
               const SizedBox(height: 16),

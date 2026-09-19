@@ -7,6 +7,8 @@ import { dirname } from 'node:path';
 import { Server as SocketServer } from 'socket.io';
 
 import {
+  markReferralPaid,
+  unpaidInviter,
   addFriend,
   areFriends,
   cleanName,
@@ -37,6 +39,8 @@ import {
   giftError,
   normalizeCode,
   REFERRAL_BONUS,
+  referralDue,
+  REFERRAL_ROOMS,
 } from './bonus.js';
 import {
   absenceStep,
@@ -100,6 +104,7 @@ import {
   type SpecialKind,
 } from './special.js';
 import { canProposeEnd, endVoteOutcome, END_VOTE_MS, type EndVote } from './endVote.js';
+import { rateCheck } from './rateLimit.js';
 import { addMiss, clockFor, pickRandom, TURN_MS, turnSecondsLeft, type TurnClock } from './turnTimer.js';
 import {
   canConcede,
@@ -325,6 +330,9 @@ const PORT = Number(process.env.PORT ?? 3000);
 const rooms = new Map<string, Room>();
 
 app.use(cors());
+// За Caddy (https) все запросы приходят с 127.0.0.1 — настоящий адрес игрока Caddy кладёт
+// в X-Forwarded-For. Верим ему только от локального прокси.
+app.set('trust proxy', 'loopback');
 app.use(express.json());
 
 // --- Аккаунты (этап 9.1) и сохранение комнат (этап 9.2) ---
@@ -353,6 +361,21 @@ function activeRoomOf(accountId: string): Room | undefined {
 // Сохранить комнату и балансы её игроков — одной транзакцией.
 function persistRoom(room: Room) {
   saveRoom(db, room);
+  if (room.status === 'finished') payReferrals(room);
+}
+
+// Комната доиграна: кто из её игроков пришёл по приглашению и уже доиграл 3 комнаты —
+// пригласившему +1 000, один раз (решение владельца правил, 19.09.2026).
+const referralsChecked = new Set<string>();
+function payReferrals(room: Room) {
+  if (referralsChecked.has(room.id)) return;
+  referralsChecked.add(room.id);
+  for (const p of room.players) {
+    const inviterId = unpaidInviter(db, p.id);
+    if (!inviterId || !referralDue(profileStats(db, p.id).rooms, false)) continue;
+    moveCoins([{ accountId: inviterId, delta: REFERRAL_BONUS }], () => markReferralPaid(db, p.id));
+    console.log(`[REFERRAL] ${p.name} доиграл ${REFERRAL_ROOMS} комнаты — пригласившему +${REFERRAL_BONUS}`);
+  }
 }
 
 // Изменить баланс аккаунта вне игры: бонус, подарок, приглашение (этап 9.3).
@@ -409,9 +432,26 @@ function accountOf(req: express.Request): Account | null {
 }
 
 // Новый аккаунт: имя → id, токен, стартовые 10 000. Токен приходит один раз,
-// телефон обязан его сохранить. inviteCode — код пригласившего (ТЗ §4):
-// он сразу получает 1 000 — новый игрок зарегистрировался и вошёл.
+// телефон обязан его сохранить. inviteCode — код пригласившего (ТЗ §4): его 1 000
+// придут, когда новый игрок доиграет 3 комнаты (payReferrals).
+// Новые аккаунты с одного адреса: не больше 5 в час и 20 в сутки. Каждый аккаунт —
+// 10 000 монет; без лимита их штамповали бы скриптом. Числа меняются переменными
+// окружения — например, если у мобильного оператора много игроков за одним адресом.
+const ACCOUNT_LIMITS = [
+  { max: Number(process.env.GARBA_ACCOUNTS_PER_HOUR ?? 5), windowMs: 3_600_000 },
+  { max: Number(process.env.GARBA_ACCOUNTS_PER_DAY ?? 20), windowMs: 86_400_000 },
+];
+const accountsByIp = new Map<string, number[]>();
+
 app.post('/accounts', (req, res) => {
+  const ip = req.ip ?? 'unknown';
+  const limit = rateCheck(accountsByIp.get(ip) ?? [], Date.now(), ACCOUNT_LIMITS);
+  // Свой же компьютер (проверки, боты) — без лимита. Игроки из интернета приходят через
+  // Caddy со своим адресом, а напрямую к серверу снаружи не достучаться (HOST=127.0.0.1).
+  if (!limit.allowed && !LOOPBACK.includes(ip)) {
+    return res.status(429).json({ error: 'too many accounts, try later' });
+  }
+
   const name = cleanName(req.body?.name);
   if (!name) {
     return res.status(400).json({ error: 'name must be 1 to 20 characters' });
@@ -423,15 +463,12 @@ app.post('/accounts', (req, res) => {
     return res.status(400).json({ error: 'invite code not found' });
   }
 
-  let created: ReturnType<typeof createAccount> | null = null;
-  moveCoins(inviter ? [{ accountId: inviter.id, delta: REFERRAL_BONUS }] : [], () => {
-    created = createAccount(db, name, inviter?.id ?? null);
-  });
-  const { account, token } = created!;
+  const { account, token } = createAccount(db, name, inviter?.id ?? null);
+  accountsByIp.set(ip, limit.times);
 
   console.log(
     `[ACCOUNT] created ${account.name} (${account.id})` +
-      (inviter ? `, invited by ${inviter.name} (+${REFERRAL_BONUS})` : ''),
+      (inviter ? `, invited by ${inviter.name} (бонус — после 3 комнат)` : ''),
   );
 
   return res.status(201).json({ ...account, token });
@@ -494,7 +531,7 @@ app.post('/me/daily-bonus', (req, res) => {
 // кнопка «Открыть в ГАРБЕ» запускает приложение (garba://...), а если приложения
 // ещё нет — на странице крупно код, его можно ввести вручную.
 //   /r/<номер комнаты>  — зовут в комнату
-//   /i/<код игрока>     — приглашение друга (пригласивший получит 1 000)
+//   /i/<код игрока>     — приглашение друга (пригласивший получит 1 000 после 3 комнат друга)
 
 function escapeHtml(text: string): string {
   return text.replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]!);
@@ -792,6 +829,8 @@ const LOOPBACK = ['127.0.0.1', '::1', '::ffff:127.0.0.1'];
 function internalAccount(req: express.Request): Account | null {
   if (req.headers['x-garba-internal'] !== INTERNAL_SECRET) return null;
   if (!LOOPBACK.includes(req.socket.remoteAddress ?? '')) return null;
+  // Пришёл через Caddy (из интернета) — не внутренний, какой бы заголовок ни прислали.
+  if (req.headers['x-forwarded-for'] !== undefined) return null;
   return getAccount(db, String(req.headers['x-garba-player'] ?? ''));
 }
 
