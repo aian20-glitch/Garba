@@ -16,6 +16,8 @@ class _HomeScreenState extends State<HomeScreen> with RouteAware {
   String code = '';
   int dailyStreak = 0;
   int invitedCount = 0;
+  // Сколько человек зовут меня в друзья — цифра на кнопке «ДРУЗЬЯ».
+  int friendRequests = 0;
   bool claimingBonus = false;
   String? avatar;
   Object? rating;
@@ -58,6 +60,7 @@ class _HomeScreenState extends State<HomeScreen> with RouteAware {
         avatar = me['avatar']?.toString();
         rating = me['rating'];
         invitedCount = (me['invitedCount'] as num?)?.toInt() ?? 0;
+        friendRequests = (me['friendRequests'] as num?)?.toInt() ?? 0;
       });
       // Первый вход за день — бонус забирается сам (ТЗ §3: «за ежедневный вход»).
       if (daily['claimedToday'] != true) await claimDailyBonus();
@@ -224,7 +227,7 @@ class _HomeScreenState extends State<HomeScreen> with RouteAware {
                       ),
                       const SizedBox(height: 14),
                       GarbaButton(
-                        label: 'ДРУЗЬЯ',
+                        label: friendRequests > 0 ? 'ДРУЗЬЯ · заявок: $friendRequests' : 'ДРУЗЬЯ',
                         onTap: () => Navigator.push(
                           context,
                           MaterialPageRoute(builder: (_) => const FriendsScreen()),

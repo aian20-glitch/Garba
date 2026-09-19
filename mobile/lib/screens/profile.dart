@@ -200,7 +200,11 @@ class _FriendsScreenState extends State<FriendsScreen> {
     'player not found': 'Игрока с таким кодом нет',
     'self': 'Это ваш собственный код',
     'already friends': 'Уже в друзьях',
+    'request already sent': 'Заявка уже отправлена — ждём ответа',
   };
+  // Кто зовёт меня в друзья — сверху, с кнопками «принять» / «отклонить».
+  List<Map<String, dynamic>> incoming = [];
+  String? notice;
 
   @override
   void initState() {
@@ -219,9 +223,14 @@ class _FriendsScreenState extends State<FriendsScreen> {
       final response = await http.get(Uri.parse('$apiBase/friends'), headers: authHeaders());
       if (response.statusCode != 200) throw Exception(response.body);
       final body = jsonDecode(response.body) as Map<String, dynamic>;
+      final requests = await http.get(Uri.parse('$apiBase/friends/requests'), headers: authHeaders());
+      final reqBody = requests.statusCode == 200 ? jsonDecode(requests.body) as Map : const {};
       if (!mounted) return;
       setState(() {
         friends = (body['friends'] as List).map((e) => Map<String, dynamic>.from(e as Map)).toList();
+        incoming = ((reqBody['incoming'] as List?) ?? const [])
+            .map((e) => Map<String, dynamic>.from(e as Map))
+            .toList();
         error = null;
       });
     } catch (_) {
@@ -242,19 +251,35 @@ class _FriendsScreenState extends State<FriendsScreen> {
         headers: authHeaders(),
         body: jsonEncode({'code': code}),
       );
-      if (response.statusCode != 201) {
+      if (response.statusCode != 201 && response.statusCode != 202) {
         final body = jsonDecode(response.body);
         final key = body is Map ? body['error']?.toString() : null;
         if (mounted) setState(() => error = _errors[key] ?? 'Ошибка: ${response.body}');
         return;
       }
+      final body = jsonDecode(response.body) as Map;
       codeController.clear();
+      if (mounted) {
+        setState(() => notice = body['status'] == 'friends'
+            ? '${body['name']} теперь в друзьях'
+            : 'Заявка отправлена — ${body['name']} решит, добавить ли вас');
+      }
       await load();
     } catch (_) {
       if (mounted) setState(() => error = 'Нет связи с сервером');
     } finally {
       if (mounted) setState(() => adding = false);
     }
+  }
+
+  Future<void> answer(String code, String action) async {
+    try {
+      await http.post(
+        Uri.parse('$apiBase/friends/requests/${Uri.encodeComponent(code)}/$action'),
+        headers: authHeaders(),
+      );
+    } catch (_) {}
+    await load();
   }
 
   @override
@@ -283,7 +308,8 @@ class _FriendsScreenState extends State<FriendsScreen> {
               ),
               const SizedBox(height: 6),
               const Text(
-                'Добавили по коду — дружба сразу у обоих.',
+                'По коду отправляется заявка — друг примет её или отклонит. '
+                'Добавить можно и за столом: нажмите на игрока.',
                 style: TextStyle(color: Colors.white54),
               ),
               if (error != null)
@@ -291,6 +317,50 @@ class _FriendsScreenState extends State<FriendsScreen> {
                   padding: const EdgeInsets.only(top: 8),
                   child: Text(error!, style: const TextStyle(color: Colors.redAccent)),
                 ),
+              if (notice != null && error == null)
+                Padding(
+                  padding: const EdgeInsets.only(top: 8),
+                  child: Text(notice!, style: const TextStyle(color: Colors.greenAccent)),
+                ),
+              // Заявки в друзья: принять или отклонить. Отклонённому не сообщаем.
+              if (incoming.isNotEmpty) ...[
+                const SizedBox(height: 12),
+                const Text(
+                  'ЗАЯВКИ В ДРУЗЬЯ',
+                  style: TextStyle(fontWeight: FontWeight.w900, color: Color(0xFFD4A94F)),
+                ),
+                ...incoming.map(
+                  (r) => ListTile(
+                    contentPadding: EdgeInsets.zero,
+                    leading: AvatarView(avatar: r['avatar']?.toString(), name: r['name'].toString()),
+                    title: Text(r['name'].toString()),
+                    subtitle: Text('⭐ ${fmtRating(r['rating'])} · зовёт вас в друзья'),
+                    onTap: () async {
+                      await Navigator.push(
+                        context,
+                        MaterialPageRoute(builder: (_) => PlayerScreen(code: r['code'].toString())),
+                      );
+                      load();
+                    },
+                    trailing: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        IconButton(
+                          tooltip: 'Принять',
+                          icon: const Icon(Icons.check_circle, color: Colors.greenAccent),
+                          onPressed: () => answer(r['code'].toString(), 'accept'),
+                        ),
+                        IconButton(
+                          tooltip: 'Отклонить',
+                          icon: const Icon(Icons.cancel, color: Colors.white38),
+                          onPressed: () => answer(r['code'].toString(), 'decline'),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+                const Divider(),
+              ],
               const SizedBox(height: 12),
               Expanded(
                 child: list == null
@@ -371,21 +441,35 @@ class _PlayerScreenState extends State<PlayerScreen> {
     }
   }
 
-  Future<void> toggleFriend(bool isFriend) async {
+  // Дружба — только с согласия второго (решение владельца, 19.09.2026):
+  // none → заявка; outgoing → отменить; incoming → принять / отклонить; friends → удалить.
+  Future<void> friendAction(String action) async {
     if (busy) return;
     setState(() => busy = true);
+    final code = Uri.encodeComponent(widget.code);
     try {
-      final response = isFriend
-          ? await http.delete(
-              Uri.parse('$apiBase/friends/${Uri.encodeComponent(widget.code)}'),
-              headers: authHeaders(),
-            )
-          : await http.post(
-              Uri.parse('$apiBase/friends'),
-              headers: authHeaders(),
-              body: jsonEncode({'code': widget.code}),
-            );
+      final http.Response response;
+      switch (action) {
+        case 'request':
+          response = await http.post(
+            Uri.parse('$apiBase/friends'),
+            headers: authHeaders(),
+            body: jsonEncode({'code': widget.code}),
+          );
+        case 'remove':
+          response = await http.delete(Uri.parse('$apiBase/friends/$code'), headers: authHeaders());
+        default: // accept | decline | cancel
+          response = await http.post(
+            Uri.parse('$apiBase/friends/requests/$code/$action'),
+            headers: authHeaders(),
+          );
+      }
       if (response.statusCode >= 300) throw Exception(response.body);
+      if (action == 'request' && mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Заявка отправлена — ${player?['name']} решит, добавить ли вас')),
+        );
+      }
       await load();
     } catch (e) {
       if (mounted) {
@@ -393,6 +477,44 @@ class _PlayerScreenState extends State<PlayerScreen> {
       }
     } finally {
       if (mounted) setState(() => busy = false);
+    }
+  }
+
+  Widget friendButtons(String status) {
+    switch (status) {
+      case 'friends':
+        return OutlinedButton(
+          onPressed: busy ? null : () => friendAction('remove'),
+          child: const Text('УДАЛИТЬ ИЗ ДРУЗЕЙ'),
+        );
+      case 'outgoing':
+        return OutlinedButton(
+          onPressed: busy ? null : () => friendAction('cancel'),
+          child: const Text('ЗАЯВКА ОТПРАВЛЕНА ✕'),
+        );
+      case 'incoming':
+        return Row(
+          children: [
+            Expanded(
+              child: FilledButton(
+                onPressed: busy ? null : () => friendAction('accept'),
+                child: const Text('ПРИНЯТЬ'),
+              ),
+            ),
+            const SizedBox(width: 6),
+            Expanded(
+              child: OutlinedButton(
+                onPressed: busy ? null : () => friendAction('decline'),
+                child: const Text('ОТКЛОНИТЬ'),
+              ),
+            ),
+          ],
+        );
+      default:
+        return OutlinedButton(
+          onPressed: busy ? null : () => friendAction('request'),
+          child: const Text('ДОБАВИТЬ В ДРУЗЬЯ'),
+        );
     }
   }
 
@@ -417,15 +539,15 @@ class _PlayerScreenState extends State<PlayerScreen> {
                   'Рейтинг: ⭐ ${fmtRating(p['rating'])}',
                   style: const TextStyle(fontSize: 20, fontWeight: FontWeight.w900, color: Color(0xFFD4A94F)),
                 ),
+                if (p['friendStatus'] == 'incoming')
+                  const Padding(
+                    padding: EdgeInsets.only(top: 8),
+                    child: Text('Зовёт вас в друзья', style: TextStyle(color: Colors.greenAccent)),
+                  ),
                 const SizedBox(height: 12),
                 Row(
                   children: [
-                    Expanded(
-                      child: OutlinedButton(
-                        onPressed: busy ? null : () => toggleFriend(p['isFriend'] == true),
-                        child: Text(p['isFriend'] == true ? 'УДАЛИТЬ ИЗ ДРУЗЕЙ' : 'ДОБАВИТЬ В ДРУЗЬЯ'),
-                      ),
-                    ),
+                    Expanded(child: friendButtons(p['friendStatus']?.toString() ?? 'none')),
                     const SizedBox(width: 12),
                     Expanded(
                       child: FilledButton(

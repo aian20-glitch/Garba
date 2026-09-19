@@ -278,6 +278,7 @@ class _LobbyScreenState extends State<LobbyScreen> {
                       subtitle: '${isOwner ? 'Создатель' : 'Игрок'} • ⭐ ${fmtRating(p['rating'])}',
                       ready: true,
                       avatar: p['avatar']?.toString(),
+                      onTap: () => openPlayerCard(context, p),
                     );
                   }),
                   ...List.generate(

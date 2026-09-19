@@ -1319,7 +1319,10 @@ class _GameTableScreenState extends State<GameTableScreen> {
         }
         final history = historyOf[pId] ?? const <Map<String, dynamic>>[];
 
-        return SizedBox(
+        // Нажатие на игрока — его карточка: добавить в друзья, подарок.
+        return GestureDetector(
+          onTap: () => openPlayerCard(context, p),
+          child: SizedBox(
           width: seatWidth,
           child: Column(
             mainAxisSize: MainAxisSize.min,
@@ -1484,6 +1487,7 @@ class _GameTableScreenState extends State<GameTableScreen> {
                   children: history.map(smallChip).toList(),
                 ),
             ],
+          ),
           ),
         );
       }

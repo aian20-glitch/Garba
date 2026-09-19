@@ -66,6 +66,16 @@ export function openDb(file: string): DatabaseSync {
       PRIMARY KEY (owner_id, friend_id)
     )
   `);
+  // Заявки в друзья (решение владельца, 19.09.2026): дружба — только если второй согласился.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS friend_requests (
+      from_id     TEXT NOT NULL,
+      to_id       TEXT NOT NULL,
+      created_at  INTEGER NOT NULL,
+      PRIMARY KEY (from_id, to_id)
+    )
+  `);
+  db.exec('CREATE INDEX IF NOT EXISTS friend_requests_to ON friend_requests (to_id)');
   ensureRoomTable(db); // комнаты — этап 9.2
   ensureAvatarTable(db); // аватары — этап 9.5
   return db;
@@ -124,6 +134,7 @@ function hashToken(token: string): string {
 }
 
 const ACCOUNT_FIELDS = 'id, name, balance, created_at, code, daily_day, daily_streak, invited_by, skill';
+const ACCOUNT_FIELDS_A = ACCOUNT_FIELDS.split(', ').map((f) => `a.${f}`).join(', ');
 
 function toAccount(row: Record<string, unknown> | undefined): Account | null {
   if (!row) return null;
@@ -233,8 +244,64 @@ export function invitedCount(db: DatabaseSync, id: string): number {
   return Number(row.n);
 }
 
-// --- Друзья (этап 9.4) ---
-// Добавил по коду — дружба сразу взаимная: у обоих в списке. Удалил — у обоих пропала.
+// --- Друзья (этап 9.4; заявки — с 19.09.2026) ---
+// Дружба взаимная: у обоих в списке, удалил — у обоих пропала. Но появляется она только
+// с согласия второго: сначала заявка, он принимает или отклоняет (решение владельца).
+
+export type FriendStatus = 'friends' | 'outgoing' | 'incoming' | 'none';
+
+export function friendStatus(db: DatabaseSync, me: string, other: string): FriendStatus {
+  if (areFriends(db, me, other)) return 'friends';
+  const req = db.prepare('SELECT 1 FROM friend_requests WHERE from_id = ? AND to_id = ?');
+  if (req.get(me, other) !== undefined) return 'outgoing';
+  if (req.get(other, me) !== undefined) return 'incoming';
+  return 'none';
+}
+
+// Отправить заявку. Он уже звал меня — сразу друзья (оба хотят).
+export function requestFriend(
+  db: DatabaseSync,
+  me: string,
+  other: string,
+): 'requested' | 'friends' | 'already friends' | 'already sent' {
+  const status = friendStatus(db, me, other);
+  if (status === 'friends') return 'already friends';
+  if (status === 'outgoing') return 'already sent';
+  if (status === 'incoming') {
+    acceptFriend(db, me, other);
+    return 'friends';
+  }
+  db.prepare('INSERT INTO friend_requests (from_id, to_id, created_at) VALUES (?, ?, ?)').run(me, other, Date.now());
+  return 'requested';
+}
+
+// Принять заявку от from — становимся друзьями, заявки в обе стороны снимаются.
+export function acceptFriend(db: DatabaseSync, me: string, from: string): boolean {
+  if (friendStatus(db, me, from) !== 'incoming') return false;
+  transaction(db, () => {
+    dropRequests(db, me, from);
+    const now = Date.now();
+    const insert = db.prepare('INSERT OR IGNORE INTO friends (owner_id, friend_id, created_at) VALUES (?, ?, ?)');
+    insert.run(me, from, now);
+    insert.run(from, me, now);
+  });
+  return true;
+}
+
+// Отклонить входящую или отменить свою — заявка просто исчезает, никому не сообщаем.
+export function dropRequests(db: DatabaseSync, a: string, b: string) {
+  db.prepare('DELETE FROM friend_requests WHERE (from_id = ? AND to_id = ?) OR (from_id = ? AND to_id = ?)').run(a, b, b, a);
+}
+
+// Кто зовёт меня в друзья / кого зову я — новые сверху.
+export function friendRequests(db: DatabaseSync, me: string): { incoming: Account[]; outgoing: Account[] } {
+  const list = (sql: string) =>
+    (db.prepare(sql).all(me) as Record<string, unknown>[]).map((row) => toAccount(row)!);
+  return {
+    incoming: list(`SELECT ${ACCOUNT_FIELDS_A} FROM friend_requests r JOIN accounts a ON a.id = r.from_id WHERE r.to_id = ? ORDER BY r.created_at DESC`),
+    outgoing: list(`SELECT ${ACCOUNT_FIELDS_A} FROM friend_requests r JOIN accounts a ON a.id = r.to_id WHERE r.from_id = ? ORDER BY r.created_at DESC`),
+  };
+}
 
 export function areFriends(db: DatabaseSync, a: string, b: string): boolean {
   return db.prepare('SELECT 1 FROM friends WHERE owner_id = ? AND friend_id = ?').get(a, b) !== undefined;
@@ -282,6 +349,7 @@ export const DELETED_NAME = 'Удалённый игрок';
 
 export function deleteAccountData(db: DatabaseSync, id: string) {
   db.prepare('DELETE FROM friends WHERE owner_id = ? OR friend_id = ?').run(id, id);
+  db.prepare('DELETE FROM friend_requests WHERE from_id = ? OR to_id = ?').run(id, id);
   db.prepare('DELETE FROM avatars WHERE account_id = ?').run(id);
   db.prepare('DELETE FROM room_stats WHERE player_id = ?').run(id);
   db.prepare('UPDATE accounts SET invited_by = NULL WHERE invited_by = ?').run(id);

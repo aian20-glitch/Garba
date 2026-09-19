@@ -189,7 +189,16 @@ async function main() {
   check('в комнате видна статистика за стол (взнос уже учтён)',
     (await request('GET', `/rooms/${roomId}`, serik.token)).body.stats?.[serik.id]?.coinsLost, 100);
 
-  check('добавить в друзья по коду', (await post('/friends', a.token, { code: bMe.code })).status, 201);
+  // С 19.09.2026 — заявка: дружба только с согласия второго (решение владельца).
+  const asked = await post('/friends', a.token, { code: bMe.code });
+  check('добавить в друзья по коду — это заявка, ещё не дружба', [asked.status, asked.body.status], [202, 'requested']);
+  check('повторно — заявка уже отправлена', (await post('/friends', a.token, { code: bMe.code })).body.error, 'request already sent');
+  check('у Ержана — входящая заявка от Даны, в друзьях пока никого',
+    [(await request('GET', '/friends/requests', b.token)).body.incoming.map((f: any) => f.name), (await request('GET', '/friends', b.token)).body.friends,
+      (await request('GET', '/me', b.token)).body.friendRequests],
+    [['Дана'], [], 1]);
+  check('в карточке у Даны — «заявка отправлена»', (await request('GET', `/players/${bMe.code}`, a.token)).body.friendStatus, 'outgoing');
+  check('Ержан принял', (await post(`/friends/requests/${aMe.code}/accept`, b.token)).body.status, 'friends');
   check('повторно — уже друзья', (await post('/friends', a.token, { code: bMe.code })).body.error, 'already friends');
   check('себя — нельзя', (await post('/friends', a.token, { code: aMe.code })).body.error, 'self');
   check('дружба взаимная: Дана у Ержана в списке',
@@ -197,6 +206,13 @@ async function main() {
   check('в карточке игрока видно, что это друг', (await request('GET', `/players/${bMe.code}`, a.token)).body.isFriend, true);
   check('удалить из друзей', (await request('DELETE', `/friends/${bMe.code}`, a.token)).status, 200);
   check('пропал у обоих', (await request('GET', '/friends', b.token)).body.friends, []);
+  await post('/friends', b.token, { code: aMe.code });
+  check('Дана отклонила заявку Ержана — дружбы нет, заявки тоже',
+    [(await post(`/friends/requests/${bMe.code}/decline`, a.token)).status, (await request('GET', `/players/${aMe.code}`, b.token)).body.friendStatus],
+    [200, 'none']);
+  await post('/friends', a.token, { code: bMe.code });
+  check('оба позвали друг друга — сразу друзья', (await post('/friends', b.token, { code: aMe.code })).body.status, 'friends');
+  await request('DELETE', `/friends/${bMe.code}`, a.token);
 
   section('аватар (этап 9.5)');
   const photo = new Uint8Array([0xff, 0xd8, 0xff, 0xe0, ...new Array(500).fill(7)]);

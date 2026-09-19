@@ -6,7 +6,10 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { check, section } from './check.js';
 import {
+  acceptFriend,
   addFriend,
+  friendStatus,
+  requestFriend,
   deleteAccountData,
   DELETED_NAME,
   areFriends,
@@ -126,4 +129,18 @@ section('удалить аккаунт навсегда (требование Ap
   check('в старой комнате имя заменено, у остальных — как было',
     [saved.players[0].name, saved.players[1].name, saved.game.dealerName, saved.game.mains[0].playerName],
     [DELETED_NAME, 'Остаётся', DELETED_NAME, DELETED_NAME]);
+}
+
+section('заявки в друзья — только с согласия (решение владельца, 19.09.2026)');
+{
+  const db3 = openDb(':memory:');
+  const x = createAccount(db3, 'Серик').account;
+  const y = createAccount(db3, 'Случайный').account;
+  check('позвал — это заявка', [requestFriend(db3, x.id, y.id), friendStatus(db3, x.id, y.id), friendStatus(db3, y.id, x.id)], ['requested', 'outgoing', 'incoming']);
+  check('без согласия дружбы нет', areFriends(db3, x.id, y.id), false);
+  check('принять может только тот, кого позвали', acceptFriend(db3, x.id, y.id), false);
+  check('он принял — друзья у обоих', [acceptFriend(db3, y.id, x.id), areFriends(db3, x.id, y.id), areFriends(db3, y.id, x.id)], [true, true, true]);
+  const z = createAccount(db3, 'Третий').account;
+  requestFriend(db3, x.id, z.id);
+  check('встречная заявка — сразу друзья', requestFriend(db3, z.id, x.id), 'friends');
 }

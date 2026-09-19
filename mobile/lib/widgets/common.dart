@@ -7,6 +7,8 @@ class PlayerTile extends StatelessWidget {
   final bool ready;
   // Адрес фото игрока; null — фото нет или место свободно.
   final String? avatar;
+  // Нажатие — открыть карточку игрока (в друзья, подарок).
+  final VoidCallback? onTap;
 
   const PlayerTile({
     super.key,
@@ -14,6 +16,7 @@ class PlayerTile extends StatelessWidget {
     required this.subtitle,
     required this.ready,
     this.avatar,
+    this.onTap,
   });
 
   @override
@@ -25,6 +28,7 @@ class PlayerTile extends StatelessWidget {
             : const CircleAvatar(child: Icon(Icons.person_outline)),
         title: Text(name),
         subtitle: Text(subtitle),
+        onTap: onTap,
         trailing: Icon(
           ready ? Icons.check_circle : Icons.hourglass_empty,
           color: ready ? Colors.greenAccent : Colors.white38,

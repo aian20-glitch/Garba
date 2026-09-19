@@ -189,14 +189,16 @@ POST /accounts                   { name, inviteCode? }   inviteCode — код �
                                  неизвестный код — 400 invite code not found; с одного адреса
                                  не больше 5 в час / 20 в сутки — 429 (свой компьютер — без лимита)
 GET  /me                         → { id, name, balance, createdAt, code, dailyDay, dailyStreak,
-                                     invitedBy, roomId, daily, giftSentToday, invitedCount }
+                                     invitedBy, roomId, daily, giftSentToday, invitedCount,
+                                     friendRequests }   friendRequests — сколько зовут в друзья
                                  roomId — незаконченная комната игрока или null;
                                  daily = { claimedToday, streak, amount } — бонус сегодня (этап 9.3)
 POST /me/daily-bonus             → { amount, streak, balance }; 409 already claimed today
 DELETE /me                       → { ok } — удалить аккаунт навсегда (требование Apple/Google):
                                  аккаунт, фото, друзья, статистика; в старых комнатах имя —
                                  «Удалённый игрок». 409 finish your game first { roomId }
-GET  /players/:code              → { code, name, stats, isFriend }   карточка игрока; 404
+GET  /players/:code              → { code, name, stats, isFriend, friendStatus }   карточка игрока;
+                                 friendStatus: friends | outgoing | incoming | none; 404
 GET  /me/profile                 → { id, name, code, balance, createdAt, stats, friendsCount }
                                  stats — за всё время: rooms, deals, mains, wins, losses, raz, dva,
                                  kon, garba, coinsWon, coinsLost, maxWin, maxRisk (этап 9.4)
@@ -206,8 +208,13 @@ GET  /avatars/:id?v=...          картинка, без токена; «v» �
 GET  /rating?scope=friends|all   → { scope, total, myPlace, players: [{ place, code, name, avatar,
                                      rating, me }] }   friends — я и друзья; all — первые 50
 GET  /friends                    → { friends: [{ code, name, avatar, rating, stats, roomId }] }
-POST /friends                    { code }   → 201 { code, name }; 404 player not found;
-                                 400 self; 409 already friends. Дружба сразу взаимная
+POST /friends                    { code }   → 202 { status: 'requested' } — заявка (с 19.09.2026
+                                 дружба только с согласия второго); 201 { status: 'friends' } — он
+                                 уже звал меня; 404 player not found; 400 self; 409 already friends
+                                 | request already sent
+GET  /friends/requests           → { incoming: [...], outgoing: [...] } — { code, name, avatar, rating }
+POST /friends/requests/:code/accept | decline | cancel   — принять / отклонить входящую /
+                                 отменить свою; отклонённому не сообщаем
 DELETE /friends/:code            → { ok }; 404 not a friend
 POST /gifts                      { toCode, amount }  → { amount, balance, to: { code, name } }
                                  amount 100..1000 кратно 100; ошибки: 400 bad amount | self |

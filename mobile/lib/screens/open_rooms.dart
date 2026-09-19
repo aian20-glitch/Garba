@@ -184,3 +184,11 @@ class _OpenRoomsScreenState extends State<OpenRoomsScreen> {
     );
   }
 }
+
+// Карточка другого игрока из-за стола или лобби: добавить в друзья, подарок.
+// Себя не открываем; у игрока без кода (старое состояние) — тоже ничего.
+void openPlayerCard(BuildContext context, Map<String, dynamic> player) {
+  final code = player['code']?.toString();
+  if (code == null || player['id']?.toString() == Session.id) return;
+  Navigator.push(context, MaterialPageRoute(builder: (_) => PlayerScreen(code: code)));
+}

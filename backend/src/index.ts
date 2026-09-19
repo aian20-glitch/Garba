@@ -7,6 +7,11 @@ import { dirname } from 'node:path';
 import { Server as SocketServer } from 'socket.io';
 
 import {
+  acceptFriend,
+  dropRequests,
+  friendRequests,
+  friendStatus,
+  requestFriend,
   deleteAccountData,
   markReferralPaid,
   unpaidInviter,
@@ -517,6 +522,8 @@ app.get('/me', (req, res) => {
     },
     giftSentToday: giftedOn(db, account.id, today),
     invitedCount: invitedCount(db, account.id),
+    // Сколько человек зовут меня в друзья — цифра у кнопки «ДРУЗЬЯ».
+    friendRequests: friendRequests(db, account.id).incoming.length,
   });
 });
 
@@ -711,6 +718,8 @@ app.get('/players/:code', (req, res) => {
     rating: shownRating(accountRating(player.id)),
     stats: profileStats(db, player.id),
     isFriend: areFriends(db, me.id, player.id),
+    // friends | outgoing (я позвал) | incoming (он зовёт меня) | none
+    friendStatus: friendStatus(db, me.id, player.id),
   });
 });
 
@@ -773,12 +782,59 @@ app.post('/friends', (req, res) => {
   if (friend.id === me.id) {
     return res.status(400).json({ error: 'self' });
   }
-  if (areFriends(db, me.id, friend.id)) {
+  // Дружба — только с согласия второго: отправляем заявку (решение владельца, 19.09.2026).
+  // Он уже звал меня — сразу друзья.
+  const result = requestFriend(db, me.id, friend.id);
+  if (result === 'already friends') {
     return res.status(409).json({ error: 'already friends' });
   }
-  addFriend(db, me.id, friend.id);
-  console.log(`[FRIENDS] ${me.name} + ${friend.name}`);
-  return res.status(201).json({ code: friend.code, name: friend.name });
+  if (result === 'already sent') {
+    return res.status(409).json({ error: 'request already sent' });
+  }
+  console.log(`[FRIENDS] ${me.name} → ${friend.name}: ${result === 'friends' ? 'друзья' : 'заявка'}`);
+  return res
+    .status(result === 'friends' ? 201 : 202)
+    .json({ status: result, code: friend.code, name: friend.name });
+});
+
+// Заявки в друзья: кто зовёт меня и кого зову я.
+app.get('/friends/requests', (req, res) => {
+  const me = accountOf(req);
+  if (!me) {
+    return res.status(401).json({ error: 'unauthorized' });
+  }
+  const { incoming, outgoing } = friendRequests(db, me.id);
+  const card = (a: Account) => ({
+    code: a.code,
+    name: a.name,
+    avatar: avatarPath(db, a.id),
+    rating: shownRating(accountRating(a.id)),
+  });
+  return res.json({ incoming: incoming.map(card), outgoing: outgoing.map(card) });
+});
+
+// Принять заявку, отклонить её или отменить свою. Отклонённому ничего не сообщаем.
+app.post('/friends/requests/:code/:action', (req, res) => {
+  const me = accountOf(req);
+  if (!me) {
+    return res.status(401).json({ error: 'unauthorized' });
+  }
+  const other = findAccountByCode(db, normalizeCode(req.params.code));
+  if (!other) {
+    return res.status(404).json({ error: 'player not found' });
+  }
+  const status = friendStatus(db, me.id, other.id);
+  const action = req.params.action;
+  if (action === 'accept' && status === 'incoming') {
+    acceptFriend(db, me.id, other.id);
+    console.log(`[FRIENDS] ${me.name} + ${other.name}`);
+    return res.json({ status: 'friends' });
+  }
+  if ((action === 'decline' && status === 'incoming') || (action === 'cancel' && status === 'outgoing')) {
+    dropRequests(db, me.id, other.id);
+    return res.json({ status: 'none' });
+  }
+  return res.status(404).json({ error: 'no such request' });
 });
 
 app.delete('/friends/:code', (req, res) => {
@@ -2022,6 +2078,13 @@ function finishRound(room: Room, won: boolean[], instantIndex = -1) {
   startVoteIfNobodyCanPlay(room);
 }
 
+// Код игрока по id — для карточки из-за стола. Меняется только при удалении аккаунта.
+const codes = new Map<string, string | null>();
+function codeOf(id: string): string | null {
+  if (!codes.has(id)) codes.set(id, getAccount(db, id)?.code ?? null);
+  return codes.get(id)!;
+}
+
 function publicRoom(room: Room, viewerId?: string) {
   let game: any = null;
 
@@ -2255,6 +2318,8 @@ function publicRoom(room: Room, viewerId?: string) {
       const atTable = room.rating?.[p.id];
       return {
         ...p,
+        // Код игрока — нажать на него за столом и открыть карточку (в друзья, подарок).
+        code: codeOf(p.id),
         avatar: avatarPath(db, p.id),
         rating: shownRating(atTable ? liveRating(room, p.id) : accountRating(p.id)),
         ratingStart: shownRating(
