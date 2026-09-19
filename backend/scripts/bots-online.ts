@@ -48,9 +48,15 @@ function wantsRaz(hand: any[], razSuit: string): boolean {
 
 // Что бот должен сделать в этом состоянии (он видит комнату своими глазами).
 function nextAction(bot: Bot, room: any): Action | null {
+  const at = `/rooms/${roomId}`;
+  // Комнату создал бот (открытая комната для «Быстрой игры») — он и запускает игру,
+  // как только все места заняты.
+  if (room.status === 'lobby') {
+    if (room.creatorId !== bot.id || room.players.length < room.capacity) return null;
+    return { path: `${at}/start`, body: {}, say: 'начинает игру', delay: DEAL_MS };
+  }
   const g = room.game;
   if (!g || room.status === 'finished' || room.pause) return null;
-  const at = `/rooms/${roomId}`;
 
   // Кто-то предложил закончить игру (§12.3): боты согласны — решают живые игроки.
   // Пока голосование идёт, раздавать нельзя.
