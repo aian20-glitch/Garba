@@ -2,7 +2,9 @@
 
 import { check, section } from './check.js';
 import {
+  canConcede,
   firstLeader,
+  mainStatuses,
   mainStatus,
   nextSeat,
   playableCards,
@@ -109,3 +111,19 @@ for (let round = 0; round < 1000; round++) {
 check('остановка не раньше 3-й взятки, исход всегда решён, больше одного победителя не бывает', broken, 0);
 console.log(`      остановились на 3-й: ${stopAt[3]}, на 4-й: ${stopAt[4]}, на 5-й: ${stopAt[5]}`);
 
+
+section('сдаться (§10.7, решение владельца правил)');
+check('главный в розыгрыше — можно', canConcede({ stage: 'playing', isMain: true, alreadyConceded: false }), true);
+check('взявший спецкарту, пока сбрасывает карту — можно', canConcede({ stage: 'special_discard', isMain: true, alreadyConceded: false }), true);
+check('противник — нельзя (ему нечего проигрывать)', canConcede({ stage: 'playing', isMain: false, alreadyConceded: false }), false);
+check('второй раз — нельзя', canConcede({ stage: 'playing', isMain: true, alreadyConceded: true }), false);
+check('в торгах и после раздачи — нельзя', [canConcede({ stage: 'bidding', isMain: true, alreadyConceded: false }), canConcede({ stage: 'round_done', isMain: true, alreadyConceded: false })], [false, false]);
+// Пример владельца правил: на руках у главного три козыря, одну уже побили — дальше смысла нет.
+check('один главный сдался после 2-й взятки (у него 1) — сразу проиграл, раздача кончается',
+  mainStatuses([{ playerId: 'Серик' }], { Серик: 1 }, 2, ['Серик']), ['lost']);
+check('двое РАЗ, Серик сдался — Дана доигрывает (её исход ещё открыт)',
+  mainStatuses([{ playerId: 'Серик' }, { playerId: 'Дана' }], { Серик: 1, Дана: 1 }, 2, ['Серик']), ['lost', 'open']);
+check('Дана потом взяла 3 — выиграла, Серик проиграл',
+  mainStatuses([{ playerId: 'Серик' }, { playerId: 'Дана' }], { Серик: 1, Дана: 3 }, 4, ['Серик']), ['lost', 'won']);
+check('никто не сдавался — как раньше, по взяткам',
+  mainStatuses([{ playerId: 'Серик' }], { Серик: 1 }, 2, []), ['open']);

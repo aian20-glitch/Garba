@@ -86,3 +86,25 @@ export function mainStatus(tricks: number, tricksPlayed: number): MainStatus {
 
   return 'open';
 }
+
+// Сдаться (§10.7, решение владельца правил): любой главный — РАЗ, ДВА, КОН, спецкарта —
+// в любой момент розыгрыша (и пока взявший спецкарту сбрасывает карту), один раз.
+export function canConcede(g: { stage: string; isMain: boolean; alreadyConceded: boolean }): boolean {
+  if (!g.isMain || g.alreadyConceded) return false;
+  return g.stage === 'playing' || g.stage === 'special_discard';
+}
+
+// Судьба каждого главного с учётом сдавшихся: сдался — проиграл сразу, остальные —
+// по взяткам (§10.5a). Раздача кончается, когда не осталось 'open'.
+export function mainStatuses(
+  mains: { playerId: string }[],
+  tricksWon: Record<string, number>,
+  tricksPlayed: number,
+  concededIds: string[],
+): MainStatus[] {
+  return mains.map((m) =>
+    concededIds.includes(m.playerId)
+      ? 'lost'
+      : mainStatus(tricksWon[m.playerId] ?? 0, tricksPlayed),
+  );
+}

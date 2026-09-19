@@ -86,7 +86,6 @@ import {
 import { dealsUntilNextVote, tallyVote, type VoteChoice } from './vote.js';
 import {
   contestResult,
-  canConcede,
   nextActor,
   passUnaffordable,
   passCard,
@@ -99,6 +98,8 @@ import {
   type SpecialKind,
 } from './special.js';
 import {
+  canConcede,
+  mainStatuses,
   firstLeader,
   countsAsGarba,
   instantWinIndex,
@@ -168,7 +169,7 @@ type MainResult = MainPlayer & {
   instant: boolean;
   // Это ГАРБА — только при РАЗ и КОНЕ: анимация и статистика. При ДВА — нет.
   garba: boolean;
-  // Сдался до первого хода, взяв спецкарту (§7.6): платит как при проигрыше.
+  // Сдался посреди раздачи (§10.7): платит как при проигрыше.
   conceded: boolean;
 };
 
@@ -247,6 +248,8 @@ type GameState = {
   // Пустые раздачи подряд (все ПАС). Сбрасывается, когда кто-то сыграл (§9.3).
   emptyStreak: number;
   lastAnte: AnteRecord | null;
+  // Главные, которые сдались в этой раздаче (§10.7). Нет в старых сохранённых комнатах.
+  concededIds?: string[];
   // Кто-то опустился ниже базового кона — доигрываем, пока кон не заберут (§12.1).
   closing: boolean;
   // Почему закрылась комната: кон забрали (§12.1), кон никто не может взять
@@ -1276,6 +1279,7 @@ function emptyPlayState() {
     playedTricks: [] as PlayedTrick[],
     tricksWon: {} as Record<string, number>,
     result: null,
+    concededIds: [] as string[],
   };
 }
 
@@ -1605,9 +1609,8 @@ function playCard(
   // Раздача заканчивается, как только исход ясен для всех главных, —
   // до пятой взятки доигрывать не нужно (RULES.md §10.5a).
   const tricksPlayed = game.trickNumber;
-  const statuses = game.mains.map((m) =>
-    mainStatus(game.tricksWon[m.playerId] ?? 0, tricksPlayed),
-  );
+  // Сдавшийся главный уже проиграл, но карты кладёт как обычный противник (§10.7).
+  const statuses = mainStatuses(game.mains, game.tricksWon, tricksPlayed, game.concededIds ?? []);
   const decided = statuses.every((s) => s !== 'open');
 
   if (decided || tricksPlayed >= TRICKS_PER_ROUND) {
@@ -1627,7 +1630,7 @@ function playCard(
 // Раздача сыграна: считаем деньги, передаём раздачу, проверяем конец комнаты.
 // won[i] — выиграл ли game.mains[i].
 // instantIndex — индекс главного, выигравшего сразу, без розыгрыша, или -1.
-function finishRound(room: Room, won: boolean[], instantIndex = -1, conceded = false) {
+function finishRound(room: Room, won: boolean[], instantIndex = -1) {
   const game = room.game!;
   const base = roomBaseKon(room);
 
@@ -1660,7 +1663,7 @@ function finishRound(room: Room, won: boolean[], instantIndex = -1, conceded = f
     delta: settlement.deltas[m.playerId] ?? 0,
     instant: i === instantIndex,
     garba: i === instantIndex && countsAsGarba(m.declaration),
-    conceded,
+    conceded: (game.concededIds ?? []).includes(m.playerId),
   }));
 
   // Партия сыграна — у каждого за столом. Главным — ещё победа или поражение.
@@ -1871,8 +1874,11 @@ function publicRoom(room: Room, viewerId?: string) {
               canAffordSpecial(room, viewerId, r),
             )
           : [],
-      // Может ли запросивший сдаться — взял спецкарту и ещё никто не ходил (§7.6).
+      // Может ли запросивший сдаться и сколько тогда положит в кон (§10.7).
       myCanConcede: viewerId !== undefined && concedeAllowed(room.game, viewerId),
+      myConcedeLoss: viewerId !== undefined ? concedeLoss(room, viewerId) : 0,
+      // Кто из главных уже сдался — он доигрывает как обычный противник.
+      concededIds: room.game.concededIds ?? [],
       // Владелец спецкарты сбрасывает одну свою карту — кроме самой спецкарты (§7.5).
       myDiscardOptions:
         room.game.stage === 'special_discard' &&
@@ -2454,18 +2460,29 @@ app.post('/rooms/:id/discard', (req, res) => {
   return res.json(publicRoom(room, String(playerId)));
 });
 
-// Взял спецкарту и ещё никто не ходил — можно сдаться (§7.6).
+// Главный может сдаться в любой момент розыгрыша (§10.7).
 function concedeAllowed(game: GameState, playerId: string): boolean {
-  const outcome = game.special?.outcome;
   return canConcede({
     stage: game.stage,
-    isHolder: !!outcome && outcome !== 'nobody' && outcome.holderId === playerId,
-    cardsOnTable: game.playedTricks.length + game.currentTrick.length,
+    isMain: game.mains.some((m) => m.playerId === playerId),
+    alreadyConceded: (game.concededIds ?? []).includes(playerId),
   });
 }
 
-// Взявший спецкарту сдаётся до первого хода: раздача проиграна без розыгрыша,
-// платит как при обычном проигрыше — кон × риск (§7.6, §11.7).
+// Сколько положит в кон главный, если сдастся: как при проигрыше — ставка его заявки
+// × риск спецкарты (§11). Показываем в окне подтверждения.
+function concedeLoss(room: Room, playerId: string): number {
+  const game = room.game!;
+  const main = game.mains.find((m) => m.playerId === playerId);
+  if (!main) return 0;
+  const outcome = game.special?.outcome;
+  const risk = outcome && outcome !== 'nobody' ? outcome.risk : 1;
+  return stakeFor(main.declaration, game.kon, roomBaseKon(room)) * risk;
+}
+
+// Главный сдаётся: сразу проиграл, платит как при проигрыше (§10.7). Если он один —
+// раздача кончается. Если главных двое — второй доигрывает, а сдавшийся кладёт карты
+// как обычный противник; раздача кончается, когда решится и судьба второго.
 app.post('/rooms/:id/concede', (req, res) => {
   const room = rooms.get(req.params.id);
 
@@ -2475,15 +2492,21 @@ app.post('/rooms/:id/concede', (req, res) => {
 
   const game = room.game;
   const { playerId } = req.body ?? {};
+  const id = String(playerId);
 
-  if (!concedeAllowed(game, String(playerId))) {
+  if (!concedeAllowed(game, id)) {
     return res.status(409).json({ error: 'cannot concede now', stage: game.stage });
   }
 
-  finishRound(room, [false], -1, true);
-  console.log(`[ROOM ${room.id}] ${game.mains[0].playerName} сдался со спецкартой`);
+  game.concededIds = [...(game.concededIds ?? []), id];
+  const name = game.mains.find((m) => m.playerId === id)!.playerName;
+  const statuses = mainStatuses(game.mains, game.tricksWon, game.playedTricks.length, game.concededIds);
+  if (statuses.every((st) => st !== 'open')) {
+    finishRound(room, statuses.map((st) => st === 'won'));
+  }
+  console.log(`[ROOM ${room.id}] ${name} сдался`);
 
-  return res.json(publicRoom(room, String(playerId)));
+  return res.json(publicRoom(room, id));
 });
 
 // Выигравший КОН называет козырь: по РАЗ (масть РАЗ) или по ДВА (§6.7).

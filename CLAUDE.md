@@ -219,7 +219,7 @@ POST /rooms/:id/vote             { choice }   choice: continue | split (этап
 POST /rooms/:id/kon-trump        { suit }     выигравший КОН называет козырь (этап 6)
 POST /rooms/:id/special          { action, risk? }   спецкарта: action take | pass (этап 7)
 POST /rooms/:id/discard          { cardId }   владелец спецкарты сбрасывает карту (этап 7)
-POST /rooms/:id/concede          {}           взявший спецкарту сдаётся до первого хода (§7.6):
+POST /rooms/:id/concede          {}           главный сдаётся в любой момент розыгрыша (§10.7):
                                               платит как при проигрыше; 409 cannot concede now
 POST /rooms/:id/react            { emoji }    смайлик (этап 9.7): только в round_done и room_done;
                                  409 не сейчас, 400 не из набора, 429 чаще раза в 2 секунды
@@ -406,7 +406,8 @@ pause: null | { players: [{ id, name, secondsLeft }] }   — на уровне �
   или `'nobody'` (тогда обычные торги). Взявший — главный как РАЗ, проигрыш × `risk`.
 - `game.mySpecialRisks` — какие множители может назвать запросивший (уже с учётом баланса:
   кон × риск); пусто, если не его очередь.
-- `game.myCanConcede` — запросивший взял спецкарту и ещё никто не ходил: можно сдаться (§7.6).
+- `game.myCanConcede` — запросивший главный и может сдаться (§10.7); `game.myConcedeLoss` — сколько
+  положит в кон; `game.concededIds` — кто уже сдался (при двух главных доигрывает противником);
   `game.result[].conceded` — главный сдался (платит как при проигрыше).
 - `game.myDiscardOptions` — id карт, которые владелец спецкарты может сбросить (не саму спецкарту).
   Сброшенная карта хранится в `game.discardedCard` и наружу не отдаётся.

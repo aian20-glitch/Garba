@@ -2988,15 +2988,17 @@ class _GameTableScreenState extends State<GameTableScreen> {
     }
   }
 
-  // Сдаться со спецкартой до первого хода (RULES.md §7.6) — сначала спрашиваем.
-  Future<void> confirmConcede(int loss) async {
+  // Главный сдаётся — признаёт поражение в раздаче (RULES.md §10.7). Сначала спрашиваем.
+  // twoMains — главных двое: сдавшийся доигрывает как обычный противник.
+  Future<void> confirmConcede(int loss, bool twoMains) async {
     final ok = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
         title: const Text('Сдаться?'),
         content: Text(
-          'Раздача будет проиграна без розыгрыша.\n'
-          'Вы положите в кон ${fmtCoins(loss)} — как при обычном проигрыше.',
+          'Вы признаёте поражение в этой раздаче.\n'
+          'Положите в кон ${fmtCoins(loss)} — как при обычном проигрыше.'
+          '${twoMains ? '\nВторой главный доигрывает, а вы кладёте карты как обычный противник.' : ''}',
         ),
         actions: [
           TextButton(
@@ -3820,6 +3822,26 @@ class _GameTableScreenState extends State<GameTableScreen> {
       );
     }
 
+    // Главный видит, что не выиграет, — может сдаться в любой момент розыгрыша (§10.7).
+    // Разрешает и считает, сколько он положит в кон, сервер.
+    final canConcede = game['myCanConcede'] == true;
+    final concedeLoss = (game['myConcedeLoss'] as num?)?.toInt() ?? 0;
+    final concededIds = ((game['concededIds'] as List?) ?? const [])
+        .map((e) => e.toString())
+        .toSet();
+    Widget concedeButton() => Padding(
+          padding: const EdgeInsets.only(top: 6),
+          child: OutlinedButton.icon(
+            style: OutlinedButton.styleFrom(
+              foregroundColor: Colors.redAccent,
+              side: const BorderSide(color: Colors.redAccent),
+            ),
+            onPressed: sendingSpecial ? null : () => confirmConcede(concedeLoss, mains.length > 1),
+            icon: const Icon(Icons.flag),
+            label: Text('СДАТЬСЯ (в кон ${fmtCoins(concedeLoss)})'),
+          ),
+        );
+
     // Круглый стол (RULES.md §2): я внизу, остальные — по кругу против часовой стрелки.
     // Следующий в room.players — сосед справа: на экране он правее меня, дальше вверх и
     // влево, и так обратно ко мне. Карта взятки лежит перед игроком, ближе к центру.
@@ -3890,7 +3912,9 @@ class _GameTableScreenState extends State<GameTableScreen> {
           final label = specialOutcome != null && special != null
               ? '${specialName(special['kind'].toString())} ×${specialOutcome['risk']}'
               : mainDecl;
-          bidText = '$label · взяток ${tricksWon[pId] ?? 0}';
+          bidText = concededIds.contains(pId)
+              ? '$label · сдался'
+              : '$label · взяток ${tricksWon[pId] ?? 0}';
         } else if (isPlaying || isRoundDone) {
           bidText = 'взяток: ${tricksWon[pId] ?? 0}';
         } else if (bidMatches.isEmpty) {
@@ -4194,23 +4218,6 @@ class _GameTableScreenState extends State<GameTableScreen> {
       );
     }
 
-    // Взял спецкарту и видит, что не выиграет, — может сдаться до первого хода (§7.6).
-    // Разрешает сервер (myCanConcede); платит как при проигрыше — кон × риск.
-    final canConcede = game['myCanConcede'] == true;
-    final concedeLoss = kon * ((specialOutcome?['risk'] as num?)?.toInt() ?? 1);
-    Widget concedeButton() => Padding(
-          padding: const EdgeInsets.only(top: 6),
-          child: OutlinedButton.icon(
-            style: OutlinedButton.styleFrom(
-              foregroundColor: Colors.redAccent,
-              side: const BorderSide(color: Colors.redAccent),
-            ),
-            onPressed: sendingSpecial ? null : () => confirmConcede(concedeLoss),
-            icon: const Icon(Icons.flag),
-            label: Text('СДАТЬСЯ (в кон ${fmtCoins(concedeLoss)})'),
-          ),
-        );
-
     // Итог раздачи — поверх стола, чтобы не искать его под столом: кто что сказал,
     // выиграл или проиграл, сколько забрал из кона или положил в кон (RULES.md §11).
     Widget? resultPopup;
@@ -4233,7 +4240,7 @@ class _GameTableScreenState extends State<GameTableScreen> {
                       ? 'КОН по $konAs'
                       : r['declaration'].toString(),
               how: r['conceded'] == true
-                  ? 'сдался до первого хода'
+                  ? 'сдался — признал поражение'
                   : r['garba'] == true
                   ? 'ГАРБА — без розыгрыша'
                   : r['instant'] == true
