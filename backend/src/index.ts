@@ -2,6 +2,7 @@ import express from 'express';
 import cors from 'cors';
 import { createServer } from 'node:http';
 import { mkdirSync } from 'node:fs';
+import { randomBytes } from 'node:crypto';
 import { dirname } from 'node:path';
 import { Server as SocketServer } from 'socket.io';
 
@@ -98,6 +99,7 @@ import {
   type SpecialKind,
 } from './special.js';
 import { canProposeEnd, endVoteOutcome, END_VOTE_MS, type EndVote } from './endVote.js';
+import { addMiss, clockFor, pickRandom, TURN_MS, turnSecondsLeft, type TurnClock } from './turnTimer.js';
 import {
   canConcede,
   mainStatuses,
@@ -256,6 +258,10 @@ type GameState = {
   endVote?: EndVote | null;
   endProposedIds?: string[];
   lastEndVote?: { result: 'rejected' | 'expired'; byName: string | null } | null;
+  // Время на ход (§13a): сколько раз подряд за игрока сходил таймер и кто «ушёл» —
+  // с какого момента идёт его 5-минутный отсчёт. Нет в старых сохранённых комнатах.
+  missedTurns?: Record<string, number>;
+  awayAt?: Record<string, number>;
   // Кто-то опустился ниже базового кона — доигрываем, пока кон не заберут (§12.1).
   closing: boolean;
   // Почему закрылась комната: кон забрали (§12.1), кон никто не может взять
@@ -774,8 +780,22 @@ app.post('/gifts', (req, res) => {
 // Всё про комнаты — только с токеном. Кто делает запрос, сервер знает сам:
 // playerId и name в теле запроса больше не нужны, а если пришли — не используются.
 // Так никто не может ходить за другого игрока или смотреть его карты.
+// Ход за игрока по таймеру (§13a) сервер делает запросом самому себе — через те же
+// проверки, запись в базу и рассылку, что и ход человека. Пропуск — случайный секрет
+// этого процесса, принимается только с этого же компьютера.
+const INTERNAL_SECRET = randomBytes(24).toString('hex');
+const LOOPBACK = ['127.0.0.1', '::1', '::ffff:127.0.0.1'];
+
+function internalAccount(req: express.Request): Account | null {
+  if (req.headers['x-garba-internal'] !== INTERNAL_SECRET) return null;
+  if (!LOOPBACK.includes(req.socket.remoteAddress ?? '')) return null;
+  return getAccount(db, String(req.headers['x-garba-player'] ?? ''));
+}
+
 app.use('/rooms', (req, res, next) => {
-  const account = findAccountByToken(db, tokenFromHeader(req.headers.authorization));
+  const internal = internalAccount(req);
+  res.locals.internal = !!internal;
+  const account = internal ?? findAccountByToken(db, tokenFromHeader(req.headers.authorization));
   if (!account) {
     return res.status(401).json({ error: 'unauthorized' });
   }
@@ -888,7 +908,11 @@ function tracksPresence(room: Room): boolean {
 }
 
 function isPaused(room: Room): boolean {
-  return tracksPresence(room) && Object.keys(presenceOf(room.id).disconnectedAt).length > 0;
+  if (!tracksPresence(room)) return false;
+  return (
+    Object.keys(presenceOf(room.id).disconnectedAt).length > 0 ||
+    Object.keys(room.game?.awayAt ?? {}).length > 0
+  );
 }
 
 // У кого сейчас открыт сокет к комнате.
@@ -925,8 +949,10 @@ function closeByDisconnect(room: Room, leftIds: string[]) {
   game.activeBidderId = null;
   game.turnPlayerId = null;
   game.vote = null;
+  game.awayAt = {};
   room.status = 'finished';
   presence.delete(room.id);
+  turnClocks.delete(room.id);
 
   const names = room.players.filter((p) => leftIds.includes(p.id)).map((p) => p.name);
   console.log(
@@ -948,8 +974,14 @@ function sweepPresence() {
     );
     presence.set(room.id, { lastSeen: step.lastSeen, disconnectedAt: step.disconnectedAt });
 
-    if (step.expired.length > 0) {
-      closeByDisconnect(room, step.expired);
+    // Ушедшие (два хода подряд за них ходил таймер, §13a) — те же 5 минут.
+    const awayExpired = Object.entries(room.game!.awayAt ?? {})
+      .filter(([, at]) => now - at >= presenceOpts.timeoutMs)
+      .map(([id]) => id);
+    const expired = [...new Set([...step.expired, ...awayExpired])];
+
+    if (expired.length > 0) {
+      closeByDisconnect(room, expired);
     } else if (step.changed) {
       const off = room.players.filter((p) => step.disconnectedAt[p.id] !== undefined);
       console.log(
@@ -983,14 +1015,18 @@ setInterval(() => {
 
 // Запрос игрока к своей комнате — тоже знак, что он на месте (приложение без сокета
 // опрашивает сервер). На паузе ходы не принимаются: ждём отключившегося.
-const LOBBY_ACTIONS = ['/join', '/leave', '/start'];
+const LOBBY_ACTIONS = ['/join', '/leave', '/start', '/back'];
 app.use('/rooms/:id', (req, res, next) => {
   const room = rooms.get(req.params.id);
   if (!room || !tracksPresence(room)) return next();
 
   const playerId = me(res).id;
-  if (room.players.some((p) => p.id === playerId)) {
+  // Ход по таймеру (§13a) — не знак, что игрок на связи: его делает сервер.
+  if (room.players.some((p) => p.id === playerId) && !res.locals.internal) {
     presence.set(room.id, touch(presenceOf(room.id), playerId, Date.now()));
+    // Сам что-то нажал — он за столом: пропуски с нуля, «ушёл» снимается,
+    // пауза из-за него — тоже (§13a).
+    if (req.method === 'POST') markBack(room, playerId);
   }
 
   if (req.method === 'POST' && !LOBBY_ACTIONS.includes(req.path) && isPaused(room)) {
@@ -1004,16 +1040,188 @@ function publicPause(room: Room) {
   if (!isPaused(room)) return null;
   const now = Date.now();
   const { disconnectedAt } = presenceOf(room.id);
+  const awayAt = room.game?.awayAt ?? {};
   return {
     players: room.players
-      .filter((p) => disconnectedAt[p.id] !== undefined)
+      .filter((p) => disconnectedAt[p.id] !== undefined || awayAt[p.id] !== undefined)
       .map((p) => ({
         id: p.id,
         name: p.name,
-        secondsLeft: secondsLeft(disconnectedAt[p.id], now, presenceOpts.timeoutMs),
+        // offline — пропала связь (§13); away — связь есть, но два хода подряд за него
+        // сходил таймер (§13a). Вернуться — нажать «Я ЗДЕСЬ».
+        reason: disconnectedAt[p.id] !== undefined ? 'offline' : 'away',
+        secondsLeft: secondsLeft(
+          disconnectedAt[p.id] ?? awayAt[p.id],
+          now,
+          presenceOpts.timeoutMs,
+        ),
       })),
   };
 }
+
+// --- Время на ход (§13a) ---
+
+const turnOpts = { turnMs: Number(process.env.GARBA_TURN_MS ?? TURN_MS) };
+const turnClocks = new Map<string, TurnClock>();
+const turnBusy = new Set<string>();
+
+type TimedMove = { playerId: string; path: string; body: Record<string, unknown> };
+
+// Кого сейчас ждём и что сделать за него, если не успел. key меняется, как только
+// ждём другого решения, — тогда отсчёт 20 секунд начинается заново.
+function awaitedMoves(room: Room): { key: string; moves: TimedMove[] } | null {
+  const g = room.game;
+  if (!g || room.status !== 'started') return null;
+
+  switch (g.stage) {
+    case 'dealer_found':
+    case 'awaiting_deal':
+    case 'round_done':
+      // Пока голосуют «закончить игру», раздавать нельзя — ждём итога (§12.3).
+      if (g.endVote) return null;
+      return {
+        key: `deal:${g.stage}:${g.dealerId}:${g.kon}:${g.emptyStreak}`,
+        moves: [{ playerId: g.dealerId, path: 'dealer/continue', body: {} }],
+      };
+    case 'bidding':
+      if (!g.activeBidderId) return null;
+      return {
+        key: `bid:${g.bids.length}:${g.activeBidderId}`,
+        moves: [{ playerId: g.activeBidderId, path: 'bid', body: { bid: 'ПАС' } }],
+      };
+    case 'playing': {
+      const id = g.turnPlayerId;
+      if (!id || !g.trumpSuit) return null;
+      const cards = playableCards(g.hands[id] ?? [], g.currentTrick, g.trumpSuit);
+      if (cards.length === 0) return null;
+      return {
+        key: `play:${g.playedTricks.length}:${g.currentTrick.length}:${id}`,
+        moves: [{ playerId: id, path: 'play', body: { cardId: pickRandom(cards).id } }],
+      };
+    }
+    case 'special': {
+      const id = g.special ? nextActor(g.special.contest) : null;
+      if (!id) return null;
+      const c = g.special!.contest;
+      return {
+        key: `special:${c.phase}:${c.passed.length}:${c.holderId}:${c.risk}:${id}`,
+        moves: [{ playerId: id, path: 'special', body: { action: 'pass' } }],
+      };
+    }
+    case 'special_discard': {
+      const id = g.mains[0]?.playerId;
+      if (!id || !g.special) return null;
+      const options = (g.hands[id] ?? []).filter((c) => c.id !== g.special!.card.id);
+      if (options.length === 0) return null;
+      return {
+        key: `discard:${id}`,
+        moves: [{ playerId: id, path: 'discard', body: { cardId: pickRandom(options).id } }],
+      };
+    }
+    case 'kon_trump': {
+      const id = g.mains[0]?.playerId;
+      if (!id || !g.razSuit) return null;
+      const options = konTrumpOptions(room.capacity as Capacity, g.razSuit);
+      const asRaz = options.find((o) => o.as === 'РАЗ') ?? options[0];
+      return {
+        key: `kon:${id}`,
+        moves: [{ playerId: id, path: 'kon-trump', body: { suit: asRaz.suit } }],
+      };
+    }
+    case 'vote': {
+      if (!g.vote) return null;
+      // Молчание в голосовании — «делим» (решение владельца правил).
+      const silent = room.players.filter((p) => !g.vote!.votes[p.id]);
+      return {
+        key: `vote:${g.dealerId}:${g.kon}`,
+        moves: silent.map((p) => ({ playerId: p.id, path: 'vote', body: { choice: 'split' } })),
+      };
+    }
+    default:
+      return null;
+  }
+}
+
+// Часы хода этой комнаты. Заводятся, как только появилось новое решение, которого ждём.
+function turnClockOf(room: Room): TurnClock | null {
+  if (isPaused(room)) return null;
+  const awaited = awaitedMoves(room);
+  const clock = clockFor(turnClocks.get(room.id), awaited?.key ?? null, Date.now());
+  if (clock) turnClocks.set(room.id, clock);
+  else turnClocks.delete(room.id);
+  return clock;
+}
+
+// Сам что-то нажал — пропуски с нуля, «ушёл» снимается (§13a).
+function markBack(room: Room, playerId: string) {
+  const g = room.game;
+  if (!g) return;
+  if (g.missedTurns?.[playerId]) g.missedTurns = { ...g.missedTurns, [playerId]: 0 };
+  if (g.awayAt?.[playerId] !== undefined) {
+    const rest = { ...g.awayAt };
+    delete rest[playerId];
+    g.awayAt = rest;
+    console.log(`[ROOM ${room.id}] ${room.players.find((p) => p.id === playerId)?.name} вернулся`);
+  }
+}
+
+async function internalMove(roomId: string, move: TimedMove) {
+  await fetch(`http://127.0.0.1:${PORT}/rooms/${roomId}/${move.path}`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'x-garba-internal': INTERNAL_SECRET,
+      'x-garba-player': move.playerId,
+    },
+    body: JSON.stringify(move.body),
+  });
+}
+
+// Раз в секунду: у кого вышли 20 секунд — ходим за него; второй пропуск подряд — «ушёл».
+async function sweepTurns() {
+  const now = Date.now();
+  for (const room of rooms.values()) {
+    if (turnBusy.has(room.id)) continue;
+    const clock = turnClockOf(room);
+    if (!clock || now - clock.since < turnOpts.turnMs) continue;
+    const awaited = awaitedMoves(room);
+    if (!awaited) continue;
+
+    turnBusy.add(room.id);
+    turnClocks.delete(room.id);
+    try {
+      for (const move of awaited.moves) {
+        await internalMove(room.id, move);
+        const name = room.players.find((p) => p.id === move.playerId)?.name;
+        console.log(`[ROOM ${room.id}] время вышло — за ${name}: ${move.path} ${JSON.stringify(move.body)}`);
+        if (!room.game || room.status !== 'started') break;
+        const miss = addMiss(room.game.missedTurns ?? {}, move.playerId);
+        room.game.missedTurns = miss.missed;
+        if (miss.away && room.game.awayAt?.[move.playerId] === undefined) {
+          room.game.awayAt = { ...(room.game.awayAt ?? {}), [move.playerId]: Date.now() };
+          console.log(`[ROOM ${room.id}] ${name} ушёл — пауза, 5 минут на возврат`);
+        }
+      }
+      persistRoom(room);
+      await broadcastRoom(room.id);
+    } catch (e) {
+      console.error(`[ROOM ${room.id}] turn timeout failed:`, e);
+    } finally {
+      turnBusy.delete(room.id);
+    }
+  }
+}
+
+setInterval(() => {
+  sweepTurns().catch((e) => console.error('turn sweep failed:', e));
+}, 1000);
+
+// «Я здесь»: ушедший вернулся — сама отметка делается выше, в проверке присутствия.
+app.post('/rooms/:id/back', (req, res) => {
+  const room = rooms.get(req.params.id);
+  if (!room) return res.status(404).json({ error: 'room not found' });
+  return res.json(publicRoom(room, String(req.body?.playerId)));
+});
 
 // --- Статистика (ТЗ §2, §35, этап 9.4) ---
 // Комната копит статистику каждого игрока; при сохранении комнаты она пишется в базу,
@@ -1932,6 +2140,9 @@ function publicRoom(room: Room, viewerId?: string) {
           playerId: viewerId,
         }),
       lastEndVote: room.game.lastEndVote ?? null,
+      // Время на ход (§13a): сколько секунд осталось тому, кого ждём; кого ждём.
+      turnSecondsLeft: turnSecondsLeft(turnClockOf(room), Date.now(), turnOpts.turnMs),
+      awaitedIds: awaitedMoves(room)?.moves.map((m) => m.playerId) ?? [],
       // Владелец спецкарты сбрасывает одну свою карту — кроме самой спецкарты (§7.5).
       myDiscardOptions:
         room.game.stage === 'special_discard' &&

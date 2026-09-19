@@ -2709,7 +2709,8 @@ class _GameTableScreenState extends State<GameTableScreen> {
     // Пока пауза или голосование «закончить игру» — перерисовываем раз в секунду,
     // чтобы шёл обратный отсчёт.
     final gameRaw = data['game'];
-    if (data['pause'] is Map || (gameRaw is Map && gameRaw['endVote'] is Map)) {
+    if (data['pause'] is Map ||
+        (gameRaw is Map && (gameRaw['endVote'] is Map || gameRaw['turnSecondsLeft'] != null))) {
       pauseTicker ??= Timer.periodic(const Duration(seconds: 1), (_) {
         if (mounted) setState(() {});
       });
@@ -3317,6 +3318,20 @@ class _GameTableScreenState extends State<GameTableScreen> {
         : <Map<String, dynamic>>[];
     final paused = pausedPlayers.isNotEmpty;
     final pauseElapsed = DateTime.now().difference(pauseReceivedAt).inSeconds;
+    // Время на ход (RULES.md §13a): сколько секунд осталось тому, кого ждём.
+    final turnLeftRaw = (game['turnSecondsLeft'] as num?)?.toInt();
+    final turnLeft = turnLeftRaw == null
+        ? null
+        : math.max(0, turnLeftRaw - DateTime.now().difference(pauseReceivedAt).inSeconds);
+    final awaitedIds = ((game['awaitedIds'] as List?) ?? const [])
+        .map((e) => e.toString())
+        .toSet();
+    // Я «ушёл» (два хода подряд за меня сходил таймер) — нужно нажать «Я ЗДЕСЬ».
+    final pauseRaw0 = data['pause'];
+    final iAmAway = pauseRaw0 is Map &&
+        ((pauseRaw0['players'] as List?) ?? const []).any((p) =>
+            (p as Map)['id'].toString() == widget.currentPlayerId && p['reason'] == 'away');
+
     // Закончить игру по согласию (RULES.md §12.3).
     final endVoteRaw = game['endVote'];
     final endVote = endVoteRaw is Map ? Map<String, dynamic>.from(endVoteRaw) : null;
@@ -4287,12 +4302,26 @@ class _GameTableScreenState extends State<GameTableScreen> {
                     borderRadius: BorderRadius.circular(8),
                     border: Border.all(color: Colors.orangeAccent),
                   ),
-                  child: Text(
-                    '${pausedPlayers.map((p) => '${p['name']} отключился — ждём ${countdown(p)}').join('\n')}\n'
-                    'Не вернётся — игра прекращается, кон делится поровну между оставшимися, '
-                    'а ушедший теряет 1.0 рейтинга.',
-                    textAlign: TextAlign.center,
-                    style: const TextStyle(color: Colors.orangeAccent, fontSize: 13),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      Text(
+                        '${pausedPlayers.map((p) => '${p['name']} ${p['reason'] == 'away' ? 'отошёл (два хода за него сходил таймер)' : 'отключился'} — ждём ${countdown(p)}').join('\n')}\n'
+                        'Не вернётся — игра прекращается, кон делится поровну между оставшимися, '
+                        'а ушедший теряет 1.0 рейтинга.',
+                        textAlign: TextAlign.center,
+                        style: const TextStyle(color: Colors.orangeAccent, fontSize: 13),
+                      ),
+                      // Это я отошёл — одно нажатие, и игра продолжается (§13a).
+                      if (iAmAway)
+                        Padding(
+                          padding: const EdgeInsets.only(top: 6),
+                          child: FilledButton(
+                            onPressed: sendingSpecial ? null : () => sendSpecial('back', {}),
+                            child: const Text('Я ЗДЕСЬ'),
+                          ),
+                        ),
+                    ],
                   ),
                 ),
               if (closing && !isRoomDone)
@@ -4319,12 +4348,21 @@ class _GameTableScreenState extends State<GameTableScreen> {
                 ),
               const SizedBox(height: 10),
               Text(
-                headline,
+                // 20 секунд на ход (§13a): не успел — за тебя сходит сервер.
+                turnLeft != null && !paused && !isRoomDone
+                    ? '$headline · $turnLeft'
+                    : headline,
                 textAlign: TextAlign.center,
                 style: TextStyle(
                   fontSize: 24,
                   fontWeight: FontWeight.w900,
-                  color: myTurn ? Colors.greenAccent : Colors.white,
+                  color: awaitedIds.contains(widget.currentPlayerId) &&
+                          turnLeft != null &&
+                          turnLeft <= 5
+                      ? Colors.redAccent
+                      : myTurn
+                          ? Colors.greenAccent
+                          : Colors.white,
                 ),
               ),
               const SizedBox(height: 14),
