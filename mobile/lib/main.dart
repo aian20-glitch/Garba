@@ -3647,8 +3647,9 @@ class _GameTableScreenState extends State<GameTableScreen> {
               lastAnte['reason'] == 'three_izzhoga');
       final String anteText;
       if (isRefill && lastAnte['noRaz'] == true) {
-        // На РАЗ не хватает ни у кого — кон никто не заберёт, не доливаем (RULES.md §9.2a).
-        anteText = 'На РАЗ не хватает ни у кого — в кон не доливаем.';
+        // На РАЗ не хватает ни у кого — не доливаем (RULES.md §9.2a). Владелец правил
+        // просил об этом не писать: только «Все спасовали — пересдача».
+        anteText = '';
       } else if (isRefill && lastAnte['skipped'] == true) {
         // Доливают все или никто (RULES.md §9.2).
         final brokeIds = ((lastAnte['brokePlayerIds'] as List?) ?? const [])
@@ -3674,9 +3675,9 @@ class _GameTableScreenState extends State<GameTableScreen> {
       } else {
         why = 'Все спасовали — пересдача.';
       }
-      redealText = '$why\n$anteText';
+      redealText = anteText.isEmpty ? why : '$why\n$anteText';
       footer = Text(
-        '$why\n$anteText\nРаздаёт $dealerName.',
+        '$why\n${anteText.isEmpty ? '' : '$anteText\n'}Раздаёт $dealerName.',
         textAlign: TextAlign.center,
         style: const TextStyle(color: Colors.white70, fontSize: 16),
       );
