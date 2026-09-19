@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Иконка ГАРБА «Көк аспан»: небесный фон и золотые рога қошқар мүйіз.
+     Android 8+ сам накладывает маску (круг, скруглённый квадрат). -->
+<adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
+    <background android:drawable="@mipmap/ic_launcher_background"/>
+    <foreground android:drawable="@mipmap/ic_launcher_foreground"/>
+</adaptive-icon>

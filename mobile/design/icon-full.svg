@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 200" width="1024" height="1024"><defs>
+<symbol id="horn" viewBox="0 0 100 100"><g fill="none" stroke-linecap="round" stroke-linejoin="round">
+<path d="M50 88 C50 64 46 52 33 49 C19 46 12 34 18 24 C24 14 39 16 39 27 C39 34 31 37 27 31"/>
+<path d="M50 88 C50 64 54 52 67 49 C81 46 88 34 82 24 C76 14 61 16 61 27 C61 34 69 37 73 31"/>
+<path d="M50 42 L56 34 L50 26 L44 34 Z"/></g></symbol>
+<linearGradient id="sky" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#19b7d3"/><stop offset="1" stop-color="#0a6784"/></linearGradient>
+<linearGradient id="gold" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#f6dc8a"/><stop offset="1" stop-color="#c08a2e"/></linearGradient>
+</defs><rect width="200" height="200" fill="url(#sky)"/><rect x="12" y="12" width="176" height="176" rx="30" fill="none" stroke="url(#gold)" stroke-width="4"/><use href="#horn" x="40" y="22" width="120" height="120" stroke="url(#gold)" stroke-width="7"/><text x="100" y="170" text-anchor="middle" font-size="34" font-weight="900" fill="url(#gold)" font-family="Georgia, serif" letter-spacing="3">ГАРБА</text></svg>
