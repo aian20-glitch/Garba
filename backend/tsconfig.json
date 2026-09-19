@@ -9,6 +9,5 @@
     "esModuleInterop": true,
     "skipLibCheck": true
   },
-  "include": ["src/**/*.ts"],
-  "exclude": ["src/**/*_old*.ts"]
+  "include": ["src/**/*.ts"]
 }
