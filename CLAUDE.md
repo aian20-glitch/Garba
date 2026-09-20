@@ -62,7 +62,7 @@
 - ADB: `~/Library/Android/sdk/platform-tools/adb` (в PATH не прописан)
 - Эмулятор: `Pixel_8`, Android 16 / API 36, ARM-образ `google_apis;arm64-v8a`, id `emulator-5554`
 - Java 25 уже стояла в системе — Gradle 9.3.1 с ней работает, отдельная JDK не нужна
-- Xcode и CocoaPods **не установлены** (для iOS нужны; на диске свободно ~20 ГБ, Xcode ~15–20 ГБ)
+- Xcode 27 (App Store) и CocoaPods (Homebrew) установлены; macOS 27.0
 - Flutter ходит на backend по `http://10.0.2.2:3000` (это localhost Mac из Android-эмулятора)
 
 Запуск:
@@ -120,12 +120,13 @@ Caddy (https сам), ежедневная копия базы, `setup-server.sh
 `garba://`, только iPhone (`TARGETED_DEVICE_FAMILY = 1`) и только вертикально (Info.plist +
 `SystemChrome` в `main.dart` — и для Android), `NSAllowsLocalNetworking` для разработки.
 `apiBase` без `API_BASE`: симулятор iPhone — `http://localhost:3000`, Android-эмулятор — `10.0.2.2`.
-CocoaPods стоит (Homebrew), файлы Flutter для iOS скачаны.
-**Xcode не установлен:** `mas` ставит через sudo, а скачивание с сайта Apple — через вход
-в Apple ID; без владельца не обойти. Владелец: App Store → Xcode → «Получить», затем
-`./tools/ios-setup.sh` (один раз спросит пароль Mac). Дальше Claude собирает:
-`flutter build ios --simulator` и проверяет на симуляторе. Для TestFlight и App Store нужен
-аккаунт Apple Developer ($99/год) и команда подписи в Xcode.
+**Xcode 27 установлен владельцем 20.09.2026** (macOS обновилась до 27.0). Лицензия принята,
+`xcode-select` указывает на Xcode. **CocoaPods для iOS не нужен**: Flutter 3.47 подключает
+плагины через Swift Package Manager, Podfile не создаётся (CocoaPods всё же стоит — не мешает).
+Сборка под симулятор проходит: `flutter build ios --simulator --debug` → `build/ios/iphonesimulator/Runner.app`.
+Образ симулятора iPhone качается отдельно: `xcodebuild -downloadPlatform iOS` (~8 ГБ, вывод
+буферизуется — кажется, что команда молчит). Для TestFlight и App Store нужен аккаунт
+Apple Developer ($99/год) и команда подписи в Xcode.
 
 ### Эмулятор на Mac
 
