@@ -4,7 +4,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'package:flutter/foundation.dart';
-import 'package:flutter/widgets.dart';
+import 'package:flutter/material.dart';
 import 'package:garba_mobile/main.dart' as app;
 import 'package:http/http.dart' as http;
 
@@ -83,7 +83,18 @@ Future<void> main() async {
     roomId = (jsonDecode(response.body) as Map)['id'].toString();
   }
   debugPrint('GARBA_MANUAL_ROOM=$roomId');
-  app.DeepLinks.pending = Uri.parse('garba://room/$roomId');
   await app.main();
+  // Ручная проверка открывает стол напрямую, в том числе уже начатую игру.
+  // Экран приглашения подходит для новых участников, но не для возврата.
+  await Future<void>.delayed(const Duration(seconds: 2));
+  app.navigatorKey.currentState?.pushAndRemoveUntil(
+    MaterialPageRoute(
+      builder: (_) => app.LobbyScreen(
+        roomCode: roomId!,
+        currentPlayerId: app.Session.id,
+      ),
+    ),
+    (_) => false,
+  );
   unawaited(startWhenFull(roomId));
 }
