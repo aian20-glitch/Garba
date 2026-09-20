@@ -1367,13 +1367,26 @@ class _GameTableScreenState extends State<GameTableScreen> {
                           color: isMain ? Colors.black : Colors.white,
                         ),
                       ),
-                      Text(
-                        '🪙 ${fmtCoins(balanceOf(pId))}  ⭐${fmtRating(p['rating'])}',
-                        maxLines: 1,
-                        style: TextStyle(
-                          fontSize: 10,
-                          fontWeight: FontWeight.w700,
-                          color: isMain ? Colors.black87 : gold,
+                      FittedBox(
+                        fit: BoxFit.scaleDown,
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            const Icon(
+                              Icons.monetization_on_rounded,
+                              size: 11,
+                              color: gold,
+                            ),
+                            const SizedBox(width: 2),
+                            Text(
+                              '${fmtCoins(balanceOf(pId))}  ⭐${fmtRating(p['rating'])}',
+                              style: TextStyle(
+                                fontSize: 10,
+                                fontWeight: FontWeight.w700,
+                                color: isMain ? Colors.black87 : gold,
+                              ),
+                            ),
+                          ],
                         ),
                       ),
                     ],
@@ -1454,43 +1467,12 @@ class _GameTableScreenState extends State<GameTableScreen> {
             ],
           ),
         ),
-        // В розыгрыше вокруг лежат карты взятки — открытая карта компактнее.
-        if (openCard != null && (isPlaying || isRoundDone))
-          cardChip(openCard, current: true)
-        else if (openCard != null)
-          SmallTrumpCard(
-            rank: openCard['rank'].toString(),
-            suit: openCard['suit'].toString(),
-          ),
-        if (shownSuit != null)
-          Container(
-            margin: const EdgeInsets.only(top: 3),
-            padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 1),
-            // Светлая подложка: чёрные ♣ ♠ на тёмном не видно.
-            decoration: BoxDecoration(
-              color: const Color(0xFFF4EFE2),
-              borderRadius: BorderRadius.circular(8),
-              border: Border.all(color: gold, width: 1.5),
-            ),
-            child: Text.rich(
-              TextSpan(
-                children: [
-                  TextSpan(
-                    text: trumpSuit != null ? 'КОЗЫРЬ ' : 'РАЗ ',
-                    style: const TextStyle(color: Colors.black87),
-                  ),
-                  TextSpan(
-                    text: suitSymbol(shownSuit),
-                    style: TextStyle(
-                      fontSize: 15,
-                      color: isRedSuit(shownSuit) ? Colors.red.shade800 : Colors.black,
-                    ),
-                  ),
-                ],
-              ),
-              style: const TextStyle(fontSize: 11, fontWeight: FontWeight.w900),
-            ),
-          ),
+        TrumpOpeningView(
+          izzhoga: izzhoga,
+          openCard: openCard,
+          shownSuit: shownSuit,
+          suitLabel: trumpSuit != null ? 'КОЗЫРЬ' : 'РАЗ',
+        ),
         if (showLast)
           Text(
             'забрал ${lastTrick['winnerName']}',
@@ -1710,17 +1692,6 @@ class _GameTableScreenState extends State<GameTableScreen> {
                   ),
                 ),
               const SizedBox(height: 4),
-              // Открывалась ИЗЖОГА — показываем, что вернули в колоду (RULES.md §5.2).
-              if (izzhoga.isNotEmpty && (stage == 'bidding' || isPlaying))
-                Padding(
-                  padding: const EdgeInsets.only(top: 6),
-                  child: Text(
-                    'ИЗЖОГА, вернули в колоду: '
-                    '${izzhoga.map((c) => '${c['rank']}${suitSymbol(c['suit'].toString())}').join(', ')}',
-                    textAlign: TextAlign.center,
-                    style: const TextStyle(color: Colors.white60, fontSize: 13),
-                  ),
-                ),
               const SizedBox(height: 4),
               Expanded(
                 // Стол — по свободной высоте экрана, чтобы моё место внизу не обрезалось.

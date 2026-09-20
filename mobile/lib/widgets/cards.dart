@@ -259,3 +259,163 @@ class PlayerHandRow extends StatelessWidget {
     );
   }
 }
+
+// Показывает открытие козыря по шагам. Каждая ИЗЖОГА сначала появляется
+// на столе, затем визуально возвращается в колоду, и только после неё
+// открывается следующая карта.
+class TrumpOpeningView extends StatefulWidget {
+  final List<Map<String, dynamic>> izzhoga;
+  final Map<String, dynamic>? openCard;
+  final String? shownSuit;
+  final String suitLabel;
+
+  const TrumpOpeningView({
+    super.key,
+    required this.izzhoga,
+    required this.openCard,
+    required this.shownSuit,
+    required this.suitLabel,
+  });
+
+  @override
+  State<TrumpOpeningView> createState() => _TrumpOpeningViewState();
+}
+
+class _TrumpOpeningViewState extends State<TrumpOpeningView> {
+  Timer? timer;
+  var index = 0;
+
+  String get signature => [
+        ...widget.izzhoga.map((c) => c['id']),
+        widget.openCard?['id'],
+      ].join('|');
+
+  @override
+  void initState() {
+    super.initState();
+    startSequence();
+  }
+
+  @override
+  void didUpdateWidget(covariant TrumpOpeningView oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    final oldSignature = [
+      ...oldWidget.izzhoga.map((c) => c['id']),
+      oldWidget.openCard?['id'],
+    ].join('|');
+    if (oldSignature != signature) startSequence();
+  }
+
+  void startSequence() {
+    timer?.cancel();
+    index = 0;
+    if (widget.izzhoga.isEmpty) return;
+    timer = Timer.periodic(const Duration(milliseconds: 1300), (timer) {
+      if (!mounted || index >= widget.izzhoga.length) {
+        timer.cancel();
+        return;
+      }
+      setState(() => index++);
+    });
+  }
+
+  @override
+  void dispose() {
+    timer?.cancel();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final showingIzzhoga = index < widget.izzhoga.length;
+    final card = showingIzzhoga ? widget.izzhoga[index] : widget.openCard;
+
+    return AnimatedSwitcher(
+      duration: const Duration(milliseconds: 350),
+      transitionBuilder: (child, animation) => FadeTransition(
+        opacity: animation,
+        child: ScaleTransition(scale: animation, child: child),
+      ),
+      child: Column(
+        key: ValueKey('${card?['id']}-$showingIzzhoga'),
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          if (card != null)
+            SmallTrumpCard(
+              rank: card['rank'].toString(),
+              suit: card['suit'].toString(),
+            ),
+          if (showingIzzhoga) ...[
+            const SizedBox(height: 3),
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
+              decoration: BoxDecoration(
+                color: const Color(0xFFC62828),
+                borderRadius: BorderRadius.circular(8),
+              ),
+              child: const Text(
+                'ИЗЖОГА  ↩  В КОЛОДУ',
+                style: TextStyle(
+                  color: Colors.white,
+                  fontSize: 9,
+                  fontWeight: FontWeight.w900,
+                ),
+              ),
+            ),
+          ] else if (card == null && widget.izzhoga.isNotEmpty)
+            const Text(
+              'ТРИ ИЗЖОГИ · ПЕРЕСДАЧА',
+              style: TextStyle(
+                color: Colors.redAccent,
+                fontSize: 10,
+                fontWeight: FontWeight.w900,
+              ),
+            )
+          else if (widget.shownSuit != null) ...[
+            const SizedBox(height: 3),
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 1),
+              decoration: BoxDecoration(
+                color: const Color(0xFFF4EFE2),
+                borderRadius: BorderRadius.circular(8),
+                border: Border.all(color: const Color(0xFFD4A94F), width: 1.5),
+              ),
+              child: Text.rich(
+                TextSpan(
+                  children: [
+                    TextSpan(
+                      text: '${widget.suitLabel} ',
+                      style: const TextStyle(color: Colors.black87),
+                    ),
+                    TextSpan(
+                      text: suitSymbol(widget.shownSuit!),
+                      style: TextStyle(
+                        fontSize: 15,
+                        color: isRedSuit(widget.shownSuit!)
+                            ? Colors.red.shade800
+                            : Colors.black,
+                      ),
+                    ),
+                  ],
+                ),
+                style: const TextStyle(fontSize: 11, fontWeight: FontWeight.w900),
+              ),
+            ),
+            if (widget.izzhoga.isNotEmpty)
+              Padding(
+                padding: const EdgeInsets.only(top: 3),
+                child: Text(
+                  'ИЗЖОГА ↩ ${widget.izzhoga.map((c) => '${c['rank']}${suitSymbol(c['suit'].toString())}').join(', ')}',
+                  style: const TextStyle(
+                    color: Colors.redAccent,
+                    fontSize: 9,
+                    fontWeight: FontWeight.w800,
+                  ),
+                ),
+              ),
+          ],
+        ],
+      ),
+    );
+  }
+}
