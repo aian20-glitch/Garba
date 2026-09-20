@@ -124,8 +124,11 @@ Caddy (https сам), ежедневная копия базы, `setup-server.sh
 `xcode-select` указывает на Xcode. **CocoaPods для iOS не нужен**: Flutter 3.47 подключает
 плагины через Swift Package Manager, Podfile не создаётся (CocoaPods всё же стоит — не мешает).
 Сборка под симулятор проходит: `flutter build ios --simulator --debug` → `build/ios/iphonesimulator/Runner.app`.
-Образ симулятора iPhone качается отдельно: `xcodebuild -downloadPlatform iOS` (~8 ГБ, вывод
-буферизуется — кажется, что команда молчит). Для TestFlight и App Store нужен аккаунт
+**Образ симулятора iPhone не установлен** и без владельца не ставится: он пишется в системную
+папку `/Library/Developer/CoreSimulator/Images`, поэтому нужен пароль Mac. Без `sudo`
+и `xcodebuild -downloadPlatform iOS`, и `xcodes runtimes install` молча висят: ни сети, ни
+записи на диск (проверено 20.09.2026). Владельцу: `./tools/ios-setup.sh` (один раз спросит
+пароль) или Xcode → Settings → Components → iOS Simulator → Get. Для TestFlight и App Store нужен аккаунт
 Apple Developer ($99/год) и команда подписи в Xcode.
 
 ### Эмулятор на Mac
