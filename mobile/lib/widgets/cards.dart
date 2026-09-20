@@ -2,7 +2,7 @@
 part of '../main.dart';
 
 const _cardIvory = Color(0xFFFFF6DF);
-const _cardIvoryDeep = Color(0xFFE9D8B3);
+const _cardIvoryDeep = Color(0xFFF1E2BE);
 const _cardGold = Color(0xFFD5A33C);
 const _cardRed = Color(0xFFB20D24);
 
@@ -14,8 +14,8 @@ BoxDecoration _garbaCardDecoration({bool glow = false}) => BoxDecoration(
       ),
       borderRadius: BorderRadius.circular(12),
       border: Border.all(
-        color: glow ? const Color(0xFFF2C65D) : _cardGold,
-        width: glow ? 3 : 1.2,
+        color: glow ? const Color(0xFFF2C65D) : const Color(0xFFE4CEA0),
+        width: glow ? 3 : 0.6,
       ),
       boxShadow: [
         const BoxShadow(
@@ -29,42 +29,52 @@ BoxDecoration _garbaCardDecoration({bool glow = false}) => BoxDecoration(
       ],
     );
 
-// Валет, дама и король используют один фирменный спрайт. Так иллюстрация
-// остаётся чёткой и одинаковой на большой карте, в руке и на столе.
-class _CourtCardArt extends StatelessWidget {
-  final String rank;
-  final double opacity;
-
-  const _CourtCardArt({required this.rank, this.opacity = 1});
+// Светлый золотой узор одинаков для всех рангов. Номинал и масть рисуются
+// поверх него: орнамент не мешает быстро прочитать карту.
+class _CardOrnamentPainter extends CustomPainter {
+  const _CardOrnamentPainter();
 
   @override
-  Widget build(BuildContext context) {
-    final alignment = rank == 'J'
-        ? Alignment.centerLeft
-        : rank == 'Q'
-            ? Alignment.center
-            : Alignment.centerRight;
-    return LayoutBuilder(
-      builder: (context, constraints) => ClipRect(
-        child: OverflowBox(
-          alignment: alignment,
-          minWidth: constraints.maxWidth * 3,
-          maxWidth: constraints.maxWidth * 3,
-          minHeight: constraints.maxWidth,
-          maxHeight: constraints.maxWidth,
-          child: Opacity(
-            opacity: opacity,
-            child: Image.asset(
-              'assets/branding/court_cards.png',
-              width: constraints.maxWidth * 3,
-              height: constraints.maxWidth,
-              fit: BoxFit.fill,
-            ),
-          ),
-        ),
-      ),
-    );
+  void paint(Canvas canvas, Size size) {
+    canvas.save();
+    canvas.clipRect(Offset.zero & size);
+    canvas.scale(size.width / 60, size.height / 110);
+    final ink = Paint()
+      ..color = const Color(0xFFD4A543).withValues(alpha: 0.24)
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 0.65
+      ..strokeCap = StrokeCap.round;
+    final stem = Path()
+      ..moveTo(8, 105)
+      ..cubicTo(0, 78, 57, 66, 46, 40)
+      ..cubicTo(35, 18, 57, 12, 49, 1);
+    canvas.drawPath(stem, ink);
+    for (var i = 0; i < 7; i++) {
+      final t = i / 6;
+      final x = 10 + 37 * t + 5 * math.sin(t * math.pi * 2);
+      final y = 98 - 88 * t;
+      canvas.save();
+      canvas.translate(x, y);
+      canvas.rotate(-0.55 + (i.isEven ? 0 : math.pi));
+      canvas.scale(0.24);
+      canvas.translate(-50, -50);
+      canvas.drawPath(kazakhHornPath(), ink..strokeWidth = 3);
+      final leaf = Path()
+        ..moveTo(50, 85)
+        ..cubicTo(9, 79, 4, 53, 18, 42)
+        ..cubicTo(20, 68, 39, 58, 50, 85)
+        ..moveTo(50, 85)
+        ..cubicTo(91, 79, 96, 53, 82, 42)
+        ..cubicTo(80, 68, 61, 58, 50, 85);
+      canvas.drawPath(leaf, ink);
+      canvas.restore();
+      ink.strokeWidth = 0.65;
+    }
+    canvas.restore();
   }
+
+  @override
+  bool shouldRepaint(covariant _CardOrnamentPainter oldDelegate) => false;
 }
 
 // Масть без карты: символ и название, например «♥ черви».
@@ -122,12 +132,9 @@ class PlayingCardView extends StatelessWidget {
       ),
       child: Stack(
         children: [
-          if (rank == 'J' || rank == 'Q' || rank == 'K')
-            Positioned.fill(
-              top: 24,
-              bottom: 4,
-              child: _CourtCardArt(rank: rank, opacity: 0.92),
-            ),
+          const Positioned.fill(
+            child: CustomPaint(painter: _CardOrnamentPainter()),
+          ),
           Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
@@ -238,12 +245,9 @@ class SmallCard extends StatelessWidget {
       decoration: _garbaCardDecoration(),
       child: Stack(
         children: [
-          if (rank == 'J' || rank == 'Q' || rank == 'K')
-            Positioned.fill(
-              top: 21,
-              bottom: 5,
-              child: _CourtCardArt(rank: rank, opacity: 0.72),
-            ),
+          const Positioned.fill(
+            child: CustomPaint(painter: _CardOrnamentPainter()),
+          ),
           Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
@@ -271,7 +275,7 @@ class SmallCard extends StatelessWidget {
                   symbol,
                   style: TextStyle(
                     color: red ? _cardRed : const Color(0xFF101419),
-                    fontSize: 24,
+                    fontSize: 34,
                   ),
                 ),
               ),
