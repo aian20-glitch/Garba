@@ -212,3 +212,50 @@ class SmallCard extends StatelessWidget {
     );
   }
 }
+
+// Масштабируем исходные карты целиком; пять мест сохраняются после хода.
+class PlayerHandRow extends StatelessWidget {
+  final int itemCount;
+  final IndexedWidgetBuilder itemBuilder;
+
+  const PlayerHandRow({
+    super.key,
+    required this.itemCount,
+    required this.itemBuilder,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        const gap = 4.0;
+        final slots = itemCount > 5 ? itemCount : 5;
+        final cardWidth = ((constraints.maxWidth - gap * (slots - 1)) / slots)
+            .clamp(0.0, 70.0);
+        final cardHeight = cardWidth * 128 / 78;
+        return SizedBox(
+          height: cardHeight,
+          child: Row(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              for (var index = 0; index < itemCount; index++) ...[
+                if (index > 0) const SizedBox(width: gap),
+                SizedBox(
+                  width: cardWidth,
+                  height: cardHeight,
+                  child: FittedBox(
+                    child: SizedBox(
+                      width: 78,
+                      height: 128,
+                      child: itemBuilder(context, index),
+                    ),
+                  ),
+                ),
+              ],
+            ],
+          ),
+        );
+      },
+    );
+  }
+}

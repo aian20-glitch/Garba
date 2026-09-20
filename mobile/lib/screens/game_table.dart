@@ -935,8 +935,6 @@ class _GameTableScreenState extends State<GameTableScreen> {
       );
     } else if (isSpecial) {
       // Борьба за спецкарту (RULES.md §7): что открылось, у кого карта, кто выбыл.
-      final kind = special['kind'].toString();
-      final card = Map<String, dynamic>.from(special['card'] as Map);
       final blind = special['phase'] == 'blind';
       final holderName = special['holderName']?.toString();
       final risk = (special['risk'] as num?)?.toInt() ?? 0;
@@ -950,25 +948,8 @@ class _GameTableScreenState extends State<GameTableScreen> {
       footer = Column(
         mainAxisSize: MainAxisSize.min,
         children: [
-          Row(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              SmallTrumpCard(
-                rank: card['rank'].toString(),
-                suit: card['suit'].toString(),
-              ),
-              const SizedBox(width: 12),
-              Text(
-                specialName(kind),
-                style: const TextStyle(
-                  fontSize: 24,
-                  fontWeight: FontWeight.w900,
-                  color: Color(0xFFD4A94F),
-                ),
-              ),
-            ],
-          ),
-          const SizedBox(height: 8),
+          // Открытая спецкарта уже показана в центре стола. Здесь не
+          // дублируем её крупно перед рукой игрока.
           Text(
             blind
                 ? 'Слепой круг: забрать туза можно только сейчас, не глядя в карты, за ×1'
@@ -1116,37 +1097,14 @@ class _GameTableScreenState extends State<GameTableScreen> {
             'Взятка $trickNumber из 5',
             style: const TextStyle(color: Colors.white60, fontSize: 13),
           ),
-          const SizedBox(height: 10),
-          // Пока новая взятка пуста — показываем предыдущую, чтобы все
-          // успели увидеть, кто её забрал.
-          if (currentTrick.isNotEmpty)
-            trickRow(currentTrick)
-          else if (lastTrick != null) ...[
+          // Сами карты уже лежат у игроков на столе. Здесь оставляем только
+          // результат закрытой взятки, чтобы нижняя панель не дублировала их
+          // и не обрезала верхушки возле руки игрока.
+          if (currentTrick.isEmpty && lastTrick != null) ...[
+            const SizedBox(height: 4),
             Text(
               'Взятку забрал ${lastTrick['winnerName']}',
-              style: const TextStyle(fontWeight: FontWeight.w800),
-            ),
-            const SizedBox(height: 6),
-            trickRow(
-              ((lastTrick['cards'] as List?) ?? const [])
-                  .map((e) => Map<String, dynamic>.from(e as Map))
-                  .toList(),
-              dim: true,
-            ),
-          ] else
-            const Text(
-              'Ждём первый ход',
-              style: TextStyle(color: Colors.white54),
-            ),
-          // Прошлые взятки: крупно показана только текущая (или последняя, пока
-          // новая пуста) — остальные строками ниже, чтобы все карты были на виду.
-          if (playedTricks.length > (currentTrick.isEmpty ? 1 : 0)) ...[
-            const SizedBox(height: 12),
-            trickHistory(
-              playedTricks.sublist(
-                0,
-                playedTricks.length - (currentTrick.isEmpty ? 1 : 0),
-              ),
+              style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w800),
             ),
           ],
         ],
@@ -1669,42 +1627,75 @@ class _GameTableScreenState extends State<GameTableScreen> {
         if (leave == true && context.mounted) Navigator.of(context).pop();
       },
       child: Scaffold(
-      appBar: AppBar(title: Text('ГАРБА • #${widget.roomCode}')),
       body: SafeArea(
         child: Padding(
-          padding: const EdgeInsets.all(14),
+          padding: const EdgeInsets.fromLTRB(8, 4, 8, 8),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              // Кон — над столом: в центре стола его закрывали карты взятки при 6–7 игроках.
+              // Вся постоянная информация помещается в одну строку, чтобы
+              // оставить столу как можно больше высоты на портретном экране.
               Row(
-                mainAxisAlignment: MainAxisAlignment.center,
                 children: [
-                  Flexible(
+                  IconButton(
+                    tooltip: 'Выйти из-за стола',
+                    onPressed: () => Navigator.of(context).maybePop(),
+                    padding: EdgeInsets.zero,
+                    constraints: const BoxConstraints.tightFor(width: 32, height: 32),
+                    iconSize: 20,
+                    icon: const Icon(Icons.arrow_back_ios_new),
+                  ),
+                  const SizedBox(width: 4),
+                  Expanded(
+                    flex: 3,
                     child: Text(
-                      'Раздающий: $dealerName',
+                      'Сдаёт: $dealerName',
                       overflow: TextOverflow.ellipsis,
+                      maxLines: 1,
                       style: const TextStyle(
                         color: Color(0xFFD4A94F),
-                        fontSize: 16,
+                        fontSize: 13,
                         fontWeight: FontWeight.w800,
                       ),
                     ),
                   ),
-                  const SizedBox(width: 12),
+                  const SizedBox(width: 5),
                   Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 3),
+                    padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
                     decoration: BoxDecoration(
                       color: const Color(0xFF0B4A60),
-                      borderRadius: BorderRadius.circular(14),
+                      borderRadius: BorderRadius.circular(12),
                       border: Border.all(color: const Color(0xFFD4A94F)),
                     ),
                     child: Text(
                       'КОН 🪙 ${fmtCoins(kon)}',
                       style: const TextStyle(
-                        fontSize: 15,
+                        fontSize: 12,
                         fontWeight: FontWeight.w900,
                         color: Color(0xFFD4A94F),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 5),
+                  Expanded(
+                    flex: 3,
+                    child: Text(
+                      turnLeft != null && !paused && !isRoomDone
+                          ? '$headline · $turnLeft'
+                          : headline,
+                      overflow: TextOverflow.ellipsis,
+                      maxLines: 1,
+                      textAlign: TextAlign.right,
+                      style: TextStyle(
+                        fontSize: 14,
+                        fontWeight: FontWeight.w900,
+                        color: awaitedIds.contains(widget.currentPlayerId) &&
+                                turnLeft != null &&
+                                turnLeft <= 5
+                            ? Colors.redAccent
+                            : myTurn
+                                ? Colors.greenAccent
+                                : Colors.white,
                       ),
                     ),
                   ),
@@ -1751,7 +1742,7 @@ class _GameTableScreenState extends State<GameTableScreen> {
                     style: const TextStyle(color: Colors.orangeAccent, fontSize: 13),
                   ),
                 ),
-              const SizedBox(height: 10),
+              const SizedBox(height: 4),
               // Открывалась ИЗЖОГА — показываем, что вернули в колоду (RULES.md §5.2).
               if (izzhoga.isNotEmpty && (stage == 'bidding' || isPlaying))
                 Padding(
@@ -1763,26 +1754,7 @@ class _GameTableScreenState extends State<GameTableScreen> {
                     style: const TextStyle(color: Colors.white60, fontSize: 13),
                   ),
                 ),
-              const SizedBox(height: 10),
-              Text(
-                // 20 секунд на ход (§13a): не успел — за тебя сходит сервер.
-                turnLeft != null && !paused && !isRoomDone
-                    ? '$headline · $turnLeft'
-                    : headline,
-                textAlign: TextAlign.center,
-                style: TextStyle(
-                  fontSize: 24,
-                  fontWeight: FontWeight.w900,
-                  color: awaitedIds.contains(widget.currentPlayerId) &&
-                          turnLeft != null &&
-                          turnLeft <= 5
-                      ? Colors.redAccent
-                      : myTurn
-                          ? Colors.greenAccent
-                          : Colors.white,
-                ),
-              ),
-              const SizedBox(height: 14),
+              const SizedBox(height: 4),
               Expanded(
                 // Стол — по свободной высоте экрана, чтобы моё место внизу не обрезалось.
                 // Под столом прокручиваются итоги и история взяток.
@@ -1853,7 +1825,7 @@ class _GameTableScreenState extends State<GameTableScreen> {
                   ),
                 ),
               ),
-              const SizedBox(height: 14),
+              const SizedBox(height: 6),
               const Text(
                 'ВАШИ КАРТЫ',
                 textAlign: TextAlign.center,
@@ -1862,11 +1834,11 @@ class _GameTableScreenState extends State<GameTableScreen> {
                   color: Colors.white70,
                 ),
               ),
-              const SizedBox(height: 8),
-              SizedBox(
-                height: 128,
-                child: hand.isEmpty && myPlayed.isEmpty
-                    ? Center(
+              const SizedBox(height: 4),
+              hand.isEmpty && myPlayed.isEmpty
+                    ? SizedBox(
+                        height: 40,
+                        child: Center(
                         child: Text(
                           stage == 'awaiting_deal'
                               ? 'Карты ещё не розданы'
@@ -1874,11 +1846,10 @@ class _GameTableScreenState extends State<GameTableScreen> {
                                   ? 'Все карты сыграны'
                                   : 'Карты загружаются...',
                         ),
+                        ),
                       )
-                    : ListView.separated(
-                        scrollDirection: Axis.horizontal,
+                    : PlayerHandRow(
                         itemCount: hand.length + myPlayed.length,
-                        separatorBuilder: (_, __) => const SizedBox(width: 8),
                         itemBuilder: (_, index) {
                           // Сначала карты на руках, за ними мои сыгранные —
                           // серые и неактивные, но видны до конца раздачи (§10.6).
@@ -1942,8 +1913,7 @@ class _GameTableScreenState extends State<GameTableScreen> {
                           );
                         },
                       ),
-              ),
-              const SizedBox(height: 12),
+              const SizedBox(height: 8),
               // Решили продолжать — показываем, чем кончилось голосование.
               if (lastVote != null &&
                   lastVote['result'] == 'continue' &&
