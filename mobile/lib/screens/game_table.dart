@@ -82,6 +82,15 @@ class _GameTableScreenState extends State<GameTableScreen> {
     applyReactions((data['reactions'] as List?) ?? const []);
     applyAnnouncements(data);
 
+    // Очередь дошла до меня — телефон это подсказывает: на ход даётся 20 секунд (§13a).
+    final g = data['game'];
+    final myTurnNow = g is Map &&
+        data['pause'] == null &&
+        [g['turnPlayerId'], g['activeBidderId'], (g['special'] as Map?)?['activeId']]
+            .any((id) => id?.toString() == widget.currentPlayerId);
+    if (myTurnNow && !wasMyTurn) HapticFeedback.mediumImpact();
+    wasMyTurn = myTurnNow;
+
     // Пока пауза или голосование «закончить игру» — перерисовываем раз в секунду,
     // чтобы шёл обратный отсчёт.
     final gameRaw = data['game'];
@@ -179,7 +188,11 @@ class _GameTableScreenState extends State<GameTableScreen> {
   }
 
   // suit — масть для ДВА при 6 и 7 игроках (RULES.md §6.3).
+  // Короткий отклик на своё действие и заметный — когда очередь дошла до меня.
+  bool wasMyTurn = false;
+
   Future<void> sendBid(String bid, {String? suit}) async {
+    HapticFeedback.lightImpact();
     if (sendingBid) return;
     setState(() => sendingBid = true);
 
@@ -247,6 +260,7 @@ class _GameTableScreenState extends State<GameTableScreen> {
   // Ход картой. Допустима ли карта, проверяет сервер — клиент только
   // не даёт нажать на те, которых нет в myPlayableCardIds.
   Future<void> playCard(String cardId) async {
+    HapticFeedback.lightImpact();
     if (sendingCard) return;
     setState(() => sendingCard = true);
 
