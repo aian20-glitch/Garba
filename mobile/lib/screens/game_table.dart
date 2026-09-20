@@ -1187,39 +1187,22 @@ class _GameTableScreenState extends State<GameTableScreen> {
         else
           ...currentCardOf,
       };
-      // Прошлые взятки — мелко под игроком (§10.6: сыгранные карты открыты всем).
-      final historyOf = <String, List<Map<String, dynamic>>>{};
-      final shownTricks = showLast
-          ? playedTricks.sublist(0, playedTricks.length - 1)
-          : playedTricks;
-      for (final pt in shownTricks) {
+      // Сыгранные карты открываются по одной в веере над аватаром.
+      final revealedOf = <String, List<Map<String, dynamic>>>{};
+      for (final pt in playedTricks) {
         for (final t in (pt['cards'] as List)) {
-          historyOf.putIfAbsent((t as Map)['playerId'].toString(), () => []).add(
+          revealedOf.putIfAbsent((t as Map)['playerId'].toString(), () => []).add(
                 Map<String, dynamic>.from(t['card'] as Map),
               );
         }
       }
+      for (final t in currentTrick) {
+        revealedOf.putIfAbsent(t['playerId'].toString(), () => []).add(
+              Map<String, dynamic>.from(t['card'] as Map),
+            );
+      }
       const gold = Color(0xFFD4A94F);
       const seatWidth = 96.0;
-
-      Widget smallChip(Map<String, dynamic> card) {
-        final suit = card['suit'].toString();
-        return Container(
-          padding: const EdgeInsets.symmetric(horizontal: 3),
-          decoration: BoxDecoration(
-            color: const Color(0xFFF4EFE2).withValues(alpha: 0.75),
-            borderRadius: BorderRadius.circular(3),
-          ),
-          child: Text(
-            '${card['rank']}${suitSymbol(suit)}',
-            style: TextStyle(
-              fontSize: 10,
-              fontWeight: FontWeight.w800,
-              color: isRedSuit(suit) ? Colors.red.shade800 : Colors.black,
-            ),
-          ),
-        );
-      }
 
       Widget seat(Map<String, dynamic> p) {
         final pId = p['id'].toString();
@@ -1252,7 +1235,13 @@ class _GameTableScreenState extends State<GameTableScreen> {
               ? 'ДВА ${suitSymbol(myDvaSuit)}'
               : said;
         }
-        final history = historyOf[pId] ?? const <Map<String, dynamic>>[];
+        final revealedCards = revealedOf[pId] ?? const <Map<String, dynamic>>[];
+        final showCardFan = pId != widget.currentPlayerId &&
+            (stage == 'bidding' ||
+                isPlaying ||
+                isRoundDone ||
+                isDiscard ||
+                stage == 'kon_trump');
 
         // Нажатие на игрока — его карточка: добавить в друзья, подарок.
         return GestureDetector(
@@ -1265,6 +1254,12 @@ class _GameTableScreenState extends State<GameTableScreen> {
               Stack(
                 clipBehavior: Clip.none,
                 children: [
+                  if (showCardFan)
+                    Positioned(
+                      left: -18,
+                      top: -31,
+                      child: PlayerCardFan(revealedCards: revealedCards),
+                    ),
                   // Чей ход — зелёное кольцо со свечением, главный — золотое со свечением.
                   Container(
                     padding: const EdgeInsets.all(2.5),
@@ -1423,13 +1418,6 @@ class _GameTableScreenState extends State<GameTableScreen> {
                     ),
                   ),
                 ),
-              if ((isPlaying || isRoundDone) && history.isNotEmpty)
-                Wrap(
-                  alignment: WrapAlignment.center,
-                  spacing: 2,
-                  runSpacing: 2,
-                  children: history.map(smallChip).toList(),
-                ),
             ],
           ),
           ),
@@ -1487,6 +1475,7 @@ class _GameTableScreenState extends State<GameTableScreen> {
           return SizedBox(
             height: height,
             child: Stack(
+              clipBehavior: Clip.none,
               children: [
                 // Стол в казахском стиле «Көк»: небесное сукно, деревянный бортик
                 // с золотыми рогами қошқар мүйіз, шаңырақ в центре.
@@ -1511,7 +1500,9 @@ class _GameTableScreenState extends State<GameTableScreen> {
                   final pId = p['id'].toString();
                   final card = trickCardOf[pId];
                   return <Widget>[
-                    Align(alignment: Alignment(x, y), child: seat(p)),
+                    // Чуть сдвигаем места внутрь по вертикали: веер карт
+                    // верхнего игрока тогда полностью остаётся в области стола.
+                    Align(alignment: Alignment(x, y * 0.86), child: seat(p)),
                     if (card != null)
                       Align(
                         alignment: Alignment(x * 0.42, y * 0.42),

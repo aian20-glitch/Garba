@@ -213,6 +213,110 @@ class SmallCard extends StatelessWidget {
   }
 }
 
+// Пять карт соперника веером за аватаром. Не сыгранные карты закрыты,
+// а сыгранные по одной открываются слева направо.
+class PlayerCardFan extends StatelessWidget {
+  final List<Map<String, dynamic>> revealedCards;
+
+  const PlayerCardFan({
+    super.key,
+    required this.revealedCards,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return SizedBox(
+      width: 82,
+      height: 42,
+      child: Stack(
+        clipBehavior: Clip.none,
+        children: [
+          for (var index = 0; index < 5; index++)
+            Positioned(
+              left: 5 + index * 13,
+              top: (index - 2).abs() * 2,
+              child: Transform.rotate(
+                angle: (index - 2) * 0.11,
+                alignment: Alignment.bottomCenter,
+                child: _FanCard(
+                  card: index < revealedCards.length
+                      ? revealedCards[index]
+                      : null,
+                ),
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+}
+
+class _FanCard extends StatelessWidget {
+  final Map<String, dynamic>? card;
+
+  const _FanCard({this.card});
+
+  @override
+  Widget build(BuildContext context) {
+    final suit = card?['suit']?.toString();
+    final red = suit != null && isRedSuit(suit);
+
+    return Container(
+      width: 25,
+      height: 38,
+      padding: const EdgeInsets.fromLTRB(3, 2, 2, 1),
+      decoration: BoxDecoration(
+        color: card == null ? const Color(0xFF12384A) : const Color(0xFFF4EFE2),
+        borderRadius: BorderRadius.circular(4),
+        border: Border.all(
+          color: card == null ? const Color(0xFFD4A94F) : Colors.white70,
+          width: 1,
+        ),
+        gradient: card == null
+            ? const LinearGradient(
+                begin: Alignment.topLeft,
+                end: Alignment.bottomRight,
+                colors: [Color(0xFF18566C), Color(0xFF0B2634)],
+              )
+            : null,
+        boxShadow: const [
+          BoxShadow(color: Colors.black45, blurRadius: 3, offset: Offset(0, 1)),
+        ],
+      ),
+      child: card == null
+          ? const Center(
+              child: Icon(
+                Icons.auto_awesome,
+                size: 10,
+                color: Color(0xFFD4A94F),
+              ),
+            )
+          : Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  card!['rank'].toString(),
+                  style: TextStyle(
+                    height: 1,
+                    fontSize: 10,
+                    fontWeight: FontWeight.w900,
+                    color: red ? Colors.red.shade800 : Colors.black,
+                  ),
+                ),
+                Text(
+                  suitSymbol(suit!),
+                  style: TextStyle(
+                    height: 1,
+                    fontSize: 11,
+                    color: red ? Colors.red.shade800 : Colors.black,
+                  ),
+                ),
+              ],
+            ),
+    );
+  }
+}
+
 // Масштабируем исходные карты целиком; пять мест сохраняются после хода.
 class PlayerHandRow extends StatelessWidget {
   final int itemCount;
