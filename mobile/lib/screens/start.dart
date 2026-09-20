@@ -113,6 +113,19 @@ class _StartScreenState extends State<StartScreen> {
     }
   }
 
+  // Отладка на симуляторе iPhone, где нечем нажимать: если в настройках приложения лежит
+  // ключ debug.room, сразу открываем эту комнату. В релизной сборке ничего не делает.
+  Future<void> openDebugRoom() async {
+    if (!kDebugMode) return;
+    final prefs = await SharedPreferences.getInstance();
+    final room = prefs.getString('debug.room');
+    if (room == null || room.isEmpty) return;
+    await prefs.remove('debug.room');
+    navigatorKey.currentState?.push(
+      MaterialPageRoute(builder: (_) => LobbyScreen(roomCode: room, currentPlayerId: Session.id)),
+    );
+  }
+
   void openHome() {
     if (!mounted) return;
     Navigator.pushReplacement(
@@ -121,69 +134,80 @@ class _StartScreenState extends State<StartScreen> {
     );
     // Ссылка на комнату ждала входа в аккаунт — открываем её.
     DeepLinks.openPending();
+    openDebugRoom();
   }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       body: SafeArea(
-        child: Padding(
-          padding: const EdgeInsets.all(20),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              const Align(alignment: Alignment.centerLeft, child: GarbaTitle()),
-              const Spacer(),
-              if (checking)
-                const Center(child: CircularProgressIndicator())
-              else if (needName) ...[
-                const Text(
-                  'Как вас зовут?',
-                  style: TextStyle(fontSize: 24, fontWeight: FontWeight.w800),
+        child: LayoutBuilder(
+          builder: (context, constraints) => SingleChildScrollView(
+            padding: const EdgeInsets.all(20),
+            child: ConstrainedBox(
+              constraints: BoxConstraints(
+                minHeight: math.max(0, constraints.maxHeight - 40),
+              ),
+              // Сохраняем отступы на полном экране; с клавиатурой форма прокручивается.
+              child: IntrinsicHeight(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    const Align(alignment: Alignment.centerLeft, child: GarbaTitle()),
+                    const Spacer(),
+                    if (checking)
+                      const Center(child: CircularProgressIndicator())
+                    else if (needName) ...[
+                      const Text(
+                        'Как вас зовут?',
+                        style: TextStyle(fontSize: 24, fontWeight: FontWeight.w800),
+                      ),
+                      const SizedBox(height: 8),
+                      const Text(
+                        'Это имя увидят другие игроки за столом.',
+                        style: TextStyle(color: Colors.white70),
+                      ),
+                      const SizedBox(height: 16),
+                      TextField(
+                        controller: nameController,
+                        maxLength: 20,
+                        textCapitalization: TextCapitalization.words,
+                        decoration: const InputDecoration(
+                          labelText: 'Имя игрока',
+                          border: OutlineInputBorder(),
+                        ),
+                        onSubmitted: (_) => createAccount(),
+                      ),
+                      const SizedBox(height: 8),
+                      TextField(
+                        controller: inviteController,
+                        textCapitalization: TextCapitalization.characters,
+                        decoration: const InputDecoration(
+                          labelText: 'Код приглашения (если есть)',
+                          border: OutlineInputBorder(),
+                        ),
+                      ),
+                    ],
+                    if (error != null) ...[
+                      const SizedBox(height: 12),
+                      Text(
+                        error!,
+                        textAlign: TextAlign.center,
+                        style: const TextStyle(color: Colors.redAccent),
+                      ),
+                    ],
+                    const Spacer(),
+                    if (!checking && needName)
+                      GarbaButton(
+                        label: creating ? 'СОЗДАЁМ...' : 'НАЧАТЬ',
+                        onTap: createAccount,
+                      )
+                    else if (!checking && error != null)
+                      GarbaButton(label: 'ПОВТОРИТЬ', onTap: checkAccount),
+                  ],
                 ),
-                const SizedBox(height: 8),
-                const Text(
-                  'Это имя увидят другие игроки за столом.',
-                  style: TextStyle(color: Colors.white70),
-                ),
-                const SizedBox(height: 16),
-                TextField(
-                  controller: nameController,
-                  maxLength: 20,
-                  textCapitalization: TextCapitalization.words,
-                  decoration: const InputDecoration(
-                    labelText: 'Имя игрока',
-                    border: OutlineInputBorder(),
-                  ),
-                  onSubmitted: (_) => createAccount(),
-                ),
-                const SizedBox(height: 8),
-                TextField(
-                  controller: inviteController,
-                  textCapitalization: TextCapitalization.characters,
-                  decoration: const InputDecoration(
-                    labelText: 'Код приглашения (если есть)',
-                    border: OutlineInputBorder(),
-                  ),
-                ),
-              ],
-              if (error != null) ...[
-                const SizedBox(height: 12),
-                Text(
-                  error!,
-                  textAlign: TextAlign.center,
-                  style: const TextStyle(color: Colors.redAccent),
-                ),
-              ],
-              const Spacer(),
-              if (!checking && needName)
-                GarbaButton(
-                  label: creating ? 'СОЗДАЁМ...' : 'НАЧАТЬ',
-                  onTap: createAccount,
-                )
-              else if (!checking && error != null)
-                GarbaButton(label: 'ПОВТОРИТЬ', onTap: checkAccount),
-            ],
+              ),
+            ),
           ),
         ),
       ),

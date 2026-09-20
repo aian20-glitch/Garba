@@ -131,6 +131,24 @@ Caddy (https сам), ежедневная копия базы, `setup-server.sh
 пароль) или Xcode → Settings → Components → iOS Simulator → Get. Для TestFlight и App Store нужен аккаунт
 Apple Developer ($99/год) и команда подписи в Xcode.
 
+### Проверка на симуляторе iPhone (20.09.2026)
+
+Xcode 27 **не содержит Simulator.app** — окна симулятора из командной строки не открыть,
+нажимать в нём нечем (`simctl` умеет только запуск, ссылки и снимки экрана; `idb` поставить
+не удалось — GitHub периодически недоступен). Поэтому:
+- аккаунт кладётся прямо в настройки приложения:
+  `PlistBuddy -c "Add :flutter.account.token string <токен>" "$(xcrun simctl get_app_container
+  booted kz.garba.app data)/Library/Preferences/kz.garba.app.plist"` (и `.id`, `.name`);
+- **отладочный ключ `flutter.debug.room`** в тех же настройках — приложение при старте сразу
+  открывает эту комнату (`openDebugRoom()` в `screens/start.dart`, только `kDebugMode`);
+- снимок экрана: `xcrun simctl io booted screenshot файл.png`;
+- `simctl openurl` с `garba://` показывает системный вопрос «Открыть в приложении?» — без
+  нажатия дальше не пройти, поэтому для проверок используется ключ выше.
+
+Проверено на iPhone 17 (iOS 27): экран имени, главный экран (сетка плиток целиком помещается),
+ежедневный бонус, круглый стол с картами и отсчётом хода, окно итога раздачи, иконка и
+заставка. **Не проверено:** маленький экран iPhone SE, выбор фото для аватара, «Поделиться».
+
 ### Эмулятор на Mac
 
 - `adb exec-out screencap -p > файл.png` работает (на Windows-ПК отдавал чёрный кадр).
