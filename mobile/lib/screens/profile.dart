@@ -158,9 +158,20 @@ class _ProfileScreenState extends State<ProfileScreen> {
                 const SizedBox(height: 4),
                 Text('Код игрока: ${p['code']}', style: const TextStyle(color: Colors.white70)),
                 const SizedBox(height: 12),
-                Text(
-                  'Баланс: ${fmtCoins((p['balance'] as num).toInt())} 🪙',
-                  style: const TextStyle(fontSize: 20, fontWeight: FontWeight.w700),
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    const Text(
+                      'Баланс: ',
+                      style: TextStyle(fontSize: 20, fontWeight: FontWeight.w700),
+                    ),
+                    const CoinIcon(size: 21),
+                    const SizedBox(width: 4),
+                    Text(
+                      fmtCoins((p['balance'] as num).toInt()),
+                      style: const TextStyle(fontSize: 20, fontWeight: FontWeight.w700),
+                    ),
+                  ],
                 ),
                 Text('Друзей: ${p['friendsCount']}', style: const TextStyle(color: Colors.white70)),
                 Text(

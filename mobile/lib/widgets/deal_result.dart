@@ -62,7 +62,7 @@ class DealResultPopup extends StatelessWidget {
             curve: Interval((450 * i + 400) / (1400 + 450 * i), 1, curve: Curves.easeInOut),
             builder: (_, t, __) => Align(
               alignment: Alignment(-1 + 2 * t, 0),
-              child: const Text('🪙', style: TextStyle(fontSize: 16)),
+              child: const CoinIcon(size: 18),
             ),
           ),
         ),
@@ -157,11 +157,20 @@ class DealResultPopup extends StatelessWidget {
                               tween: Tween(begin: 0, end: lines[i].delta.abs().toDouble()),
                               duration: Duration(milliseconds: 1200 + 450 * i),
                               curve: Curves.easeOut,
-                              builder: (_, v, __) => Text(
-                                lines[i].won
-                                    ? 'забрал из кона 🪙 +${fmtCoins(v.round())}'
-                                    : 'положил в кон 🪙 ${fmtCoins(v.round())}',
-                                style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w800),
+                              builder: (_, v, __) => Row(
+                                mainAxisAlignment: MainAxisAlignment.center,
+                                children: [
+                                  Text(
+                                    lines[i].won ? 'забрал из кона ' : 'положил в кон ',
+                                    style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w800),
+                                  ),
+                                  const CoinIcon(size: 17),
+                                  const SizedBox(width: 4),
+                                  Text(
+                                    '${lines[i].won ? '+' : ''}${fmtCoins(v.round())}',
+                                    style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w800),
+                                  ),
+                                ],
                               ),
                             ),
                             lines[i].won

@@ -1372,11 +1372,7 @@ class _GameTableScreenState extends State<GameTableScreen> {
                         child: Row(
                           mainAxisSize: MainAxisSize.min,
                           children: [
-                            const Icon(
-                              Icons.monetization_on_rounded,
-                              size: 11,
-                              color: gold,
-                            ),
+                            const CoinIcon(size: 11),
                             const SizedBox(width: 2),
                             Text(
                               '${fmtCoins(balanceOf(pId))}  ⭐${fmtRating(p['rating'])}',
@@ -1454,7 +1450,7 @@ class _GameTableScreenState extends State<GameTableScreen> {
           child: Row(
             mainAxisSize: MainAxisSize.min,
             children: [
-              const Icon(Icons.monetization_on_rounded, size: 15, color: gold),
+              const CoinIcon(size: 15),
               const SizedBox(width: 3),
               Text(
                 fmtCoins(kon),

@@ -1,6 +1,23 @@
 // Общие элементы: строка игрока, кнопка, плитка главного экрана.
 part of '../main.dart';
 
+// Единый значок игровой монеты. Системный emoji на iPhone выглядел как
+// серая луна, поэтому во всём приложении используем жёлтую Material-иконку.
+class CoinIcon extends StatelessWidget {
+  final double size;
+
+  const CoinIcon({super.key, this.size = 16});
+
+  @override
+  Widget build(BuildContext context) {
+    return Icon(
+      Icons.monetization_on_rounded,
+      size: size,
+      color: const Color(0xFFD4A94F),
+    );
+  }
+}
+
 class PlayerTile extends StatelessWidget {
   final String name;
   final String subtitle;

@@ -141,9 +141,16 @@ class _HomeScreenState extends State<HomeScreen> with RouteAware {
                 mainAxisAlignment: MainAxisAlignment.spaceBetween,
                 children: [
                   const GarbaTitle(),
-                  Text(
-                    balance == null ? '🪙 …' : '🪙 ${fmtCoins(balance!)}',
-                    style: const TextStyle(fontSize: 20, fontWeight: FontWeight.w700),
+                  Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      const CoinIcon(size: 22),
+                      const SizedBox(width: 4),
+                      Text(
+                        balance == null ? '…' : fmtCoins(balance!),
+                        style: const TextStyle(fontSize: 20, fontWeight: FontWeight.w700),
+                      ),
+                    ],
                   ),
                 ],
               ),
