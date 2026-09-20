@@ -1070,45 +1070,8 @@ class _GameTableScreenState extends State<GameTableScreen> {
         style: const TextStyle(color: Colors.white70, fontSize: 16),
       );
     } else if (isPlaying) {
-      // У КОНА видно, как он назвал козырь: «КОН по ДВА».
-      final names = mains.map((m) {
-        final d = m['declaration'].toString();
-        // Главный спецраздачи: «ТУЗ ×3»; КОН: «КОН по ДВА».
-        final label = specialOutcome != null && special != null
-            ? '${specialName(special['kind'].toString())} ×${specialOutcome['risk']}'
-            : d == 'КОН' && konAs != null
-                ? 'КОН по $konAs'
-                : d;
-        return '${m['playerName']} ($label)';
-      }).join(' и ');
-      footer = Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Text(
-            '${mains.length > 1 ? 'Играют' : 'Главный'}: $names',
-            textAlign: TextAlign.center,
-            style: const TextStyle(
-              fontWeight: FontWeight.w800,
-              color: Color(0xFFD4A94F),
-            ),
-          ),
-          const SizedBox(height: 4),
-          Text(
-            'Взятка $trickNumber из 5',
-            style: const TextStyle(color: Colors.white60, fontSize: 13),
-          ),
-          // Сами карты уже лежат у игроков на столе. Здесь оставляем только
-          // результат закрытой взятки, чтобы нижняя панель не дублировала их
-          // и не обрезала верхушки возле руки игрока.
-          if (currentTrick.isEmpty && lastTrick != null) ...[
-            const SizedBox(height: 4),
-            Text(
-              'Взятку забрал ${lastTrick['winnerName']}',
-              style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w800),
-            ),
-          ],
-        ],
-      );
+      // Главный, его заявка и сыгранные карты уже видны на самом столе.
+      footer = const SizedBox.shrink();
     } else if (isRoundDone) {
       footer = Column(
         mainAxisSize: MainAxisSize.min,
@@ -1468,6 +1431,29 @@ class _GameTableScreenState extends State<GameTableScreen> {
       // Под ней — масть РАЗ в торгах или итоговый козырь (ДВА и КОН могут его сменить).
       final shownSuit = trumpSuit ?? razSuit;
       final centerParts = <Widget>[
+        Container(
+          margin: const EdgeInsets.only(bottom: 4),
+          padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
+          decoration: BoxDecoration(
+            color: const Color(0xE60B1620),
+            borderRadius: BorderRadius.circular(10),
+          ),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Icon(Icons.monetization_on_rounded, size: 15, color: gold),
+              const SizedBox(width: 3),
+              Text(
+                fmtCoins(kon),
+                style: const TextStyle(
+                  color: gold,
+                  fontSize: 12,
+                  fontWeight: FontWeight.w900,
+                ),
+              ),
+            ],
+          ),
+        ),
         // В розыгрыше вокруг лежат карты взятки — открытая карта компактнее.
         if (openCard != null && (isPlaying || isRoundDone))
           cardChip(openCard, current: true)
@@ -1516,7 +1502,7 @@ class _GameTableScreenState extends State<GameTableScreen> {
       return LayoutBuilder(
         builder: (context, constraints) {
           final width = constraints.maxWidth;
-          final height = math.min((width * 1.2).clamp(330.0, 480.0), maxHeight);
+          final height = math.min((width * 1.3).clamp(350.0, 520.0), maxHeight);
           return SizedBox(
             height: height,
             child: Stack(
@@ -1647,7 +1633,6 @@ class _GameTableScreenState extends State<GameTableScreen> {
                   ),
                   const SizedBox(width: 4),
                   Expanded(
-                    flex: 3,
                     child: Text(
                       'Сдаёт: $dealerName',
                       overflow: TextOverflow.ellipsis,
@@ -1659,26 +1644,8 @@ class _GameTableScreenState extends State<GameTableScreen> {
                       ),
                     ),
                   ),
-                  const SizedBox(width: 5),
-                  Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
-                    decoration: BoxDecoration(
-                      color: const Color(0xFF0B4A60),
-                      borderRadius: BorderRadius.circular(12),
-                      border: Border.all(color: const Color(0xFFD4A94F)),
-                    ),
-                    child: Text(
-                      'КОН 🪙 ${fmtCoins(kon)}',
-                      style: const TextStyle(
-                        fontSize: 12,
-                        fontWeight: FontWeight.w900,
-                        color: Color(0xFFD4A94F),
-                      ),
-                    ),
-                  ),
-                  const SizedBox(width: 5),
+                  const SizedBox(width: 8),
                   Expanded(
-                    flex: 3,
                     child: Text(
                       turnLeft != null && !paused && !isRoomDone
                           ? '$headline · $turnLeft'
@@ -1763,10 +1730,12 @@ class _GameTableScreenState extends State<GameTableScreen> {
                     children: [
                   SingleChildScrollView(
                     child: Column(
-                    children: [
-                      roundTable(box.maxHeight),
-                      const SizedBox(height: 16),
-                      footer,
+                            children: [
+                              roundTable(box.maxHeight),
+                              if (!isPlaying) ...[
+                                const SizedBox(height: 16),
+                                footer,
+                              ],
                       // Смайлики — только когда раздача сыграна или комната закрыта
                       // (RULES.md §14: чата во время игры нет).
                       if (isRoundDone || isRoomDone) ...[
