@@ -8,6 +8,11 @@ import 'package:flutter/widgets.dart';
 import 'package:garba_mobile/main.dart' as app;
 import 'package:http/http.dart' as http;
 
+const manualCapacity = int.fromEnvironment(
+  'GARBA_CAPACITY',
+  defaultValue: 6,
+);
+
 Future<void> startWhenFull(String roomId) async {
   for (var attempt = 0; attempt < 180; attempt++) {
     await Future<void>.delayed(const Duration(seconds: 1));
@@ -69,7 +74,7 @@ Future<void> main() async {
   if (roomId == null) {
     final response = await http.post(Uri.parse('${app.apiBase}/rooms'),
         headers: app.authHeaders(), body: jsonEncode({
-          'capacity': 6, 'ante': 100, 'emptyLimit': 5,
+          'capacity': manualCapacity, 'ante': 100, 'emptyLimit': 5,
           'konThreshold': 10, 'minBalance': 1000,
         }));
     if (response.statusCode != 201 && response.statusCode != 200) {
