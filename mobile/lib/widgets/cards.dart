@@ -296,14 +296,14 @@ class PlayerCardFan extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return SizedBox(
-      width: 82,
-      height: 42,
+      width: 96,
+      height: 54,
       child: Stack(
         clipBehavior: Clip.none,
         children: [
           for (var index = 0; index < 5; index++)
             Positioned(
-              left: 5 + index * 13,
+              left: 2 + index * 15,
               top: (index - 2).abs() * 2,
               child: Transform.rotate(
                 angle: (index - 2) * 0.11,
@@ -332,8 +332,8 @@ class _FanCard extends StatelessWidget {
     final red = suit != null && isRedSuit(suit);
 
     return Container(
-      width: 25,
-      height: 38,
+      width: 32,
+      height: 49,
       decoration: BoxDecoration(
         borderRadius: BorderRadius.circular(4),
         border: Border.all(
@@ -367,7 +367,7 @@ class _FanCard extends StatelessWidget {
                       card!['rank'].toString(),
                       style: TextStyle(
                         height: 1,
-                        fontSize: 10,
+                        fontSize: 12,
                         fontWeight: FontWeight.w900,
                         color: red ? _cardRed : const Color(0xFF101419),
                       ),
@@ -376,7 +376,7 @@ class _FanCard extends StatelessWidget {
                       suitSymbol(suit!),
                       style: TextStyle(
                         height: 1,
-                        fontSize: 11,
+                        fontSize: 13,
                         color: red ? _cardRed : const Color(0xFF101419),
                       ),
                     ),

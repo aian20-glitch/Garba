@@ -1256,8 +1256,8 @@ class _GameTableScreenState extends State<GameTableScreen> {
                 children: [
                   if (showCardFan)
                     Positioned(
-                      left: -18,
-                      top: -31,
+                      left: -22,
+                      top: -32,
                       child: PlayerCardFan(revealedCards: revealedCards),
                     ),
                   // Чей ход — зелёное кольцо со свечением, главный — золотое со свечением.
