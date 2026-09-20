@@ -268,6 +268,7 @@ class TrumpOpeningView extends StatefulWidget {
   final Map<String, dynamic>? openCard;
   final String? shownSuit;
   final String suitLabel;
+  final bool showOpenCard;
 
   const TrumpOpeningView({
     super.key,
@@ -275,6 +276,7 @@ class TrumpOpeningView extends StatefulWidget {
     required this.openCard,
     required this.shownSuit,
     required this.suitLabel,
+    required this.showOpenCard,
   });
 
   @override
@@ -330,7 +332,11 @@ class _TrumpOpeningViewState extends State<TrumpOpeningView> {
   @override
   Widget build(BuildContext context) {
     final showingIzzhoga = index < widget.izzhoga.length;
-    final card = showingIzzhoga ? widget.izzhoga[index] : widget.openCard;
+    final card = showingIzzhoga
+        ? widget.izzhoga[index]
+        : widget.showOpenCard
+            ? widget.openCard
+            : null;
 
     return AnimatedSwitcher(
       duration: const Duration(milliseconds: 650),
@@ -364,7 +370,7 @@ class _TrumpOpeningViewState extends State<TrumpOpeningView> {
                 ),
               ),
             ),
-          ] else if (card == null && widget.izzhoga.isNotEmpty)
+          ] else if (widget.openCard == null && widget.izzhoga.isNotEmpty)
             const Text(
               'ТРИ ИЗЖОГИ · ПЕРЕСДАЧА',
               style: TextStyle(

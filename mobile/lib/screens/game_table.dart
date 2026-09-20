@@ -1468,6 +1468,9 @@ class _GameTableScreenState extends State<GameTableScreen> {
           openCard: openCard,
           shownSuit: shownSuit,
           suitLabel: trumpSuit != null ? 'КОЗЫРЬ' : 'РАЗ',
+          // Взятую спецкарту уже добавили владельцу в руку — в центре
+          // оставляем только объявленную масть.
+          showOpenCard: specialOutcome == null,
         ),
         if (showLast)
           Text(
