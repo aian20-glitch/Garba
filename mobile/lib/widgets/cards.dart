@@ -310,7 +310,9 @@ class _TrumpOpeningViewState extends State<TrumpOpeningView> {
     timer?.cancel();
     index = 0;
     if (widget.izzhoga.isEmpty) return;
-    timer = Timer.periodic(const Duration(milliseconds: 1300), (timer) {
+    // Три секунды: игрок успевает увидеть карту, прочитать причину и понять,
+    // что она вернулась в колоду до открытия следующей.
+    timer = Timer.periodic(const Duration(seconds: 3), (timer) {
       if (!mounted || index >= widget.izzhoga.length) {
         timer.cancel();
         return;
@@ -331,7 +333,7 @@ class _TrumpOpeningViewState extends State<TrumpOpeningView> {
     final card = showingIzzhoga ? widget.izzhoga[index] : widget.openCard;
 
     return AnimatedSwitcher(
-      duration: const Duration(milliseconds: 350),
+      duration: const Duration(milliseconds: 650),
       transitionBuilder: (child, animation) => FadeTransition(
         opacity: animation,
         child: ScaleTransition(scale: animation, child: child),
