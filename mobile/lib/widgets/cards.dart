@@ -1,6 +1,72 @@
 // Карты и масти.
 part of '../main.dart';
 
+const _cardIvory = Color(0xFFFFF6DF);
+const _cardIvoryDeep = Color(0xFFE9D8B3);
+const _cardGold = Color(0xFFD5A33C);
+const _cardRed = Color(0xFFB20D24);
+
+BoxDecoration _garbaCardDecoration({bool glow = false}) => BoxDecoration(
+      gradient: const LinearGradient(
+        begin: Alignment.topLeft,
+        end: Alignment.bottomRight,
+        colors: [_cardIvory, Color(0xFFF7ECD2), _cardIvoryDeep],
+      ),
+      borderRadius: BorderRadius.circular(12),
+      border: Border.all(
+        color: glow ? const Color(0xFFF2C65D) : _cardGold,
+        width: glow ? 3 : 1.2,
+      ),
+      boxShadow: [
+        const BoxShadow(
+            color: Colors.black38, blurRadius: 5, offset: Offset(0, 2)),
+        if (glow)
+          const BoxShadow(
+            color: Color(0x88D4A94F),
+            blurRadius: 22,
+            spreadRadius: 3,
+          ),
+      ],
+    );
+
+// Валет, дама и король используют один фирменный спрайт. Так иллюстрация
+// остаётся чёткой и одинаковой на большой карте, в руке и на столе.
+class _CourtCardArt extends StatelessWidget {
+  final String rank;
+  final double opacity;
+
+  const _CourtCardArt({required this.rank, this.opacity = 1});
+
+  @override
+  Widget build(BuildContext context) {
+    final alignment = rank == 'J'
+        ? Alignment.centerLeft
+        : rank == 'Q'
+            ? Alignment.center
+            : Alignment.centerRight;
+    return LayoutBuilder(
+      builder: (context, constraints) => ClipRect(
+        child: OverflowBox(
+          alignment: alignment,
+          minWidth: constraints.maxWidth * 3,
+          maxWidth: constraints.maxWidth * 3,
+          minHeight: constraints.maxWidth,
+          maxHeight: constraints.maxWidth,
+          child: Opacity(
+            opacity: opacity,
+            child: Image.asset(
+              'assets/branding/court_cards.png',
+              width: constraints.maxWidth * 3,
+              height: constraints.maxWidth,
+              fit: BoxFit.fill,
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
 // Масть без карты: символ и название, например «♥ черви».
 // Светлая подложка, чтобы чёрные масти были видны на тёмном фоне.
 class SuitBadge extends StatelessWidget {
@@ -51,57 +117,53 @@ class PlayingCardView extends StatelessWidget {
       width: 150,
       height: 210,
       padding: const EdgeInsets.all(16),
-      decoration: BoxDecoration(
-        color: const Color(0xFFF4EFE2),
+      decoration: _garbaCardDecoration(glow: glow).copyWith(
         borderRadius: BorderRadius.circular(18),
-        border: Border.all(
-          color: glow ? const Color(0xFFD4A94F) : Colors.white30,
-          width: glow ? 4 : 1,
-        ),
-        boxShadow: glow
-            ? const [
-                BoxShadow(
-                  color: Color(0x66D4A94F),
-                  blurRadius: 28,
-                  spreadRadius: 5,
-                ),
-              ]
-            : null,
       ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
+      child: Stack(
         children: [
-          Text(
-            rank,
-            style: TextStyle(
-              fontSize: 40,
-              fontWeight: FontWeight.w900,
-              color: red ? Colors.red.shade800 : Colors.black,
+          if (rank == 'J' || rank == 'Q' || rank == 'K')
+            Positioned.fill(
+              top: 24,
+              bottom: 4,
+              child: _CourtCardArt(rank: rank, opacity: 0.92),
             ),
-          ),
-          Text(
-            symbol,
-            style: TextStyle(
-              fontSize: 42,
-              color: red ? Colors.red.shade800 : Colors.black,
-            ),
-          ),
-          // Большой значок масти занимает остаток карточки и ужимается под него.
-          // Раньше тут стоял фиксированный шрифт 70 между двумя Spacer, и на
-          // эмуляторе Pixel 8 карта переполнялась на 47 пикселей.
-          Expanded(
-            child: Center(
-              child: FittedBox(
-                fit: BoxFit.scaleDown,
-                child: Text(
-                  symbol,
-                  style: TextStyle(
-                    fontSize: 70,
-                    color: red ? Colors.red.shade800 : Colors.black,
+          Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                rank,
+                style: TextStyle(
+                  fontSize: 40,
+                  fontWeight: FontWeight.w900,
+                  color: red ? _cardRed : const Color(0xFF101419),
+                ),
+              ),
+              Text(
+                symbol,
+                style: TextStyle(
+                  fontSize: 42,
+                  color: red ? _cardRed : const Color(0xFF101419),
+                ),
+              ),
+              // Большой значок масти занимает остаток карточки и ужимается под него.
+              // Раньше тут стоял фиксированный шрифт 70 между двумя Spacer, и на
+              // эмуляторе Pixel 8 карта переполнялась на 47 пикселей.
+              Expanded(
+                child: Center(
+                  child: FittedBox(
+                    fit: BoxFit.scaleDown,
+                    child: Text(
+                      symbol,
+                      style: TextStyle(
+                        fontSize: 70,
+                        color: red ? _cardRed : const Color(0xFF101419),
+                      ),
+                    ),
                   ),
                 ),
               ),
-            ),
+            ],
           ),
         ],
       ),
@@ -127,9 +189,8 @@ class SmallTrumpCard extends StatelessWidget {
     return Container(
       width: 52,
       height: 64,
-      padding: const EdgeInsets.all(6),
-      decoration: BoxDecoration(
-        color: const Color(0xFFF4EFE2),
+      padding: const EdgeInsets.all(4),
+      decoration: _garbaCardDecoration().copyWith(
         borderRadius: BorderRadius.circular(8),
       ),
       child: Column(
@@ -138,16 +199,16 @@ class SmallTrumpCard extends StatelessWidget {
           Text(
             rank,
             style: TextStyle(
-              color: red ? Colors.red.shade800 : Colors.black,
+              color: red ? _cardRed : const Color(0xFF101419),
               fontWeight: FontWeight.w900,
-              fontSize: 17,
+              fontSize: 16,
             ),
           ),
           Text(
             symbol,
             style: TextStyle(
-              color: red ? Colors.red.shade800 : Colors.black,
-              fontSize: 19,
+              color: red ? _cardRed : const Color(0xFF101419),
+              fontSize: 17,
             ),
           ),
         ],
@@ -174,38 +235,47 @@ class SmallCard extends StatelessWidget {
     return Container(
       width: 78,
       padding: const EdgeInsets.all(9),
-      decoration: BoxDecoration(
-        color: const Color(0xFFF4EFE2),
-        borderRadius: BorderRadius.circular(12),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
+      decoration: _garbaCardDecoration(),
+      child: Stack(
         children: [
-          Text(
-            rank,
-            style: TextStyle(
-              color: red ? Colors.red.shade800 : Colors.black,
-              fontSize: 24,
-              fontWeight: FontWeight.w900,
+          if (rank == 'J' || rank == 'Q' || rank == 'K')
+            Positioned.fill(
+              top: 21,
+              bottom: 5,
+              child: _CourtCardArt(rank: rank, opacity: 0.72),
             ),
-          ),
-          Text(
-            symbol,
-            style: TextStyle(
-              color: red ? Colors.red.shade800 : Colors.black,
-              fontSize: 28,
-            ),
-          ),
-          const Spacer(),
-          Align(
-            alignment: Alignment.bottomRight,
-            child: Text(
-              symbol,
-              style: TextStyle(
-                color: red ? Colors.red.shade800 : Colors.black,
-                fontSize: 22,
+          Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                rank,
+                style: TextStyle(
+                  height: 0.95,
+                  color: red ? _cardRed : const Color(0xFF101419),
+                  fontSize: 24,
+                  fontWeight: FontWeight.w900,
+                ),
               ),
-            ),
+              Text(
+                symbol,
+                style: TextStyle(
+                  height: 1,
+                  color: red ? _cardRed : const Color(0xFF101419),
+                  fontSize: 27,
+                ),
+              ),
+              const Spacer(),
+              Align(
+                alignment: Alignment.bottomRight,
+                child: Text(
+                  symbol,
+                  style: TextStyle(
+                    color: red ? _cardRed : const Color(0xFF101419),
+                    fontSize: 24,
+                  ),
+                ),
+              ),
+            ],
           ),
         ],
       ),
@@ -264,55 +334,56 @@ class _FanCard extends StatelessWidget {
     return Container(
       width: 25,
       height: 38,
-      padding: const EdgeInsets.fromLTRB(3, 2, 2, 1),
       decoration: BoxDecoration(
-        color: card == null ? const Color(0xFF12384A) : const Color(0xFFF4EFE2),
         borderRadius: BorderRadius.circular(4),
         border: Border.all(
-          color: card == null ? const Color(0xFFD4A94F) : Colors.white70,
-          width: 1,
+          color: _cardGold,
+          width: 0.8,
         ),
-        gradient: card == null
-            ? const LinearGradient(
-                begin: Alignment.topLeft,
-                end: Alignment.bottomRight,
-                colors: [Color(0xFF18566C), Color(0xFF0B2634)],
-              )
-            : null,
         boxShadow: const [
           BoxShadow(color: Colors.black45, blurRadius: 3, offset: Offset(0, 1)),
         ],
       ),
-      child: card == null
-          ? const Center(
-              child: Icon(
-                Icons.auto_awesome,
-                size: 10,
-                color: Color(0xFFD4A94F),
+      child: ClipRRect(
+        borderRadius: BorderRadius.circular(3),
+        child: card == null
+            ? Image.asset(
+                'assets/branding/card_back.png',
+                fit: BoxFit.cover,
+              )
+            : Container(
+                padding: const EdgeInsets.fromLTRB(3, 2, 2, 1),
+                decoration: const BoxDecoration(
+                  gradient: LinearGradient(
+                    begin: Alignment.topLeft,
+                    end: Alignment.bottomRight,
+                    colors: [_cardIvory, _cardIvoryDeep],
+                  ),
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      card!['rank'].toString(),
+                      style: TextStyle(
+                        height: 1,
+                        fontSize: 10,
+                        fontWeight: FontWeight.w900,
+                        color: red ? _cardRed : const Color(0xFF101419),
+                      ),
+                    ),
+                    Text(
+                      suitSymbol(suit!),
+                      style: TextStyle(
+                        height: 1,
+                        fontSize: 11,
+                        color: red ? _cardRed : const Color(0xFF101419),
+                      ),
+                    ),
+                  ],
+                ),
               ),
-            )
-          : Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  card!['rank'].toString(),
-                  style: TextStyle(
-                    height: 1,
-                    fontSize: 10,
-                    fontWeight: FontWeight.w900,
-                    color: red ? Colors.red.shade800 : Colors.black,
-                  ),
-                ),
-                Text(
-                  suitSymbol(suit!),
-                  style: TextStyle(
-                    height: 1,
-                    fontSize: 11,
-                    color: red ? Colors.red.shade800 : Colors.black,
-                  ),
-                ),
-              ],
-            ),
+      ),
     );
   }
 }
@@ -510,7 +581,8 @@ class _TrumpOpeningViewState extends State<TrumpOpeningView> {
                     ),
                   ],
                 ),
-                style: const TextStyle(fontSize: 11, fontWeight: FontWeight.w900),
+                style:
+                    const TextStyle(fontSize: 11, fontWeight: FontWeight.w900),
               ),
             ),
           ],

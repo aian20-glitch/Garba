@@ -1,5 +1,4 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- Фон заставки при запуске — тот же тёмный, что и в игре. -->
 <resources>
-    <color name="launch_background">#0B1620</color>
+    <color name="launcher_background">#050A10</color>
 </resources>

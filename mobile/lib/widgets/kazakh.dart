@@ -81,61 +81,74 @@ class GarbaTitle extends StatelessWidget {
       );
 }
 
-// Стол «Көк»: деревянный бортик с золотыми рогами по кругу (рогами наружу),
-// небесно-голубое сукно и едва заметный шаңырақ — купол юрты — в центре.
+// Фирменный стол ГАРБА: тёмно-синее сукно, глубокий чёрный бортик и несколько
+// слоёв тёплого золота. Орнамент остаётся достаточно тихим, чтобы карты и
+// плашки игроков читались поверх него.
 class KazakhTablePainter extends CustomPainter {
   const KazakhTablePainter();
 
-  static const gold = Color(0xFFE0B84F);
+  static const gold = Color(0xFFE6B74F);
+  static const brightGold = Color(0xFFFFD87A);
 
   @override
   void paint(Canvas canvas, Size size) {
     final outer = Offset.zero & size;
-    const rim = 16.0;
+    const rim = 22.0;
     final felt = outer.deflate(rim);
     final center = outer.center;
 
-    // Тень и бортик.
+    // Глубокая тень отделяет стол от тёмного фона экрана.
     canvas.drawOval(
-      outer.shift(const Offset(0, 6)),
+      outer.shift(const Offset(0, 9)),
       Paint()
-        ..color = Colors.black54
-        ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 12),
+        ..color = const Color(0xCC000000)
+        ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 18),
     );
+
+    // Внешняя рама: почти чёрное дерево с золотым светом по центру.
     canvas.drawOval(
       outer,
       Paint()
-        ..shader = const LinearGradient(
-          begin: Alignment.topCenter,
-          end: Alignment.bottomCenter,
-          colors: [Color(0xFF6B4423), Color(0xFF2E1B0C)],
+        ..shader = const RadialGradient(
+          colors: [Color(0xFF9A651E), Color(0xFF39200D), Color(0xFF090B0D)],
+          stops: [0, 0.72, 1],
+          radius: 0.9,
         ).createShader(outer),
     );
     canvas.drawOval(
-      outer.deflate(0.75),
+      outer.deflate(1.5),
       Paint()
         ..style = PaintingStyle.stroke
-        ..strokeWidth = 1.5
-        ..color = gold.withValues(alpha: 0.9),
+        ..strokeWidth = 3
+        ..shader = const LinearGradient(
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+          colors: [brightGold, Color(0xFF9B651A), brightGold],
+        ).createShader(outer),
+    );
+    canvas.drawOval(
+      outer.deflate(8),
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 2.5
+        ..color = const Color(0xFF3D260F),
     );
 
-    // Рога по бортику: каждый смотрит наружу, от центра стола.
+    // Крупный ритм казахского орнамента по раме.
     final horn = kazakhHornPath();
     final hornPaint = Paint()
       ..style = PaintingStyle.stroke
-      ..strokeWidth = 9
+      ..strokeWidth = 8
       ..strokeCap = StrokeCap.round
       ..strokeJoin = StrokeJoin.round
-      ..color = gold;
-    final rx = size.width / 2 - rim / 2;
-    final ry = size.height / 2 - rim / 2;
-    final perimeter = math.pi * (3 * (rx + ry) - math.sqrt((3 * rx + ry) * (rx + 3 * ry)));
-    final count = (perimeter / 24).floor();
-    const motif = 13.0;
+      ..color = gold.withValues(alpha: 0.92);
+    final rx = size.width / 2 - 12;
+    final ry = size.height / 2 - 12;
+    final count = size.height > 450 ? 24 : 20;
+    const motif = 14.5;
     for (var i = 0; i < count; i++) {
       final t = 2 * math.pi * i / count;
       final pos = center + Offset(rx * math.cos(t), ry * math.sin(t));
-      // Нормаль эллипса наружу — туда смотрят рога.
       final normal = math.atan2(math.sin(t) / ry, math.cos(t) / rx);
       canvas.save();
       canvas.translate(pos.dx, pos.dy);
@@ -146,13 +159,26 @@ class KazakhTablePainter extends CustomPainter {
       canvas.restore();
     }
 
-    // Сукно — небесно-голубое, светлее к центру.
+    // Внутренний золотой кант и глубокое бархатное сукно.
+    canvas.drawOval(
+      outer.deflate(17),
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 5
+        ..shader = const LinearGradient(
+          begin: Alignment.topCenter,
+          end: Alignment.bottomCenter,
+          colors: [brightGold, Color(0xFFB77A20), Color(0xFFF0C65A)],
+        ).createShader(outer),
+    );
     canvas.drawOval(
       felt,
       Paint()
         ..shader = const RadialGradient(
-          colors: [Color(0xFF1C8FAE), Color(0xFF0B4A60)],
-          radius: 0.75,
+          center: Alignment(0, -0.08),
+          colors: [Color(0xFF0B7590), Color(0xFF075268), Color(0xFF032D3D)],
+          stops: [0, 0.58, 1],
+          radius: 0.92,
         ).createShader(felt),
     );
     canvas.drawOval(
@@ -160,27 +186,58 @@ class KazakhTablePainter extends CustomPainter {
       Paint()
         ..style = PaintingStyle.stroke
         ..strokeWidth = 1.5
-        ..color = gold.withValues(alpha: 0.8),
+        ..color = brightGold.withValues(alpha: 0.72),
     );
 
-    // Шаңырақ в центре — тонко, чтобы не мешал картам.
-    final r = math.min(felt.width, felt.height) * 0.26;
+    // Тонкая тканевая фактура, едва заметная на телефоне.
+    final texture = Paint()
+      ..color = Colors.white.withValues(alpha: 0.018)
+      ..strokeWidth = 0.7;
+    canvas.save();
+    canvas.clipPath(Path()..addOval(felt.deflate(2)));
+    for (var y = felt.top; y < felt.bottom; y += 10) {
+      canvas.drawLine(
+          Offset(felt.left, y), Offset(felt.right, y + 22), texture);
+    }
+    canvas.restore();
+
+    // Центральный водяной знак: шаңырақ и фирменные рога.
+    final r = math.min(felt.width, felt.height) * 0.24;
     final line = Paint()
       ..style = PaintingStyle.stroke
-      ..strokeWidth = 1.5
-      ..color = gold.withValues(alpha: 0.28);
+      ..strokeWidth = 1.3
+      ..color = gold.withValues(alpha: 0.18);
     canvas.drawCircle(center, r, line);
     canvas.drawCircle(center, r * 0.82, line);
     final arcs = Path()
       ..moveTo(center.dx - r, center.dy)
-      ..quadraticBezierTo(center.dx, center.dy - r * 1.35, center.dx + r, center.dy)
+      ..quadraticBezierTo(
+          center.dx, center.dy - r * 1.35, center.dx + r, center.dy)
       ..moveTo(center.dx - r, center.dy)
-      ..quadraticBezierTo(center.dx, center.dy + r * 1.35, center.dx + r, center.dy)
+      ..quadraticBezierTo(
+          center.dx, center.dy + r * 1.35, center.dx + r, center.dy)
       ..moveTo(center.dx, center.dy - r)
-      ..quadraticBezierTo(center.dx - r * 1.35, center.dy, center.dx, center.dy + r)
+      ..quadraticBezierTo(
+          center.dx - r * 1.35, center.dy, center.dx, center.dy + r)
       ..moveTo(center.dx, center.dy - r)
-      ..quadraticBezierTo(center.dx + r * 1.35, center.dy, center.dx, center.dy + r);
+      ..quadraticBezierTo(
+          center.dx + r * 1.35, center.dy, center.dx, center.dy + r);
     canvas.drawPath(arcs, line);
+
+    canvas.save();
+    canvas.translate(center.dx, center.dy);
+    canvas.scale((r * 1.25) / 100);
+    canvas.translate(-50, -50);
+    canvas.drawPath(
+      horn,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 7
+        ..strokeCap = StrokeCap.round
+        ..strokeJoin = StrokeJoin.round
+        ..color = brightGold.withValues(alpha: 0.11),
+    );
+    canvas.restore();
   }
 
   @override

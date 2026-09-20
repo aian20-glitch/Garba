@@ -1332,7 +1332,7 @@ class _GameTableScreenState extends State<GameTableScreen> {
                   width: seatWidth,
                   padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
                   decoration: BoxDecoration(
-                    color: isMain ? null : const Color(0xE60B1620),
+                    color: isMain ? null : const Color(0xF0121A22),
                     gradient: isMain
                         ? const LinearGradient(
                             begin: Alignment.topCenter,
@@ -1346,7 +1346,7 @@ class _GameTableScreenState extends State<GameTableScreen> {
                           ? Colors.greenAccent
                           : isMain
                               ? const Color(0xFFFFE9A8)
-                              : const Color(0xFF3A4A55),
+                              : const Color(0xFFB6812D),
                       width: isActive || isMain ? 2 : 1,
                     ),
                   ),
@@ -1471,19 +1471,18 @@ class _GameTableScreenState extends State<GameTableScreen> {
       return LayoutBuilder(
         builder: (context, constraints) {
           final width = constraints.maxWidth;
-          final height = math.min((width * 1.3).clamp(350.0, 520.0), maxHeight);
+          final height = math.min((width * 1.55).clamp(430.0, 610.0), maxHeight);
           return SizedBox(
             height: height,
             child: Stack(
               clipBehavior: Clip.none,
               children: [
-                // Стол в казахском стиле «Көк»: небесное сукно, деревянный бортик
-                // с золотыми рогами қошқар мүйіз, шаңырақ в центре.
+                // Большой фирменный стол занимает почти всю доступную высоту.
                 const Positioned(
-                  left: 10,
-                  right: 10,
-                  top: 26,
-                  bottom: 36,
+                  left: 2,
+                  right: 2,
+                  top: 12,
+                  bottom: 12,
                   child: CustomPaint(painter: KazakhTablePainter()),
                 ),
                 Align(
@@ -1502,7 +1501,7 @@ class _GameTableScreenState extends State<GameTableScreen> {
                   return <Widget>[
                     // Чуть сдвигаем места внутрь по вертикали: веер карт
                     // верхнего игрока тогда полностью остаётся в области стола.
-                    Align(alignment: Alignment(x, y * 0.86), child: seat(p)),
+                    Align(alignment: Alignment(x * 0.96, y * 0.89), child: seat(p)),
                     if (card != null)
                       Align(
                         alignment: Alignment(x * 0.42, y * 0.42),
@@ -1585,7 +1584,16 @@ class _GameTableScreenState extends State<GameTableScreen> {
         if (leave == true && context.mounted) Navigator.of(context).pop();
       },
       child: Scaffold(
-      body: SafeArea(
+      backgroundColor: Colors.transparent,
+      body: DecoratedBox(
+        decoration: const BoxDecoration(
+          gradient: RadialGradient(
+            center: Alignment(0, -0.25),
+            radius: 1.15,
+            colors: [Color(0xFF102536), Color(0xFF07131B), Color(0xFF02070C)],
+          ),
+        ),
+        child: SafeArea(
         child: Padding(
           padding: const EdgeInsets.fromLTRB(8, 4, 8, 8),
           child: Column(
@@ -1761,7 +1769,8 @@ class _GameTableScreenState extends State<GameTableScreen> {
                 textAlign: TextAlign.center,
                 style: TextStyle(
                   fontWeight: FontWeight.w800,
-                  color: Colors.white70,
+                  letterSpacing: 1.1,
+                  color: Color(0xFFE6B74F),
                 ),
               ),
               const SizedBox(height: 4),
@@ -2161,6 +2170,7 @@ class _GameTableScreenState extends State<GameTableScreen> {
             ],
           ),
         ),
+      ),
       ),
       ),
     );
