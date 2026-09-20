@@ -17,7 +17,20 @@ Future<void> startWhenFull(String roomId) async {
     );
     if (room.statusCode != 200) continue;
     final data = jsonDecode(room.body) as Map<String, dynamic>;
-    if (data['status'] == 'started') return;
+    if (data['status'] == 'started') {
+      final game = data['game'];
+      if (game is Map &&
+          game['stage'] == 'dealer_found' &&
+          game['dealerId']?.toString() == app.Session.id) {
+        final response = await http.post(
+          Uri.parse('${app.apiBase}/rooms/$roomId/deal'),
+          headers: app.authHeaders(),
+          body: '{}',
+        );
+        debugPrint('GARBA_MANUAL_DEALT=$roomId (${response.statusCode})');
+      }
+      return;
+    }
     final players = (data['players'] as List?)?.length ?? 0;
     final capacity = (data['capacity'] as num?)?.toInt() ?? 0;
     if (players != capacity) continue;
@@ -29,7 +42,7 @@ Future<void> startWhenFull(String roomId) async {
     );
     if (response.statusCode == 200) {
       debugPrint('GARBA_MANUAL_STARTED=$roomId');
-      return;
+      continue;
     }
     debugPrint('Не удалось автоматически начать игру: ${response.statusCode}');
     return;
