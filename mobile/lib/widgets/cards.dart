@@ -409,18 +409,6 @@ class _TrumpOpeningViewState extends State<TrumpOpeningView> {
                 style: const TextStyle(fontSize: 11, fontWeight: FontWeight.w900),
               ),
             ),
-            if (widget.izzhoga.isNotEmpty)
-              Padding(
-                padding: const EdgeInsets.only(top: 3),
-                child: Text(
-                  'ИЗЖОГА ↩ ${widget.izzhoga.map((c) => '${c['rank']}${suitSymbol(c['suit'].toString())}').join(', ')}',
-                  style: const TextStyle(
-                    color: Colors.redAccent,
-                    fontSize: 9,
-                    fontWeight: FontWeight.w800,
-                  ),
-                ),
-              ),
           ],
         ],
       ),
