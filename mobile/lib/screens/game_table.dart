@@ -1497,9 +1497,9 @@ class _GameTableScreenState extends State<GameTableScreen> {
           // За столом на 6–7 человек нужно больше вертикального пространства:
           // так места по окружности не слипаются и боковые соседи не перекрывают центр.
           final crowdedTable = n >= 6;
-          final preferredHeight = (width * (crowdedTable ? 1.55 : 1.42)).clamp(
+          final preferredHeight = (width * (crowdedTable ? 1.65 : 1.52)).clamp(
             410.0,
-            crowdedTable ? 600.0 : 550.0,
+            crowdedTable ? 640.0 : 580.0,
           );
           final height = math.min(preferredHeight, maxHeight);
           return SizedBox(
@@ -1509,10 +1509,10 @@ class _GameTableScreenState extends State<GameTableScreen> {
               children: [
                 // Большой фирменный стол занимает почти всю доступную высоту.
                 const Positioned(
-                  left: 2,
-                  right: 2,
-                  top: 12,
-                  bottom: 12,
+                  left: 0,
+                  right: 0,
+                  top: 2,
+                  bottom: 2,
                   child: CustomPaint(painter: KazakhTablePainter()),
                 ),
                 Align(

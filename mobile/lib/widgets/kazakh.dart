@@ -94,7 +94,7 @@ class KazakhTablePainter extends CustomPainter {
   void paint(Canvas canvas, Size size) {
     final bounds = Offset.zero & size;
     final center = bounds.center;
-    final outerRect = Rect.fromLTRB(3, 18, size.width - 3, size.height - 18);
+    final outerRect = Rect.fromLTRB(3, 3, size.width - 3, size.height - 3);
     final outerRadius = Radius.circular(size.width * 0.28);
     final outer = RRect.fromRectAndRadius(outerRect, outerRadius);
     final feltRect = outerRect.deflate(18);
