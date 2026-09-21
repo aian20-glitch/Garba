@@ -1490,9 +1490,10 @@ class _GameTableScreenState extends State<GameTableScreen> {
       return LayoutBuilder(
         builder: (context, constraints) {
           final width = constraints.maxWidth;
-          // Размер зависит только от ширины телефона. Всплывающие сообщения и
-          // кнопки больше не сжимают стол по вертикали.
-          final height = (width * 1.55).clamp(430.0, 610.0);
+          // Стол целиком помещается между верхней строкой и рукой. Пауза и
+          // другие всплывающие сообщения лежат поверх него и размер не меняют.
+          final preferredHeight = (width * 1.42).clamp(410.0, 550.0);
+          final height = math.min(preferredHeight, maxHeight);
           return SizedBox(
             height: height,
             child: Stack(
