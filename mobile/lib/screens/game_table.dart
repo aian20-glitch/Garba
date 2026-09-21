@@ -1532,13 +1532,17 @@ class _GameTableScreenState extends State<GameTableScreen> {
                   final verticalSpread = crowdedTable ? 0.73 : 0.65;
                   final isNeighbour = crowdedTable && (k == 1 || k == n - 1);
                   final isTopPair = n == 7 && (k == 3 || k == 4);
+                  final seatX = (x * horizontalSpread +
+                          (isTopPair ? (x.isNegative ? -0.10 : 0.10) : 0.0))
+                      .clamp(-1.0, 1.0);
                   final seatY = (y * verticalSpread +
                           (isNeighbour ? 0.12 : 0.0) -
-                          (isTopPair ? 0.08 : 0.0))
+                          (isTopPair ? 0.08 : 0.0) +
+                          (crowdedTable && k == 0 ? 0.06 : 0.0))
                       .clamp(-1.0, 1.0);
                   return <Widget>[
                     Align(
-                      alignment: Alignment(x * horizontalSpread, seatY),
+                      alignment: Alignment(seatX, seatY),
                       child: seat(p),
                     ),
                     if (card != null)
