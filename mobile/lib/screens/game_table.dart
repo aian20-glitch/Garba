@@ -1531,7 +1531,10 @@ class _GameTableScreenState extends State<GameTableScreen> {
                   final horizontalSpread = crowdedTable ? 0.94 : 0.86;
                   final verticalSpread = crowdedTable ? 0.73 : 0.65;
                   final isNeighbour = crowdedTable && (k == 1 || k == n - 1);
-                  final seatY = (y * verticalSpread + (isNeighbour ? 0.12 : 0.0))
+                  final isTopPair = n == 7 && (k == 3 || k == 4);
+                  final seatY = (y * verticalSpread +
+                          (isNeighbour ? 0.12 : 0.0) -
+                          (isTopPair ? 0.08 : 0.0))
                       .clamp(-1.0, 1.0);
                   return <Widget>[
                     Align(
