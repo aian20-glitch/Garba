@@ -84,17 +84,16 @@ Future<void> main() async {
   }
   debugPrint('GARBA_MANUAL_ROOM=$roomId');
   await app.main();
-  // Ручная проверка открывает стол напрямую, в том числе уже начатую игру.
-  // Экран приглашения подходит для новых участников, но не для возврата.
+  // Ручная проверка открывает стол поверх главного экрана. Тогда обычная
+  // стрелка выхода из игры возвращает на главный экран, как в приложении.
   await Future<void>.delayed(const Duration(seconds: 2));
-  app.navigatorKey.currentState?.pushAndRemoveUntil(
+  app.navigatorKey.currentState?.push(
     MaterialPageRoute(
       builder: (_) => app.LobbyScreen(
         roomCode: roomId!,
         currentPlayerId: app.Session.id,
       ),
     ),
-    (_) => false,
   );
   unawaited(startWhenFull(roomId));
 }
