@@ -300,14 +300,14 @@ class PlayerCardFan extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return SizedBox(
-      width: 96,
-      height: 54,
+      width: 110,
+      height: 60,
       child: Stack(
         clipBehavior: Clip.none,
         children: [
           for (var index = 0; index < 5; index++)
             Positioned(
-              left: 2 + index * 15,
+              left: 1 + index * 18,
               top: (index - 2).abs() * 2,
               child: Transform.rotate(
                 angle: (index - 2) * 0.11,
@@ -336,8 +336,8 @@ class _FanCard extends StatelessWidget {
     final red = suit != null && isRedSuit(suit);
 
     return Container(
-      width: 32,
-      height: 49,
+      width: 37,
+      height: 56,
       decoration: BoxDecoration(
         borderRadius: BorderRadius.circular(4),
         border: Border.all(
@@ -407,31 +407,36 @@ class PlayerHandRow extends StatelessWidget {
   Widget build(BuildContext context) {
     return LayoutBuilder(
       builder: (context, constraints) {
-        const gap = 4.0;
+        const gap = 3.0;
+        const sidePadding = 5.0;
         final slots = itemCount > 5 ? itemCount : 5;
-        final cardWidth = ((constraints.maxWidth - gap * (slots - 1)) / slots)
-            .clamp(0.0, 70.0);
+        final available = constraints.maxWidth - sidePadding * 2;
+        final cardWidth =
+            ((available - gap * (slots - 1)) / slots).clamp(0.0, 68.0);
         final cardHeight = cardWidth * 128 / 78;
         return SizedBox(
           height: cardHeight,
-          child: Row(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              for (var index = 0; index < itemCount; index++) ...[
-                if (index > 0) const SizedBox(width: gap),
-                SizedBox(
-                  width: cardWidth,
-                  height: cardHeight,
-                  child: FittedBox(
-                    child: SizedBox(
-                      width: 78,
-                      height: 128,
-                      child: itemBuilder(context, index),
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: sidePadding),
+            child: Row(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                for (var index = 0; index < itemCount; index++) ...[
+                  if (index > 0) const SizedBox(width: gap),
+                  SizedBox(
+                    width: cardWidth,
+                    height: cardHeight,
+                    child: FittedBox(
+                      child: SizedBox(
+                        width: 78,
+                        height: 128,
+                        child: itemBuilder(context, index),
+                      ),
                     ),
                   ),
-                ),
+                ],
               ],
-            ],
+            ),
           ),
         );
       },

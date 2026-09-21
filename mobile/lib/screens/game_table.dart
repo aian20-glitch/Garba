@@ -1243,6 +1243,140 @@ class _GameTableScreenState extends State<GameTableScreen> {
                 isDiscard ||
                 stage == 'kon_trump');
 
+        final namePlate = Container(
+          width: seatWidth,
+          padding: const EdgeInsets.fromLTRB(4, 3, 4, 2),
+          decoration: BoxDecoration(
+            color: isMain ? null : const Color(0xF0121A22),
+            gradient: isMain
+                ? const LinearGradient(
+                    begin: Alignment.topCenter,
+                    end: Alignment.bottomCenter,
+                    colors: [Color(0xFFF0CF7A), Color(0xFFC08A2E)],
+                  )
+                : null,
+            borderRadius: BorderRadius.circular(8),
+            border: Border.all(
+              color: isActive
+                  ? Colors.greenAccent
+                  : isMain
+                      ? const Color(0xFFFFE9A8)
+                      : const Color(0xFFB6812D),
+              width: isActive || isMain ? 2 : 1,
+            ),
+          ),
+          child: Column(
+            children: [
+              Text(
+                p['name'].toString(),
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(
+                  fontSize: 12,
+                  fontWeight: FontWeight.w900,
+                  color: isMain ? Colors.black : Colors.white,
+                ),
+              ),
+              FittedBox(
+                fit: BoxFit.scaleDown,
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    const CoinIcon(size: 11),
+                    const SizedBox(width: 2),
+                    Text(
+                      '${fmtCoins(balanceOf(pId))}  ⭐${fmtRating(p['rating'])}',
+                      style: TextStyle(
+                        fontSize: 10,
+                        fontWeight: FontWeight.w700,
+                        color: isMain ? Colors.black87 : gold,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        );
+
+        final avatarBadge = Stack(
+          clipBehavior: Clip.none,
+          children: [
+            // Кольцо рисуется поверх плашки имени.
+            Container(
+              padding: const EdgeInsets.all(2),
+              decoration: BoxDecoration(
+                shape: BoxShape.circle,
+                color: const Color(0xFF0B1620),
+                border: Border.all(
+                  color: isActive
+                      ? Colors.greenAccent
+                      : isMain
+                          ? gold
+                          : const Color(0xFF3A4A55),
+                  width: isMain ? 3.5 : 2.5,
+                ),
+                boxShadow: [
+                  if (isMain)
+                    BoxShadow(
+                      color: gold.withValues(alpha: 0.7),
+                      blurRadius: 14,
+                      spreadRadius: 1,
+                    ),
+                  if (isActive)
+                    BoxShadow(
+                      color: Colors.greenAccent.withValues(alpha: 0.5),
+                      blurRadius: 10,
+                    ),
+                ],
+              ),
+              child: AvatarView(
+                avatar: p['avatar']?.toString(),
+                name: p['name'].toString(),
+                radius: 17,
+              ),
+            ),
+            if (isMain)
+              const Positioned(
+                left: -5,
+                top: -5,
+                child: Icon(Icons.star, size: 16, color: gold),
+              ),
+            if (pId == dealerId)
+              Positioned(
+                right: -8,
+                top: -4,
+                child: Container(
+                  width: 19,
+                  height: 19,
+                  alignment: Alignment.center,
+                  decoration: BoxDecoration(
+                    color: Colors.white,
+                    shape: BoxShape.circle,
+                    border: Border.all(color: Colors.black26, width: 2),
+                  ),
+                  child: const Text(
+                    'Р',
+                    style: TextStyle(
+                      fontSize: 10,
+                      fontWeight: FontWeight.w900,
+                      color: Colors.black,
+                    ),
+                  ),
+                ),
+              ),
+            if (flyingEmoji[pId] != null)
+              Positioned(
+                right: -22,
+                bottom: -4,
+                child: Text(
+                  flyingEmoji[pId]!,
+                  style: const TextStyle(fontSize: 22),
+                ),
+              ),
+          ],
+        );
+
         // Нажатие на игрока — его карточка: добавить в друзья, подарок.
         return GestureDetector(
           onTap: () => openPlayerCard(context, p),
@@ -1251,137 +1385,22 @@ class _GameTableScreenState extends State<GameTableScreen> {
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
-              Stack(
-                clipBehavior: Clip.none,
-                children: [
-                  if (showCardFan)
-                    Positioned(
-                      left: -22,
-                      top: -32,
-                      child: PlayerCardFan(revealedCards: revealedCards),
-                    ),
-                  // Чей ход — зелёное кольцо со свечением, главный — золотое со свечением.
-                  Container(
-                    padding: const EdgeInsets.all(2.5),
-                    decoration: BoxDecoration(
-                      shape: BoxShape.circle,
-                      color: const Color(0xFF0B1620),
-                      border: Border.all(
-                        color: isActive
-                            ? Colors.greenAccent
-                            : isMain
-                                ? gold
-                                : const Color(0xFF3A4A55),
-                        width: isMain ? 4 : 3,
+              SizedBox(
+                width: seatWidth,
+                height: 86,
+                child: Stack(
+                  clipBehavior: Clip.none,
+                  alignment: Alignment.topCenter,
+                  children: [
+                    if (showCardFan)
+                      Positioned(
+                        left: -7,
+                        top: -13,
+                        child: PlayerCardFan(revealedCards: revealedCards),
                       ),
-                      boxShadow: [
-                        if (isMain) BoxShadow(color: gold.withValues(alpha: 0.7), blurRadius: 16, spreadRadius: 2),
-                        if (isActive) BoxShadow(color: Colors.greenAccent.withValues(alpha: 0.5), blurRadius: 12),
-                      ],
-                    ),
-                    child: AvatarView(
-                      avatar: p['avatar']?.toString(),
-                      name: p['name'].toString(),
-                      radius: 21,
-                    ),
-                  ),
-                  if (isMain)
-                    const Positioned(
-                      left: -6,
-                      top: -6,
-                      child: Icon(Icons.star, size: 18, color: gold),
-                    ),
-                  // Раздающий — фишка «Р», как кнопка дилера в покере.
-                  if (pId == dealerId)
-                    Positioned(
-                      right: -8,
-                      top: -4,
-                      child: Container(
-                        width: 20,
-                        height: 20,
-                        alignment: Alignment.center,
-                        decoration: BoxDecoration(
-                          color: Colors.white,
-                          shape: BoxShape.circle,
-                          border: Border.all(color: Colors.black26, width: 2),
-                        ),
-                        child: const Text(
-                          'Р',
-                          style: TextStyle(
-                            fontSize: 11,
-                            fontWeight: FontWeight.w900,
-                            color: Colors.black,
-                          ),
-                        ),
-                      ),
-                    ),
-                  // Смайлик этого игрока, если он только что его отправил.
-                  if (flyingEmoji[pId] != null)
-                    Positioned(
-                      right: -22,
-                      bottom: -4,
-                      child: Text(flyingEmoji[pId]!, style: const TextStyle(fontSize: 22)),
-                    ),
-                ],
-              ),
-              // Табличка: имя и монеты.
-              Transform.translate(
-                offset: const Offset(0, -6),
-                // Главный — золотая табличка: его видно сразу.
-                child: Container(
-                  width: seatWidth,
-                  padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
-                  decoration: BoxDecoration(
-                    color: isMain ? null : const Color(0xF0121A22),
-                    gradient: isMain
-                        ? const LinearGradient(
-                            begin: Alignment.topCenter,
-                            end: Alignment.bottomCenter,
-                            colors: [Color(0xFFF0CF7A), Color(0xFFC08A2E)],
-                          )
-                        : null,
-                    borderRadius: BorderRadius.circular(8),
-                    border: Border.all(
-                      color: isActive
-                          ? Colors.greenAccent
-                          : isMain
-                              ? const Color(0xFFFFE9A8)
-                              : const Color(0xFFB6812D),
-                      width: isActive || isMain ? 2 : 1,
-                    ),
-                  ),
-                  child: Column(
-                    children: [
-                      Text(
-                        p['name'].toString(),
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: TextStyle(
-                          fontSize: 12,
-                          fontWeight: FontWeight.w900,
-                          color: isMain ? Colors.black : Colors.white,
-                        ),
-                      ),
-                      FittedBox(
-                        fit: BoxFit.scaleDown,
-                        child: Row(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            const CoinIcon(size: 11),
-                            const SizedBox(width: 2),
-                            Text(
-                              '${fmtCoins(balanceOf(pId))}  ⭐${fmtRating(p['rating'])}',
-                              style: TextStyle(
-                                fontSize: 10,
-                                fontWeight: FontWeight.w700,
-                                color: isMain ? Colors.black87 : gold,
-                              ),
-                            ),
-                          ],
-                        ),
-                      ),
-                    ],
-                  ),
+                    Positioned(top: 48, child: namePlate),
+                    Positioned(top: 13, child: avatarBadge),
+                  ],
                 ),
               ),
               // Заявка в торгах или взятки в розыгрыше — плашкой.
@@ -1471,7 +1490,9 @@ class _GameTableScreenState extends State<GameTableScreen> {
       return LayoutBuilder(
         builder: (context, constraints) {
           final width = constraints.maxWidth;
-          final height = math.min((width * 1.55).clamp(430.0, 610.0), maxHeight);
+          // Размер зависит только от ширины телефона. Всплывающие сообщения и
+          // кнопки больше не сжимают стол по вертикали.
+          final height = (width * 1.55).clamp(430.0, 610.0);
           return SizedBox(
             height: height,
             child: Stack(
@@ -1501,7 +1522,7 @@ class _GameTableScreenState extends State<GameTableScreen> {
                   return <Widget>[
                     // Чуть сдвигаем места внутрь по вертикали: веер карт
                     // верхнего игрока тогда полностью остаётся в области стола.
-                    Align(alignment: Alignment(x * 0.96, y * 0.89), child: seat(p)),
+                    Align(alignment: Alignment(x * 0.86, y * 0.65), child: seat(p)),
                     if (card != null)
                       Align(
                         alignment: Alignment(x * 0.42, y * 0.42),
@@ -1648,37 +1669,6 @@ class _GameTableScreenState extends State<GameTableScreen> {
                   ),
                 ],
               ),
-              if (paused && !isRoomDone)
-                Container(
-                  margin: const EdgeInsets.only(top: 6),
-                  padding: const EdgeInsets.all(8),
-                  decoration: BoxDecoration(
-                    color: Colors.orange.withValues(alpha: 0.15),
-                    borderRadius: BorderRadius.circular(8),
-                    border: Border.all(color: Colors.orangeAccent),
-                  ),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.stretch,
-                    children: [
-                      Text(
-                        '${pausedPlayers.map((p) => '${p['name']} ${p['reason'] == 'away' ? 'отошёл (два хода за него сходил таймер)' : 'отключился'} — ждём ${countdown(p)}').join('\n')}\n'
-                        'Не вернётся — игра прекращается, кон делится поровну между оставшимися, '
-                        'а ушедший теряет 1.0 рейтинга.',
-                        textAlign: TextAlign.center,
-                        style: const TextStyle(color: Colors.orangeAccent, fontSize: 13),
-                      ),
-                      // Это я отошёл — одно нажатие, и игра продолжается (§13a).
-                      if (iAmAway)
-                        Padding(
-                          padding: const EdgeInsets.only(top: 6),
-                          child: FilledButton(
-                            onPressed: sendingSpecial ? null : () => sendSpecial('back', {}),
-                            child: const Text('Я ЗДЕСЬ'),
-                          ),
-                        ),
-                    ],
-                  ),
-                ),
               if (closing && !isRoomDone)
                 Padding(
                   padding: const EdgeInsets.only(top: 6),
@@ -1724,6 +1714,67 @@ class _GameTableScreenState extends State<GameTableScreen> {
                     ],
                     ),
                   ),
+                  if (paused && !isRoomDone)
+                    Positioned(
+                      left: 10,
+                      right: 10,
+                      top: 12,
+                      child: Container(
+                        padding: const EdgeInsets.all(12),
+                        decoration: BoxDecoration(
+                          color: const Color(0xF20B1620),
+                          borderRadius: BorderRadius.circular(16),
+                          border: Border.all(
+                            color: const Color(0xFFE6B74F),
+                            width: 1.5,
+                          ),
+                          boxShadow: const [
+                            BoxShadow(
+                              color: Colors.black54,
+                              blurRadius: 18,
+                              offset: Offset(0, 6),
+                            ),
+                          ],
+                        ),
+                        child: Column(
+                          mainAxisSize: MainAxisSize.min,
+                          crossAxisAlignment: CrossAxisAlignment.stretch,
+                          children: [
+                            Text(
+                              pausedPlayers
+                                  .map((p) =>
+                                      '${p['name']} ${p['reason'] == 'away' ? 'отошёл' : 'отключился'} — ждём ${countdown(p)}')
+                                  .join('\n'),
+                              textAlign: TextAlign.center,
+                              style: const TextStyle(
+                                color: Color(0xFFFFC04D),
+                                fontSize: 13,
+                                fontWeight: FontWeight.w800,
+                              ),
+                            ),
+                            const SizedBox(height: 5),
+                            const Text(
+                              'Не вернётся — игра прекратится, кон разделят оставшиеся игроки.',
+                              textAlign: TextAlign.center,
+                              style: TextStyle(
+                                color: Colors.white70,
+                                fontSize: 11,
+                              ),
+                            ),
+                            if (iAmAway)
+                              Padding(
+                                padding: const EdgeInsets.only(top: 8),
+                                child: FilledButton(
+                                  onPressed: sendingSpecial
+                                      ? null
+                                      : () => sendSpecial('back', {}),
+                                  child: const Text('Я ЗДЕСЬ'),
+                                ),
+                              ),
+                          ],
+                        ),
+                      ),
+                    ),
                   if (announcement != null)
                     Positioned.fill(
                       child: IgnorePointer(

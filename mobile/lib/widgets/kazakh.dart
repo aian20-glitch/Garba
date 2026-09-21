@@ -92,152 +92,155 @@ class KazakhTablePainter extends CustomPainter {
 
   @override
   void paint(Canvas canvas, Size size) {
-    final outer = Offset.zero & size;
-    const rim = 22.0;
-    final felt = outer.deflate(rim);
-    final center = outer.center;
+    final bounds = Offset.zero & size;
+    final center = bounds.center;
+    final outerRect = Rect.fromLTRB(3, 18, size.width - 3, size.height - 18);
+    final outerRadius = Radius.circular(size.width * 0.28);
+    final outer = RRect.fromRectAndRadius(outerRect, outerRadius);
+    final feltRect = outerRect.deflate(18);
+    final felt = RRect.fromRectAndRadius(
+      feltRect,
+      Radius.circular(size.width * 0.23),
+    );
+    final horn = kazakhHornPath();
 
-    // Глубокая тень отделяет стол от тёмного фона экрана.
-    canvas.drawOval(
-      outer.shift(const Offset(0, 9)),
+    void drawHorn(Offset at, double motifSize, double angle, double alpha) {
+      canvas.save();
+      canvas.translate(at.dx, at.dy);
+      canvas.rotate(angle);
+      canvas.scale(motifSize / 100);
+      canvas.translate(-50, -50);
+      canvas.drawPath(
+        horn,
+        Paint()
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = 7
+          ..strokeCap = StrokeCap.round
+          ..strokeJoin = StrokeJoin.round
+          ..color = brightGold.withValues(alpha: alpha),
+      );
+      canvas.restore();
+    }
+
+    // Декоративные выступы сверху и снизу, как у резного игрового стола.
+    for (final top in [true, false]) {
+      final capCenter = Offset(center.dx, top ? 20 : size.height - 20);
+      final capRect = Rect.fromCenter(
+        center: capCenter,
+        width: size.width * 0.58,
+        height: 38,
+      );
+      final cap = RRect.fromRectAndRadius(capRect, const Radius.circular(19));
+      canvas.drawRRect(
+        cap,
+        Paint()
+          ..shader = const LinearGradient(
+            colors: [Color(0xFF3B200B), Color(0xFFC88A2A), Color(0xFF3B200B)],
+          ).createShader(capRect),
+      );
+      canvas.drawRRect(
+        cap,
+        Paint()
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = 2
+          ..color = brightGold,
+      );
+      drawHorn(capCenter, 25, top ? 0 : math.pi, 0.95);
+    }
+
+    canvas.drawRRect(
+      outer.shift(const Offset(0, 7)),
       Paint()
         ..color = const Color(0xCC000000)
-        ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 18),
+        ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 16),
     );
-
-    // Внешняя рама: почти чёрное дерево с золотым светом по центру.
-    canvas.drawOval(
+    canvas.drawRRect(
       outer,
       Paint()
-        ..shader = const RadialGradient(
-          colors: [Color(0xFF9A651E), Color(0xFF39200D), Color(0xFF090B0D)],
-          stops: [0, 0.72, 1],
-          radius: 0.9,
-        ).createShader(outer),
+        ..shader = const LinearGradient(
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+          colors: [Color(0xFFFFD87A), Color(0xFF7E4A12), Color(0xFFD99A35)],
+        ).createShader(outerRect),
     );
-    canvas.drawOval(
-      outer.deflate(1.5),
+    canvas.drawRRect(
+      RRect.fromRectAndRadius(
+        outerRect.deflate(5),
+        Radius.circular(size.width * 0.27),
+      ),
+      Paint()..color = const Color(0xFF241508),
+    );
+    canvas.drawRRect(
+      RRect.fromRectAndRadius(
+        outerRect.deflate(10),
+        Radius.circular(size.width * 0.25),
+      ),
       Paint()
         ..style = PaintingStyle.stroke
         ..strokeWidth = 3
         ..shader = const LinearGradient(
-          begin: Alignment.topLeft,
-          end: Alignment.bottomRight,
-          colors: [brightGold, Color(0xFF9B651A), brightGold],
-        ).createShader(outer),
-    );
-    canvas.drawOval(
-      outer.deflate(8),
-      Paint()
-        ..style = PaintingStyle.stroke
-        ..strokeWidth = 2.5
-        ..color = const Color(0xFF3D260F),
+          colors: [brightGold, Color(0xFF9D661C), brightGold],
+        ).createShader(outerRect),
     );
 
-    // Крупный ритм казахского орнамента по раме.
-    final horn = kazakhHornPath();
-    final hornPaint = Paint()
-      ..style = PaintingStyle.stroke
-      ..strokeWidth = 8
-      ..strokeCap = StrokeCap.round
-      ..strokeJoin = StrokeJoin.round
-      ..color = gold.withValues(alpha: 0.92);
-    final rx = size.width / 2 - 12;
-    final ry = size.height / 2 - 12;
-    final count = size.height > 450 ? 24 : 20;
-    const motif = 14.5;
-    for (var i = 0; i < count; i++) {
-      final t = 2 * math.pi * i / count;
-      final pos = center + Offset(rx * math.cos(t), ry * math.sin(t));
-      final normal = math.atan2(math.sin(t) / ry, math.cos(t) / rx);
-      canvas.save();
-      canvas.translate(pos.dx, pos.dy);
-      canvas.rotate(normal + math.pi / 2);
-      canvas.scale(motif / 100);
-      canvas.translate(-50, -55);
-      canvas.drawPath(horn, hornPaint);
-      canvas.restore();
-    }
-
-    // Внутренний золотой кант и глубокое бархатное сукно.
-    canvas.drawOval(
-      outer.deflate(17),
-      Paint()
-        ..style = PaintingStyle.stroke
-        ..strokeWidth = 5
-        ..shader = const LinearGradient(
-          begin: Alignment.topCenter,
-          end: Alignment.bottomCenter,
-          colors: [brightGold, Color(0xFFB77A20), Color(0xFFF0C65A)],
-        ).createShader(outer),
-    );
-    canvas.drawOval(
+    canvas.drawRRect(
       felt,
       Paint()
         ..shader = const RadialGradient(
-          center: Alignment(0, -0.08),
-          colors: [Color(0xFF0B7590), Color(0xFF075268), Color(0xFF032D3D)],
-          stops: [0, 0.58, 1],
-          radius: 0.92,
-        ).createShader(felt),
+          center: Alignment(0, -0.18),
+          radius: 1.05,
+          colors: [Color(0xFF0B6090), Color(0xFF06456C), Color(0xFF02263F)],
+          stops: [0, 0.62, 1],
+        ).createShader(feltRect),
     );
-    canvas.drawOval(
+    canvas.drawRRect(
       felt,
       Paint()
         ..style = PaintingStyle.stroke
-        ..strokeWidth = 1.5
-        ..color = brightGold.withValues(alpha: 0.72),
+        ..strokeWidth = 2
+        ..color = brightGold.withValues(alpha: 0.82),
     );
 
-    // Тонкая тканевая фактура, едва заметная на телефоне.
+    // Едва заметная фактура сукна.
+    canvas.save();
+    canvas.clipRRect(felt);
     final texture = Paint()
       ..color = Colors.white.withValues(alpha: 0.018)
       ..strokeWidth = 0.7;
-    canvas.save();
-    canvas.clipPath(Path()..addOval(felt.deflate(2)));
-    for (var y = felt.top; y < felt.bottom; y += 10) {
+    for (var y = feltRect.top; y < feltRect.bottom; y += 9) {
       canvas.drawLine(
-          Offset(felt.left, y), Offset(felt.right, y + 22), texture);
+        Offset(feltRect.left, y),
+        Offset(feltRect.right, y + 20),
+        texture,
+      );
     }
     canvas.restore();
 
-    // Центральный водяной знак: шаңырақ и фирменные рога.
-    final r = math.min(felt.width, felt.height) * 0.24;
-    final line = Paint()
-      ..style = PaintingStyle.stroke
-      ..strokeWidth = 1.3
-      ..color = gold.withValues(alpha: 0.18);
-    canvas.drawCircle(center, r, line);
-    canvas.drawCircle(center, r * 0.82, line);
-    final arcs = Path()
-      ..moveTo(center.dx - r, center.dy)
-      ..quadraticBezierTo(
-          center.dx, center.dy - r * 1.35, center.dx + r, center.dy)
-      ..moveTo(center.dx - r, center.dy)
-      ..quadraticBezierTo(
-          center.dx, center.dy + r * 1.35, center.dx + r, center.dy)
-      ..moveTo(center.dx, center.dy - r)
-      ..quadraticBezierTo(
-          center.dx - r * 1.35, center.dy, center.dx, center.dy + r)
-      ..moveTo(center.dx, center.dy - r)
-      ..quadraticBezierTo(
-          center.dx + r * 1.35, center.dy, center.dx, center.dy + r);
-    canvas.drawPath(arcs, line);
+    // Акцентные орнаменты по прямым бокам рамки.
+    for (final fraction in [0.27, 0.5, 0.73]) {
+      final y = outerRect.top + outerRect.height * fraction;
+      drawHorn(Offset(outerRect.left + 10, y), 18, -math.pi / 2, 0.82);
+      drawHorn(Offset(outerRect.right - 10, y), 18, math.pi / 2, 0.82);
+    }
 
-    canvas.save();
-    canvas.translate(center.dx, center.dy);
-    canvas.scale((r * 1.25) / 100);
-    canvas.translate(-50, -50);
-    canvas.drawPath(
-      horn,
-      Paint()
-        ..style = PaintingStyle.stroke
-        ..strokeWidth = 7
-        ..strokeCap = StrokeCap.round
-        ..strokeJoin = StrokeJoin.round
-        ..color = brightGold.withValues(alpha: 0.11),
+    // Большой спокойный водяной знак в центре сукна.
+    drawHorn(center.translate(0, -12), size.width * 0.38, 0, 0.10);
+    final title = TextPainter(
+      text: TextSpan(
+        text: 'ГАРБА',
+        style: TextStyle(
+          color: brightGold.withValues(alpha: 0.10),
+          fontSize: size.width * 0.075,
+          fontWeight: FontWeight.w700,
+          letterSpacing: 2,
+        ),
+      ),
+      textDirection: TextDirection.ltr,
+    )..layout();
+    title.paint(
+      canvas,
+      Offset(center.dx - title.width / 2, center.dy + size.width * 0.16),
     );
-    canvas.restore();
   }
 
   @override
