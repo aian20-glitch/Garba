@@ -91,7 +91,7 @@ class _CreateRoomScreenState extends State<CreateRoomScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: const Text('Создать комнату')),
+      appBar: backOnlyAppBar(),
       // Настроек четыре блока — на небольшом экране они не влезут,
       // поэтому прокручиваем их, а кнопка создания всегда видна внизу.
       body: SafeArea(
@@ -333,7 +333,7 @@ class _JoinRoomScreenState extends State<JoinRoomScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: const Text('Войти по коду')),
+      appBar: backOnlyAppBar(),
       body: Padding(
         padding: const EdgeInsets.all(20),
         child: Column(

@@ -122,7 +122,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
   Widget build(BuildContext context) {
     final p = profile;
     return Scaffold(
-      appBar: AppBar(title: const Text('Профиль')),
+      appBar: backOnlyAppBar(),
       body: p == null
           ? Center(child: error == null ? const CircularProgressIndicator() : Text(error!))
           : ListView(
@@ -297,7 +297,7 @@ class _FriendsScreenState extends State<FriendsScreen> {
   Widget build(BuildContext context) {
     final list = friends;
     return Scaffold(
-      appBar: AppBar(title: const Text('Друзья')),
+      appBar: backOnlyAppBar(),
       body: SafeArea(
         child: Padding(
           padding: const EdgeInsets.all(20),
@@ -533,7 +533,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
   Widget build(BuildContext context) {
     final p = player;
     return Scaffold(
-      appBar: AppBar(title: Text(p?['name']?.toString() ?? 'Игрок')),
+      appBar: backOnlyAppBar(),
       body: p == null
           ? Center(child: error == null ? const CircularProgressIndicator() : Text(error!))
           : ListView(

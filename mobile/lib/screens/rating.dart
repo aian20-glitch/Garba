@@ -6,62 +6,21 @@ class RatingScreen extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return const DefaultTabController(
+    return DefaultTabController(
       length: 2,
       child: Scaffold(
-        appBar: _RatingAppBar(),
-        body: TabBarView(
+        appBar: backOnlyAppBar(
+          bottom: const TabBar(
+            tabs: [Tab(text: 'ДРУЗЬЯ'), Tab(text: 'ВСЕ ИГРОКИ')],
+          ),
+        ),
+        body: const TabBarView(
           children: [
             RatingList(scope: 'friends'),
             RatingList(scope: 'all'),
           ],
         ),
       ),
-    );
-  }
-}
-
-class _RatingAppBar extends StatelessWidget implements PreferredSizeWidget {
-  const _RatingAppBar();
-
-  @override
-  Size get preferredSize => const Size.fromHeight(kToolbarHeight + kTextTabBarHeight);
-
-  @override
-  Widget build(BuildContext context) {
-    return AppBar(
-      title: const Text('Рейтинг'),
-      actions: [
-        IconButton(
-          icon: const Icon(Icons.help_outline),
-          onPressed: () => showDialog<void>(
-            context: context,
-            builder: (dialogContext) => AlertDialog(
-              title: const Text('Как считается рейтинг'),
-              content: const SingleChildScrollView(
-                child: Text(
-                  'Рейтинг от 0 до 10, новичок начинает с 4.0.\n\n'
-                  'Опыт: +0.01 за каждую сыгранную партию, до 2.0.\n\n'
-                  'Главный выиграл: +0.05 × риск. Проиграл: −0.03 × риск. ГАРБА: ещё +0.10.\n'
-                  'Не дали главному взять 3 взятки: каждому +0.02.\n\n'
-                  'После комнаты: победитель +0.50, в плюсе +0.20, в минусе −0.20, '
-                  'проиграл больше всех −0.40.\n'
-                  'Ушёл из игры и из-за тебя закрылась комната: −1.0.\n\n'
-                  'Обыграл сильных — баллов больше. За большим столом прибавка больше. '
-                  'Чем выше рейтинг, тем медленнее он растёт — 10 получить очень трудно.',
-                ),
-              ),
-              actions: [
-                TextButton(
-                  onPressed: () => Navigator.pop(dialogContext),
-                  child: const Text('ПОНЯТНО'),
-                ),
-              ],
-            ),
-          ),
-        ),
-      ],
-      bottom: const TabBar(tabs: [Tab(text: 'ДРУЗЬЯ'), Tab(text: 'ВСЕ ИГРОКИ')]),
     );
   }
 }

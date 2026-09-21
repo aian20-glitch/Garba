@@ -80,7 +80,7 @@ class RulesScreen extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: const Text('Правила')),
+      appBar: backOnlyAppBar(),
       body: ListView(
         padding: const EdgeInsets.all(20),
         children: _sections

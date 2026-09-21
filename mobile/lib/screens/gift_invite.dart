@@ -127,7 +127,7 @@ class _GiftScreenState extends State<GiftScreen> {
   Widget build(BuildContext context) {
     if (!loaded) {
       return Scaffold(
-        appBar: AppBar(title: const Text('Подарить монеты')),
+        appBar: backOnlyAppBar(),
         body: Center(child: error == null ? const CircularProgressIndicator() : Text(error!)),
       );
     }
@@ -139,7 +139,7 @@ class _GiftScreenState extends State<GiftScreen> {
             : null;
 
     return Scaffold(
-      appBar: AppBar(title: const Text('Подарить монеты')),
+      appBar: backOnlyAppBar(),
       body: SafeArea(
         child: Padding(
           padding: const EdgeInsets.all(20),
@@ -225,7 +225,7 @@ class InviteScreen extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: const Text('Пригласить друга')),
+      appBar: backOnlyAppBar(),
       body: SafeArea(
         child: Padding(
           padding: const EdgeInsets.all(20),

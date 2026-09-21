@@ -1,6 +1,29 @@
 // Общие элементы: строка игрока, кнопка, плитка главного экрана.
 part of '../main.dart';
 
+// Внутренние экраны не используют отдельную «шапку»: остаётся только
+// компактная стрелка возврата поверх общего фона приложения.
+PreferredSizeWidget backOnlyAppBar({PreferredSizeWidget? bottom}) => AppBar(
+      automaticallyImplyLeading: false,
+      backgroundColor: Colors.transparent,
+      surfaceTintColor: Colors.transparent,
+      shadowColor: Colors.transparent,
+      elevation: 0,
+      toolbarHeight: 44,
+      leadingWidth: 48,
+      leading: Builder(
+        builder: (context) => IconButton(
+          tooltip: 'Назад',
+          onPressed: () => Navigator.of(context).maybePop(),
+          padding: EdgeInsets.zero,
+          constraints: const BoxConstraints.tightFor(width: 32, height: 32),
+          iconSize: 20,
+          icon: const Icon(Icons.arrow_back_ios_new),
+        ),
+      ),
+      bottom: bottom,
+    );
+
 // Единый значок игровой монеты. Системный emoji на iPhone выглядел как
 // серая луна, поэтому во всём приложении используем жёлтую Material-иконку.
 class CoinIcon extends StatelessWidget {

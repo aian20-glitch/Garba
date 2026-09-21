@@ -150,7 +150,7 @@ class _DealerSelectionScreenState extends State<DealerSelectionScreen> {
     final data = room;
     if (data == null) {
       return Scaffold(
-        appBar: AppBar(title: Text('Комната #${widget.roomCode}')),
+        appBar: backOnlyAppBar(),
         body: const Center(child: CircularProgressIndicator()),
       );
     }
@@ -169,7 +169,7 @@ class _DealerSelectionScreenState extends State<DealerSelectionScreen> {
     final current = shown.isNotEmpty ? shown.last : null;
 
     return Scaffold(
-      appBar: AppBar(title: Text('Комната #${widget.roomCode}')),
+      appBar: backOnlyAppBar(),
       body: SafeArea(
         child: Padding(
           padding: const EdgeInsets.all(18),

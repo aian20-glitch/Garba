@@ -551,7 +551,7 @@ class _GameTableScreenState extends State<GameTableScreen> {
 
     if (data == null || data['game'] is! Map) {
       return Scaffold(
-        appBar: AppBar(title: Text('ГАРБА • #${widget.roomCode}')),
+        appBar: backOnlyAppBar(),
         body: const Center(child: CircularProgressIndicator()),
       );
     }

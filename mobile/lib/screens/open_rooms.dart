@@ -124,7 +124,7 @@ class _OpenRoomsScreenState extends State<OpenRoomsScreen> {
   Widget build(BuildContext context) {
     final list = rooms;
     return Scaffold(
-      appBar: AppBar(title: const Text('Открытые комнаты')),
+      appBar: backOnlyAppBar(),
       body: RefreshIndicator(
         onRefresh: load,
         child: ListView(

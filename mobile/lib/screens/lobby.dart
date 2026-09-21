@@ -163,7 +163,7 @@ class _LobbyScreenState extends State<LobbyScreen> {
   Widget build(BuildContext context) {
     if (room == null) {
       return Scaffold(
-        appBar: AppBar(title: Text('Комната #${widget.roomCode}')),
+        appBar: backOnlyAppBar(),
         body: Center(
           child: firstLoad
               ? const CircularProgressIndicator()
@@ -175,7 +175,7 @@ class _LobbyScreenState extends State<LobbyScreen> {
     // Создатель вышел до начала игры — комнаты больше нет.
     if (room!['status']?.toString() == 'finished' && room!['game'] == null) {
       return Scaffold(
-        appBar: AppBar(title: Text('Комната #${widget.roomCode}')),
+        appBar: backOnlyAppBar(),
         body: Padding(
           padding: const EdgeInsets.all(20),
           child: Column(
@@ -208,7 +208,7 @@ class _LobbyScreenState extends State<LobbyScreen> {
     final isFull = players.length == capacity;
 
     return Scaffold(
-      appBar: AppBar(title: Text('Комната #${widget.roomCode}')),
+      appBar: backOnlyAppBar(),
       body: Padding(
         padding: const EdgeInsets.all(20),
         child: Column(
