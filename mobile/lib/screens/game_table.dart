@@ -1155,16 +1155,18 @@ class _GameTableScreenState extends State<GameTableScreen> {
     final concededIds = ((game['concededIds'] as List?) ?? const [])
         .map((e) => e.toString())
         .toSet();
-    Widget concedeButton() => Padding(
-          padding: const EdgeInsets.only(top: 6),
-          child: OutlinedButton.icon(
-            style: OutlinedButton.styleFrom(
-              foregroundColor: Colors.redAccent,
-              side: const BorderSide(color: Colors.redAccent),
-            ),
-            onPressed: sendingSpecial ? null : () => confirmConcede(concedeLoss, mains.length > 1),
-            icon: const Icon(Icons.flag),
-            label: Text('СДАТЬСЯ (в кон ${fmtCoins(concedeLoss)})'),
+    Widget concedeButton() => TextButton.icon(
+          style: TextButton.styleFrom(
+            foregroundColor: Colors.redAccent,
+            padding: const EdgeInsets.symmetric(horizontal: 6),
+            minimumSize: const Size(0, 32),
+            tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+          ),
+          onPressed: sendingSpecial ? null : () => confirmConcede(concedeLoss, mains.length > 1),
+          icon: const Icon(Icons.flag, size: 16),
+          label: const Text(
+            'СДАТЬСЯ',
+            style: TextStyle(fontSize: 11, fontWeight: FontWeight.w900),
           ),
         );
 
@@ -1492,7 +1494,13 @@ class _GameTableScreenState extends State<GameTableScreen> {
           final width = constraints.maxWidth;
           // Стол целиком помещается между верхней строкой и рукой. Пауза и
           // другие всплывающие сообщения лежат поверх него и размер не меняют.
-          final preferredHeight = (width * 1.42).clamp(410.0, 550.0);
+          // За столом на 6–7 человек нужно больше вертикального пространства:
+          // так места по окружности не слипаются и боковые соседи не перекрывают центр.
+          final crowdedTable = n >= 6;
+          final preferredHeight = (width * (crowdedTable ? 1.55 : 1.42)).clamp(
+            410.0,
+            crowdedTable ? 600.0 : 550.0,
+          );
           final height = math.min(preferredHeight, maxHeight);
           return SizedBox(
             height: height,
@@ -1520,10 +1528,16 @@ class _GameTableScreenState extends State<GameTableScreen> {
                   final p = players[i];
                   final pId = p['id'].toString();
                   final card = trickCardOf[pId];
+                  final horizontalSpread = crowdedTable ? 0.94 : 0.86;
+                  final verticalSpread = crowdedTable ? 0.73 : 0.65;
+                  final isNeighbour = crowdedTable && (k == 1 || k == n - 1);
+                  final seatY = (y * verticalSpread + (isNeighbour ? 0.12 : 0.0))
+                      .clamp(-1.0, 1.0);
                   return <Widget>[
-                    // Чуть сдвигаем места внутрь по вертикали: веер карт
-                    // верхнего игрока тогда полностью остаётся в области стола.
-                    Align(alignment: Alignment(x * 0.86, y * 0.65), child: seat(p)),
+                    Align(
+                      alignment: Alignment(x * horizontalSpread, seatY),
+                      child: seat(p),
+                    ),
                     if (card != null)
                       Align(
                         alignment: Alignment(x * 0.42, y * 0.42),
@@ -1668,6 +1682,10 @@ class _GameTableScreenState extends State<GameTableScreen> {
                       ),
                     ),
                   ),
+                  if (canConcede) ...[
+                    const SizedBox(width: 2),
+                    concedeButton(),
+                  ],
                 ],
               ),
               if (closing && !isRoomDone)
@@ -1947,14 +1965,7 @@ class _GameTableScreenState extends State<GameTableScreen> {
                         style: const TextStyle(color: Colors.white70),
                       )
               else if (isRoomDone)
-                FilledButton(
-                  onPressed: () => Navigator.pushAndRemoveUntil(
-                    context,
-                    MaterialPageRoute(builder: (_) => const HomeScreen()),
-                    (_) => false,
-                  ),
-                  child: const Text('В ГЛАВНОЕ МЕНЮ'),
-                )
+                const SizedBox.shrink()
               else if (stage == 'awaiting_deal' || isRoundDone)
                 Column(
                   crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -2065,7 +2076,6 @@ class _GameTableScreenState extends State<GameTableScreen> {
                         color: myTurn ? Colors.greenAccent : Colors.white60,
                       ),
                     ),
-                    if (canConcede) concedeButton(),
                   ],
                 )
               else if (isSpecial)
@@ -2128,7 +2138,6 @@ class _GameTableScreenState extends State<GameTableScreen> {
                             : Colors.white60,
                       ),
                     ),
-                    if (canConcede) concedeButton(),
                   ],
                 )
               else if (stage == 'kon_trump')
