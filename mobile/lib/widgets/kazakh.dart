@@ -122,32 +122,6 @@ class KazakhTablePainter extends CustomPainter {
       canvas.restore();
     }
 
-    // Декоративные выступы сверху и снизу, как у резного игрового стола.
-    for (final top in [true, false]) {
-      final capCenter = Offset(center.dx, top ? 20 : size.height - 20);
-      final capRect = Rect.fromCenter(
-        center: capCenter,
-        width: size.width * 0.58,
-        height: 38,
-      );
-      final cap = RRect.fromRectAndRadius(capRect, const Radius.circular(19));
-      canvas.drawRRect(
-        cap,
-        Paint()
-          ..shader = const LinearGradient(
-            colors: [Color(0xFF3B200B), Color(0xFFC88A2A), Color(0xFF3B200B)],
-          ).createShader(capRect),
-      );
-      canvas.drawRRect(
-        cap,
-        Paint()
-          ..style = PaintingStyle.stroke
-          ..strokeWidth = 2
-          ..color = brightGold,
-      );
-      drawHorn(capCenter, 25, top ? 0 : math.pi, 0.95);
-    }
-
     canvas.drawRRect(
       outer.shift(const Offset(0, 7)),
       Paint()
