@@ -8,7 +8,7 @@
 // База — встроенный в Node.js SQLite (node:sqlite): без зависимостей и отдельного сервера.
 
 import { DatabaseSync } from 'node:sqlite';
-import { createHash, randomBytes, randomUUID } from 'node:crypto';
+import { createHash, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
 import { STARTING_COINS } from './config.js';
 import { ensureRoomTable } from './roomDb.js';
 import { makePlayerCode } from './bonus.js';
@@ -94,6 +94,7 @@ function migrateAccounts(db: DatabaseSync) {
   add('daily_streak', 'INTEGER NOT NULL DEFAULT 0');
   add('invited_by', 'TEXT');
   add('skill', `REAL NOT NULL DEFAULT ${START_SKILL}`); // рейтинг — этап 9.6
+  add('recovery_hash', 'TEXT');
   // Бонус за приглашение платится после 3 комнат друга (19.09.2026). Кого пригласили
   // раньше, тем уже заплатили сразу при регистрации — помечаем оплаченными.
   if (!columns.has('referral_paid')) {
@@ -133,6 +134,29 @@ function hashToken(token: string): string {
   return createHash('sha256').update(token).digest('hex');
 }
 
+// Код восстановления предназначен для ручного сохранения вне телефона. В нём нет
+// похожих символов 0/O и 1/I, а пробелы и дефисы при вводе не имеют значения.
+const RECOVERY_ALPHABET = '23456789ABCDEFGHJKLMNPQRSTUVWXYZ';
+const RECOVERY_LENGTH = 16;
+
+export function normalizeRecoveryCode(raw: unknown): string | null {
+  if (typeof raw !== 'string') return null;
+  const code = raw.toUpperCase().replace(/[\s-]/g, '');
+  if (code.length !== RECOVERY_LENGTH) return null;
+  for (const char of code) if (!RECOVERY_ALPHABET.includes(char)) return null;
+  return code;
+}
+
+function makeRecoveryCode(): string {
+  const bytes = randomBytes(RECOVERY_LENGTH);
+  const code = [...bytes].map((byte) => RECOVERY_ALPHABET[byte % RECOVERY_ALPHABET.length]).join('');
+  return code.match(/.{1,4}/g)!.join('-');
+}
+
+function hashRecoveryCode(code: string): Buffer {
+  return createHash('sha256').update(`garba-recovery:${code}`).digest();
+}
+
 const ACCOUNT_FIELDS = 'id, name, balance, created_at, code, daily_day, daily_streak, invited_by, skill';
 const ACCOUNT_FIELDS_A = ACCOUNT_FIELDS.split(', ').map((f) => `a.${f}`).join(', ');
 
@@ -165,16 +189,28 @@ export function createAccount(
   db: DatabaseSync,
   name: string,
   invitedBy: string | null = null,
-): { account: Account; token: string } {
+): { account: Account; token: string; recoveryCode: string } {
   const id = randomUUID();
   const token = randomBytes(32).toString('hex');
+  const recoveryCode = makeRecoveryCode();
   const createdAt = Date.now();
   const code = freeCode(db);
 
   db.prepare(
-    `INSERT INTO accounts (id, token_hash, name, balance, created_at, code, daily_streak, invited_by, skill)
-     VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?)`,
-  ).run(id, hashToken(token), name, STARTING_COINS, createdAt, code, invitedBy, START_SKILL);
+    `INSERT INTO accounts
+       (id, token_hash, name, balance, created_at, code, daily_streak, invited_by, skill, recovery_hash)
+     VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?, ?)`,
+  ).run(
+    id,
+    hashToken(token),
+    name,
+    STARTING_COINS,
+    createdAt,
+    code,
+    invitedBy,
+    START_SKILL,
+    hashRecoveryCode(normalizeRecoveryCode(recoveryCode)!).toString('hex'),
+  );
 
   return {
     account: {
@@ -182,7 +218,57 @@ export function createAccount(
       dailyDay: null, dailyStreak: 0, invitedBy, skill: START_SKILL,
     },
     token,
+    recoveryCode,
   };
+}
+
+export function hasRecoveryCode(db: DatabaseSync, id: string): boolean {
+  const row = db.prepare('SELECT recovery_hash FROM accounts WHERE id = ?').get(id) as
+    | { recovery_hash: string | null }
+    | undefined;
+  return Boolean(row?.recovery_hash);
+}
+
+// Уже вошедший игрок может выпустить новый код. Предыдущий сразу перестаёт работать.
+export function replaceRecoveryCode(db: DatabaseSync, id: string): string | null {
+  if (!getAccount(db, id)) return null;
+  const recoveryCode = makeRecoveryCode();
+  const normalized = normalizeRecoveryCode(recoveryCode)!;
+  db.prepare('UPDATE accounts SET recovery_hash = ? WHERE id = ?')
+    .run(hashRecoveryCode(normalized).toString('hex'), id);
+  return recoveryCode;
+}
+
+// Успешное восстановление меняет и токен входа, и сам код восстановления. Поэтому
+// старый телефон и однажды использованный код больше не дают доступ к аккаунту.
+export function recoverAccount(
+  db: DatabaseSync,
+  playerCode: string,
+  rawRecoveryCode: unknown,
+): { account: Account; token: string; recoveryCode: string } | null {
+  const normalized = normalizeRecoveryCode(rawRecoveryCode);
+  if (!normalized) return null;
+  const account = findAccountByCode(db, playerCode);
+  if (!account) return null;
+  const row = db.prepare('SELECT recovery_hash FROM accounts WHERE id = ?').get(account.id) as
+    | { recovery_hash: string | null }
+    | undefined;
+  if (!row?.recovery_hash) return null;
+
+  const actual = hashRecoveryCode(normalized);
+  const expected = Buffer.from(row.recovery_hash, 'hex');
+  if (expected.length !== actual.length || !timingSafeEqual(expected, actual)) return null;
+
+  const token = randomBytes(32).toString('hex');
+  const recoveryCode = makeRecoveryCode();
+  transaction(db, () => {
+    db.prepare('UPDATE accounts SET token_hash = ?, recovery_hash = ? WHERE id = ?').run(
+      hashToken(token),
+      hashRecoveryCode(normalizeRecoveryCode(recoveryCode)!).toString('hex'),
+      account.id,
+    );
+  });
+  return { account, token, recoveryCode };
 }
 
 export function findAccountByToken(db: DatabaseSync, token: string): Account | null {

@@ -18,12 +18,16 @@ import {
   findAccountByCode,
   findAccountByToken,
   getAccount,
+  hasRecoveryCode,
   giftedOn,
   invitedCount,
   listFriends,
   openDb,
+  normalizeRecoveryCode,
+  recoverAccount,
   recordGift,
   removeFriend,
+  replaceRecoveryCode,
   setBalance,
   setDaily,
   tokenFromHeader,
@@ -33,12 +37,18 @@ const db = openDb(':memory:');
 
 section('аккаунты (этап 9.1)');
 
-const { account, token } = createAccount(db, 'Серик');
+const { account, token, recoveryCode } = createAccount(db, 'Серик');
 check('новый аккаунт получает стартовые 10 000', account.balance, 10_000);
 check('имя сохраняется как есть, кириллица целая', getAccount(db, account.id)?.name, 'Серик');
 check('по токену находится свой аккаунт', findAccountByToken(db, token)?.id, account.id);
 check('чужой токен не подходит', findAccountByToken(db, 'x'.repeat(64)), null);
 check('пустой токен не подходит', findAccountByToken(db, ''), null);
+check('новый аккаунт сразу защищён кодом восстановления', hasRecoveryCode(db, account.id), true);
+check(
+  'код восстановления удобно разбит на четыре группы',
+  /^[A-Z2-9]{4}(?:-[A-Z2-9]{4}){3}$/.test(recoveryCode),
+  true,
+);
 
 const row = db.prepare('SELECT token_hash FROM accounts WHERE id = ?').get(account.id) as { token_hash: string };
 check('в базе лежит не сам токен, а его хеш', row.token_hash !== token && row.token_hash.length === 64, true);
@@ -50,6 +60,19 @@ check('и токены у них разные', second.token !== token, true);
 setBalance(db, account.id, 7_300);
 check('баланс сохраняется в базе', findAccountByToken(db, token)?.balance, 7_300);
 check('баланс второго аккаунта не задет', getAccount(db, second.account.id)?.balance, 10_000);
+
+section('восстановление аккаунта');
+check('дефисы, пробелы и регистр кода не важны', normalizeRecoveryCode(` ${recoveryCode.toLowerCase()} `), recoveryCode.replaceAll('-', ''));
+check('неполный код отклоняется', normalizeRecoveryCode('ABCD'), null);
+const recovered = recoverAccount(db, account.code, recoveryCode)!;
+check('вернулся тот же аккаунт', recovered.account.id, account.id);
+check('старый токен после восстановления не работает', findAccountByToken(db, token), null);
+check('новый токен работает', findAccountByToken(db, recovered.token)?.id, account.id);
+check('использованный код больше не работает', recoverAccount(db, account.code, recoveryCode), null);
+const recoveredAgain = recoverAccount(db, account.code, recovered.recoveryCode)!;
+check('новый код можно использовать один раз', recoveredAgain.account.id, account.id);
+const profileCode = replaceRecoveryCode(db, account.id)!;
+check('код можно перевыпустить из профиля', recoverAccount(db, account.code, profileCode)?.account.id, account.id);
 
 section('имя игрока');
 check('пробелы по краям убираются', cleanName('  Дана  '), 'Дана');

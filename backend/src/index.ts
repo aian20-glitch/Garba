@@ -22,12 +22,15 @@ import {
   findAccountByCode,
   findAccountByToken,
   getAccount,
+  hasRecoveryCode,
   giftedOn,
   invitedCount,
   listFriends,
   openDb,
   recordGift,
   removeFriend,
+  recoverAccount,
+  replaceRecoveryCode,
   setDaily,
   tokenFromHeader,
   transaction,
@@ -451,6 +454,7 @@ const ACCOUNT_LIMITS = [
   { max: Number(process.env.GARBA_ACCOUNTS_PER_DAY ?? 20), windowMs: 86_400_000 },
 ];
 const accountsByIp = new Map<string, number[]>();
+const recoveriesByIp = new Map<string, number[]>();
 
 app.post('/accounts', (req, res) => {
   const ip = req.ip ?? 'unknown';
@@ -472,7 +476,7 @@ app.post('/accounts', (req, res) => {
     return res.status(400).json({ error: 'invite code not found' });
   }
 
-  const { account, token } = createAccount(db, name, inviter?.id ?? null);
+  const { account, token, recoveryCode } = createAccount(db, name, inviter?.id ?? null);
   accountsByIp.set(ip, limit.times);
 
   console.log(
@@ -480,7 +484,39 @@ app.post('/accounts', (req, res) => {
       (inviter ? `, invited by ${inviter.name} (бонус — после 3 комнат)` : ''),
   );
 
-  return res.status(201).json({ ...account, token });
+  return res.status(201).json({ ...account, token, recoveryCode });
+});
+
+// Восстановление без телефона и почты: публичный код игрока + секретный код,
+// который был показан при регистрации или заново создан в профиле. Ответ одинаков
+// для неверного игрока и неверного секрета, чтобы нельзя было перебирать аккаунты.
+app.post('/accounts/recover', (req, res) => {
+  const ip = req.ip ?? 'unknown';
+  const limit = rateCheck(recoveriesByIp.get(ip) ?? [], Date.now(), [
+    { max: 5, windowMs: 15 * 60_000 },
+    { max: 20, windowMs: 86_400_000 },
+  ]);
+  recoveriesByIp.set(ip, limit.times);
+  if (!limit.allowed && !LOOPBACK.includes(ip)) {
+    return res.status(429).json({ error: 'too many recovery attempts, try later' });
+  }
+
+  const playerCode = normalizeCode(req.body?.playerCode);
+  const recovered = playerCode ? recoverAccount(db, playerCode, req.body?.recoveryCode) : null;
+  if (!recovered) {
+    return res.status(401).json({ error: 'invalid recovery credentials' });
+  }
+  console.log(`[ACCOUNT] recovered ${recovered.account.name} (${recovered.account.id})`);
+  return res.json({ ...recovered.account, token: recovered.token, recoveryCode: recovered.recoveryCode });
+});
+
+// Выпустить новый код можно только из уже открытого аккаунта. Сам код сервер
+// возвращает один раз; в базе остаётся лишь его хеш.
+app.post('/me/recovery-code', (req, res) => {
+  const account = accountOf(req);
+  if (!account) return res.status(401).json({ error: 'unauthorized' });
+  const recoveryCode = replaceRecoveryCode(db, account.id);
+  return res.json({ recoveryCode });
 });
 
 // Удалить аккаунт навсегда (требование Apple и Google). Пока игрок сидит в
@@ -524,6 +560,7 @@ app.get('/me', (req, res) => {
     invitedCount: invitedCount(db, account.id),
     // Сколько человек зовут меня в друзья — цифра у кнопки «ДРУЗЬЯ».
     friendRequests: friendRequests(db, account.id).incoming.length,
+    hasRecoveryCode: hasRecoveryCode(db, account.id),
   });
 });
 
@@ -697,6 +734,7 @@ app.get('/me/profile', (req, res) => {
     rating: shownRating(accountRating(account.id)),
     stats: profileStats(db, account.id),
     friendsCount: listFriends(db, account.id).length,
+    hasRecoveryCode: hasRecoveryCode(db, account.id),
   });
 });
 
