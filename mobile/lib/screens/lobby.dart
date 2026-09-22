@@ -51,11 +51,11 @@ class _LobbyScreenState extends State<LobbyScreen> {
         headers: authHeaders(),
         body: jsonEncode({'isPublic': value}),
       );
-      if (response.statusCode != 200) throw Exception(response.body);
+      expectStatus(response, const [200]);
       applyRoom(jsonDecode(response.body) as Map<String, dynamic>);
     } catch (e) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Не получилось: $e')));
+      showGarbaError(context, e);
     } finally {
       if (mounted) setState(() => changingVisibility = false);
     }
@@ -116,15 +116,13 @@ class _LobbyScreenState extends State<LobbyScreen> {
       );
 
       if (response.statusCode < 200 || response.statusCode >= 300) {
-        throw Exception(response.body);
+        throw ApiFailure.fromResponse(response);
       }
 
       await refreshRoom();
     } catch (e) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Не удалось начать игру: $e')),
-      );
+      showGarbaError(context, e, prefix: 'Не удалось начать игру');
     } finally {
       if (mounted) setState(() => starting = false);
     }
@@ -140,15 +138,13 @@ class _LobbyScreenState extends State<LobbyScreen> {
         body: jsonEncode({}),
       );
       if (response.statusCode < 200 || response.statusCode >= 300) {
-        throw Exception(response.body);
+        throw ApiFailure.fromResponse(response);
       }
       if (!mounted) return;
       Navigator.pop(context);
     } catch (e) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Не удалось выйти: $e')),
-      );
+      showGarbaError(context, e, prefix: 'Не удалось выйти');
     }
   }
 

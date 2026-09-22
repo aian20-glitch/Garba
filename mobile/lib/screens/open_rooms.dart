@@ -47,9 +47,7 @@ Future<void> quickGame(BuildContext context) async {
     openLobby(context, room['id'].toString());
   } catch (e) {
     if (!context.mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text('$e'.replaceFirst('Exception: ', ''))),
-    );
+    showGarbaError(context, e);
   }
 }
 
@@ -83,7 +81,7 @@ class _OpenRoomsScreenState extends State<OpenRoomsScreen> {
   Future<void> load() async {
     try {
       final response = await http.get(Uri.parse('$apiBase/rooms/open'), headers: authHeaders());
-      if (response.statusCode != 200) throw Exception(response.body);
+      expectStatus(response, const [200]);
       final list = ((jsonDecode(response.body) as Map)['rooms'] as List)
           .map((e) => Map<String, dynamic>.from(e as Map))
           .toList();
@@ -91,8 +89,8 @@ class _OpenRoomsScreenState extends State<OpenRoomsScreen> {
         rooms = list;
         error = null;
       });
-    } catch (_) {
-      if (mounted) setState(() => error = 'Нет связи с сервером');
+    } catch (e) {
+      if (mounted) setState(() => error = userErrorMessage(e));
     }
   }
 
@@ -111,9 +109,7 @@ class _OpenRoomsScreenState extends State<OpenRoomsScreen> {
       openLobby(context, roomId, replace: true);
     } catch (e) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('$e'.replaceFirst('Exception: ', ''))),
-      );
+      showGarbaError(context, e);
       load();
     } finally {
       if (mounted) setState(() => joining = false);

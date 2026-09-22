@@ -24,7 +24,10 @@ class StatsView extends StatelessWidget {
       ('Выиграно монет', fmtCoins(v('coinsWon'))),
       ('Проиграно монет', fmtCoins(v('coinsLost'))),
       ('Максимальный выигрыш', fmtCoins(v('maxWin'))),
-      ('Максимальный выигранный риск', v('maxRisk') == 0 ? '—' : '×${v('maxRisk')}'),
+      (
+        'Максимальный выигранный риск',
+        v('maxRisk') == 0 ? '—' : '×${v('maxRisk')}'
+      ),
     ];
     return Column(
       children: rows
@@ -32,8 +35,11 @@ class StatsView extends StatelessWidget {
                 padding: const EdgeInsets.symmetric(vertical: 5),
                 child: Row(
                   children: [
-                    Expanded(child: Text(r.$1, style: const TextStyle(color: Colors.white70))),
-                    Text(r.$2, style: const TextStyle(fontWeight: FontWeight.w800)),
+                    Expanded(
+                        child: Text(r.$1,
+                            style: const TextStyle(color: Colors.white70))),
+                    Text(r.$2,
+                        style: const TextStyle(fontWeight: FontWeight.w800)),
                   ],
                 ),
               ))
@@ -53,6 +59,7 @@ class ProfileScreen extends StatefulWidget {
 class _ProfileScreenState extends State<ProfileScreen> {
   Map<String, dynamic>? profile;
   String? error;
+  bool issuingRecoveryCode = false;
 
   @override
   void initState() {
@@ -62,12 +69,59 @@ class _ProfileScreenState extends State<ProfileScreen> {
 
   Future<void> load() async {
     try {
-      final response = await http.get(Uri.parse('$apiBase/me/profile'), headers: authHeaders());
-      if (response.statusCode != 200) throw Exception(response.body);
+      final response = await apiRequest(
+          http.get(Uri.parse('$apiBase/me/profile'), headers: authHeaders()));
+      expectStatus(response, const [200]);
       if (!mounted) return;
-      setState(() => profile = jsonDecode(response.body) as Map<String, dynamic>);
-    } catch (_) {
-      if (mounted) setState(() => error = 'Нет связи с сервером');
+      setState(
+          () => profile = jsonDecode(response.body) as Map<String, dynamic>);
+    } catch (e) {
+      if (mounted) setState(() => error = userErrorMessage(e));
+    }
+  }
+
+  Future<void> issueRecoveryCode() async {
+    final p = profile;
+    if (p == null || issuingRecoveryCode) return;
+    if (p['hasRecoveryCode'] == true) {
+      final confirmed = await showDialog<bool>(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          title: const Text('Создать новый код?'),
+          content: const Text(
+              'Старый код восстановления сразу перестанет работать.'),
+          actions: [
+            TextButton(
+                onPressed: () => Navigator.pop(ctx, false),
+                child: const Text('ОТМЕНА')),
+            FilledButton(
+                onPressed: () => Navigator.pop(ctx, true),
+                child: const Text('СОЗДАТЬ')),
+          ],
+        ),
+      );
+      if (confirmed != true || !mounted) return;
+    }
+    setState(() => issuingRecoveryCode = true);
+    try {
+      final response = await apiRequest(http.post(
+        Uri.parse('$apiBase/me/recovery-code'),
+        headers: authHeaders(),
+        body: '{}',
+      ));
+      expectStatus(response, const [200]);
+      final body = jsonDecode(response.body) as Map<String, dynamic>;
+      if (!mounted) return;
+      setState(() => p['hasRecoveryCode'] = true);
+      await showRecoveryCode(
+        context,
+        playerCode: p['code'].toString(),
+        recoveryCode: body['recoveryCode'].toString(),
+      );
+    } catch (e) {
+      if (mounted) showGarbaError(context, e, prefix: 'Не удалось создать код');
+    } finally {
+      if (mounted) setState(() => issuingRecoveryCode = false);
     }
   }
 
@@ -82,7 +136,9 @@ class _ProfileScreenState extends State<ProfileScreen> {
           'Восстановить его будет нельзя.',
         ),
         actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('ОТМЕНА')),
+          TextButton(
+              onPressed: () => Navigator.pop(ctx, false),
+              child: const Text('ОТМЕНА')),
           FilledButton(
             style: FilledButton.styleFrom(backgroundColor: Colors.redAccent),
             onPressed: () => Navigator.pop(ctx, true),
@@ -93,7 +149,8 @@ class _ProfileScreenState extends State<ProfileScreen> {
     );
     if (ok != true || !mounted) return;
     try {
-      final response = await http.delete(Uri.parse('$apiBase/me'), headers: authHeaders());
+      final response = await apiRequest(
+          http.delete(Uri.parse('$apiBase/me'), headers: authHeaders()));
       if (!mounted) return;
       if (response.statusCode == 409) {
         final roomId = (jsonDecode(response.body) as Map)['roomId'];
@@ -102,7 +159,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
         );
         return;
       }
-      if (response.statusCode != 200) throw Exception(response.body);
+      expectStatus(response, const [200]);
       await Session.clear();
       if (!mounted) return;
       Navigator.pushAndRemoveUntil(
@@ -112,9 +169,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
       );
     } catch (e) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Не удалось удалить аккаунт: $e')),
-      );
+      showGarbaError(context, e, prefix: 'Не удалось удалить аккаунт');
     }
   }
 
@@ -124,7 +179,10 @@ class _ProfileScreenState extends State<ProfileScreen> {
     return Scaffold(
       appBar: backOnlyAppBar(),
       body: p == null
-          ? Center(child: error == null ? const CircularProgressIndicator() : Text(error!))
+          ? Center(
+              child: error == null
+                  ? const CircularProgressIndicator()
+                  : Text(error!))
           : ListView(
               padding: const EdgeInsets.all(20),
               children: [
@@ -132,15 +190,21 @@ class _ProfileScreenState extends State<ProfileScreen> {
                   child: GestureDetector(
                     onTap: () async {
                       final avatar = await pickAndUploadAvatar(context);
-                      if (avatar != null && mounted) setState(() => p['avatar'] = avatar);
+                      if (avatar != null && mounted)
+                        setState(() => p['avatar'] = avatar);
                     },
                     child: Stack(
                       children: [
-                        AvatarView(avatar: p['avatar']?.toString(), name: p['name'].toString(), radius: 56),
+                        AvatarView(
+                            avatar: p['avatar']?.toString(),
+                            name: p['name'].toString(),
+                            radius: 56),
                         const Positioned(
                           right: 0,
                           bottom: 0,
-                          child: CircleAvatar(radius: 16, child: Icon(Icons.photo_camera, size: 18)),
+                          child: CircleAvatar(
+                              radius: 16,
+                              child: Icon(Icons.photo_camera, size: 18)),
                         ),
                       ],
                     ),
@@ -148,42 +212,77 @@ class _ProfileScreenState extends State<ProfileScreen> {
                 ),
                 const SizedBox(height: 4),
                 const Center(
-                  child: Text('Нажмите на фото, чтобы сменить', style: TextStyle(color: Colors.white54)),
+                  child: Text('Нажмите на фото, чтобы сменить',
+                      style: TextStyle(color: Colors.white54)),
                 ),
                 const SizedBox(height: 12),
                 Text(
                   p['name'].toString(),
-                  style: const TextStyle(fontSize: 28, fontWeight: FontWeight.w900),
+                  style: const TextStyle(
+                      fontSize: 28, fontWeight: FontWeight.w900),
                 ),
                 const SizedBox(height: 4),
-                Text('Код игрока: ${p['code']}', style: const TextStyle(color: Colors.white70)),
+                Text('Код игрока: ${p['code']}',
+                    style: const TextStyle(color: Colors.white70)),
                 const SizedBox(height: 12),
                 Row(
                   mainAxisAlignment: MainAxisAlignment.center,
                   children: [
                     const Text(
                       'Баланс: ',
-                      style: TextStyle(fontSize: 20, fontWeight: FontWeight.w700),
+                      style:
+                          TextStyle(fontSize: 20, fontWeight: FontWeight.w700),
                     ),
                     const CoinIcon(size: 21),
                     const SizedBox(width: 4),
                     Text(
                       fmtCoins((p['balance'] as num).toInt()),
-                      style: const TextStyle(fontSize: 20, fontWeight: FontWeight.w700),
+                      style: const TextStyle(
+                          fontSize: 20, fontWeight: FontWeight.w700),
                     ),
                   ],
                 ),
-                Text('Друзей: ${p['friendsCount']}', style: const TextStyle(color: Colors.white70)),
+                Text('Друзей: ${p['friendsCount']}',
+                    style: const TextStyle(color: Colors.white70)),
                 Text(
                   'Рейтинг: ⭐ ${fmtRating(p['rating'])}',
-                  style: const TextStyle(fontSize: 20, fontWeight: FontWeight.w900, color: Color(0xFFD4A94F)),
+                  style: const TextStyle(
+                      fontSize: 20,
+                      fontWeight: FontWeight.w900,
+                      color: Color(0xFFD4A94F)),
                 ),
                 const Divider(height: 32),
                 StatsView(stats: Map<String, dynamic>.from(p['stats'] as Map)),
-                const SizedBox(height: 32),
+                const Divider(height: 40),
+                const Text(
+                  'ВОССТАНОВЛЕНИЕ АККАУНТА',
+                  style: TextStyle(
+                      fontWeight: FontWeight.w900, color: Color(0xFFD4A94F)),
+                ),
+                const SizedBox(height: 8),
+                Text(
+                  p['hasRecoveryCode'] == true
+                      ? 'Код настроен. Создайте новый, если потеряли сохранённую копию.'
+                      : 'Создайте секретный код, чтобы вернуть этот аккаунт на другом телефоне.',
+                  style: const TextStyle(color: Colors.white70),
+                ),
+                const SizedBox(height: 12),
+                OutlinedButton.icon(
+                  onPressed: issuingRecoveryCode ? null : issueRecoveryCode,
+                  icon: const Icon(Icons.key),
+                  label: Text(
+                    issuingRecoveryCode
+                        ? 'СОЗДАЁМ...'
+                        : p['hasRecoveryCode'] == true
+                            ? 'СОЗДАТЬ НОВЫЙ КОД'
+                            : 'СОЗДАТЬ КОД ВОССТАНОВЛЕНИЯ',
+                  ),
+                ),
+                const SizedBox(height: 24),
                 TextButton.icon(
                   onPressed: deleteAccount,
-                  style: TextButton.styleFrom(foregroundColor: Colors.redAccent),
+                  style:
+                      TextButton.styleFrom(foregroundColor: Colors.redAccent),
                   icon: const Icon(Icons.delete_forever),
                   label: const Text('Удалить аккаунт'),
                 ),
@@ -231,21 +330,27 @@ class _FriendsScreenState extends State<FriendsScreen> {
 
   Future<void> load() async {
     try {
-      final response = await http.get(Uri.parse('$apiBase/friends'), headers: authHeaders());
-      if (response.statusCode != 200) throw Exception(response.body);
+      final response =
+          await http.get(Uri.parse('$apiBase/friends'), headers: authHeaders());
+      expectStatus(response, const [200]);
       final body = jsonDecode(response.body) as Map<String, dynamic>;
-      final requests = await http.get(Uri.parse('$apiBase/friends/requests'), headers: authHeaders());
-      final reqBody = requests.statusCode == 200 ? jsonDecode(requests.body) as Map : const {};
+      final requests = await http.get(Uri.parse('$apiBase/friends/requests'),
+          headers: authHeaders());
+      final reqBody = requests.statusCode == 200
+          ? jsonDecode(requests.body) as Map
+          : const {};
       if (!mounted) return;
       setState(() {
-        friends = (body['friends'] as List).map((e) => Map<String, dynamic>.from(e as Map)).toList();
+        friends = (body['friends'] as List)
+            .map((e) => Map<String, dynamic>.from(e as Map))
+            .toList();
         incoming = ((reqBody['incoming'] as List?) ?? const [])
             .map((e) => Map<String, dynamic>.from(e as Map))
             .toList();
         error = null;
       });
-    } catch (_) {
-      if (mounted) setState(() => error = 'Нет связи с сервером');
+    } catch (e) {
+      if (mounted) setState(() => error = userErrorMessage(e));
     }
   }
 
@@ -265,7 +370,8 @@ class _FriendsScreenState extends State<FriendsScreen> {
       if (response.statusCode != 201 && response.statusCode != 202) {
         final body = jsonDecode(response.body);
         final key = body is Map ? body['error']?.toString() : null;
-        if (mounted) setState(() => error = _errors[key] ?? 'Ошибка: ${response.body}');
+        if (mounted)
+          setState(() => error = _errors[key] ?? 'Ошибка: ${response.body}');
         return;
       }
       final body = jsonDecode(response.body) as Map;
@@ -276,8 +382,8 @@ class _FriendsScreenState extends State<FriendsScreen> {
             : 'Заявка отправлена — ${body['name']} решит, добавить ли вас');
       }
       await load();
-    } catch (_) {
-      if (mounted) setState(() => error = 'Нет связи с сервером');
+    } catch (e) {
+      if (mounted) setState(() => error = userErrorMessage(e));
     } finally {
       if (mounted) setState(() => adding = false);
     }
@@ -286,7 +392,8 @@ class _FriendsScreenState extends State<FriendsScreen> {
   Future<void> answer(String code, String action) async {
     try {
       await http.post(
-        Uri.parse('$apiBase/friends/requests/${Uri.encodeComponent(code)}/$action'),
+        Uri.parse(
+            '$apiBase/friends/requests/${Uri.encodeComponent(code)}/$action'),
         headers: authHeaders(),
       );
     } catch (_) {}
@@ -326,30 +433,38 @@ class _FriendsScreenState extends State<FriendsScreen> {
               if (error != null)
                 Padding(
                   padding: const EdgeInsets.only(top: 8),
-                  child: Text(error!, style: const TextStyle(color: Colors.redAccent)),
+                  child: Text(error!,
+                      style: const TextStyle(color: Colors.redAccent)),
                 ),
               if (notice != null && error == null)
                 Padding(
                   padding: const EdgeInsets.only(top: 8),
-                  child: Text(notice!, style: const TextStyle(color: Colors.greenAccent)),
+                  child: Text(notice!,
+                      style: const TextStyle(color: Colors.greenAccent)),
                 ),
               // Заявки в друзья: принять или отклонить. Отклонённому не сообщаем.
               if (incoming.isNotEmpty) ...[
                 const SizedBox(height: 12),
                 const Text(
                   'ЗАЯВКИ В ДРУЗЬЯ',
-                  style: TextStyle(fontWeight: FontWeight.w900, color: Color(0xFFD4A94F)),
+                  style: TextStyle(
+                      fontWeight: FontWeight.w900, color: Color(0xFFD4A94F)),
                 ),
                 ...incoming.map(
                   (r) => ListTile(
                     contentPadding: EdgeInsets.zero,
-                    leading: AvatarView(avatar: r['avatar']?.toString(), name: r['name'].toString()),
+                    leading: AvatarView(
+                        avatar: r['avatar']?.toString(),
+                        name: r['name'].toString()),
                     title: Text(r['name'].toString()),
-                    subtitle: Text('⭐ ${fmtRating(r['rating'])} · зовёт вас в друзья'),
+                    subtitle: Text(
+                        '⭐ ${fmtRating(r['rating'])} · зовёт вас в друзья'),
                     onTap: () async {
                       await Navigator.push(
                         context,
-                        MaterialPageRoute(builder: (_) => PlayerScreen(code: r['code'].toString())),
+                        MaterialPageRoute(
+                            builder: (_) =>
+                                PlayerScreen(code: r['code'].toString())),
                       );
                       load();
                     },
@@ -358,13 +473,16 @@ class _FriendsScreenState extends State<FriendsScreen> {
                       children: [
                         IconButton(
                           tooltip: 'Принять',
-                          icon: const Icon(Icons.check_circle, color: Colors.greenAccent),
-                          onPressed: () => answer(r['code'].toString(), 'accept'),
+                          icon: const Icon(Icons.check_circle,
+                              color: Colors.greenAccent),
+                          onPressed: () =>
+                              answer(r['code'].toString(), 'accept'),
                         ),
                         IconButton(
                           tooltip: 'Отклонить',
                           icon: const Icon(Icons.cancel, color: Colors.white38),
-                          onPressed: () => answer(r['code'].toString(), 'decline'),
+                          onPressed: () =>
+                              answer(r['code'].toString(), 'decline'),
                         ),
                       ],
                     ),
@@ -386,10 +504,13 @@ class _FriendsScreenState extends State<FriendsScreen> {
                           )
                         : ListView(
                             children: list.map((f) {
-                              final stats = Map<String, dynamic>.from(f['stats'] as Map);
+                              final stats =
+                                  Map<String, dynamic>.from(f['stats'] as Map);
                               final roomId = f['roomId']?.toString();
                               return ListTile(
-                                leading: AvatarView(avatar: f['avatar']?.toString(), name: f['name'].toString()),
+                                leading: AvatarView(
+                                    avatar: f['avatar']?.toString(),
+                                    name: f['name'].toString()),
                                 title: Text(f['name'].toString()),
                                 subtitle: Text(
                                   '⭐ ${fmtRating(f['rating'])} · код ${f['code']} · партий ${stats['deals']} · побед ${stats['wins']}'
@@ -400,7 +521,8 @@ class _FriendsScreenState extends State<FriendsScreen> {
                                   await Navigator.push(
                                     context,
                                     MaterialPageRoute(
-                                      builder: (_) => PlayerScreen(code: f['code'].toString()),
+                                      builder: (_) => PlayerScreen(
+                                          code: f['code'].toString()),
                                     ),
                                   );
                                   load();
@@ -444,11 +566,12 @@ class _PlayerScreenState extends State<PlayerScreen> {
         Uri.parse('$apiBase/players/${Uri.encodeComponent(widget.code)}'),
         headers: authHeaders(),
       );
-      if (response.statusCode != 200) throw Exception(response.body);
+      expectStatus(response, const [200]);
       if (!mounted) return;
-      setState(() => player = jsonDecode(response.body) as Map<String, dynamic>);
-    } catch (_) {
-      if (mounted) setState(() => error = 'Нет связи с сервером');
+      setState(
+          () => player = jsonDecode(response.body) as Map<String, dynamic>);
+    } catch (e) {
+      if (mounted) setState(() => error = userErrorMessage(e));
     }
   }
 
@@ -468,23 +591,26 @@ class _PlayerScreenState extends State<PlayerScreen> {
             body: jsonEncode({'code': widget.code}),
           );
         case 'remove':
-          response = await http.delete(Uri.parse('$apiBase/friends/$code'), headers: authHeaders());
+          response = await http.delete(Uri.parse('$apiBase/friends/$code'),
+              headers: authHeaders());
         default: // accept | decline | cancel
           response = await http.post(
             Uri.parse('$apiBase/friends/requests/$code/$action'),
             headers: authHeaders(),
           );
       }
-      if (response.statusCode >= 300) throw Exception(response.body);
+      if (response.statusCode >= 300) throw ApiFailure.fromResponse(response);
       if (action == 'request' && mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Заявка отправлена — ${player?['name']} решит, добавить ли вас')),
+          SnackBar(
+              content: Text(
+                  'Заявка отправлена — ${player?['name']} решит, добавить ли вас')),
         );
       }
       await load();
     } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Не получилось: $e')));
+        showGarbaError(context, e);
       }
     } finally {
       if (mounted) setState(() => busy = false);
@@ -535,37 +661,53 @@ class _PlayerScreenState extends State<PlayerScreen> {
     return Scaffold(
       appBar: backOnlyAppBar(),
       body: p == null
-          ? Center(child: error == null ? const CircularProgressIndicator() : Text(error!))
+          ? Center(
+              child: error == null
+                  ? const CircularProgressIndicator()
+                  : Text(error!))
           : ListView(
               padding: const EdgeInsets.all(20),
               children: [
-                Center(child: AvatarView(avatar: p['avatar']?.toString(), name: p['name'].toString(), radius: 56)),
+                Center(
+                    child: AvatarView(
+                        avatar: p['avatar']?.toString(),
+                        name: p['name'].toString(),
+                        radius: 56)),
                 const SizedBox(height: 12),
                 Text(
                   p['name'].toString(),
-                  style: const TextStyle(fontSize: 28, fontWeight: FontWeight.w900),
+                  style: const TextStyle(
+                      fontSize: 28, fontWeight: FontWeight.w900),
                 ),
-                Text('Код игрока: ${p['code']}', style: const TextStyle(color: Colors.white70)),
+                Text('Код игрока: ${p['code']}',
+                    style: const TextStyle(color: Colors.white70)),
                 Text(
                   'Рейтинг: ⭐ ${fmtRating(p['rating'])}',
-                  style: const TextStyle(fontSize: 20, fontWeight: FontWeight.w900, color: Color(0xFFD4A94F)),
+                  style: const TextStyle(
+                      fontSize: 20,
+                      fontWeight: FontWeight.w900,
+                      color: Color(0xFFD4A94F)),
                 ),
                 if (p['friendStatus'] == 'incoming')
                   const Padding(
                     padding: EdgeInsets.only(top: 8),
-                    child: Text('Зовёт вас в друзья', style: TextStyle(color: Colors.greenAccent)),
+                    child: Text('Зовёт вас в друзья',
+                        style: TextStyle(color: Colors.greenAccent)),
                   ),
                 const SizedBox(height: 12),
                 Row(
                   children: [
-                    Expanded(child: friendButtons(p['friendStatus']?.toString() ?? 'none')),
+                    Expanded(
+                        child: friendButtons(
+                            p['friendStatus']?.toString() ?? 'none')),
                     const SizedBox(width: 12),
                     Expanded(
                       child: FilledButton(
                         onPressed: () => Navigator.push(
                           context,
                           MaterialPageRoute(
-                            builder: (_) => GiftScreen(initialCode: p['code'].toString()),
+                            builder: (_) =>
+                                GiftScreen(initialCode: p['code'].toString()),
                           ),
                         ),
                         child: const Text('ПОДАРИТЬ'),
@@ -588,7 +730,8 @@ class AvatarView extends StatelessWidget {
   final String name;
   final double radius;
 
-  const AvatarView({super.key, required this.avatar, required this.name, this.radius = 20});
+  const AvatarView(
+      {super.key, required this.avatar, required this.name, this.radius = 20});
 
   @override
   Widget build(BuildContext context) {
@@ -597,7 +740,9 @@ class AvatarView extends StatelessWidget {
       radius: radius,
       backgroundColor: const Color(0xFF2A3B45),
       foregroundImage: avatar == null ? null : NetworkImage('$apiBase$avatar'),
-      child: Text(letter, style: TextStyle(fontSize: radius * 0.9, fontWeight: FontWeight.w800)),
+      child: Text(letter,
+          style:
+              TextStyle(fontSize: radius * 0.9, fontWeight: FontWeight.w800)),
     );
   }
 }
@@ -624,17 +769,19 @@ Future<String?> pickAndUploadAvatar(BuildContext context) async {
       body: bytes,
     );
     if (response.statusCode == 413) {
-      messenger.showSnackBar(const SnackBar(content: Text('Фото слишком большое')));
+      messenger
+          .showSnackBar(const SnackBar(content: Text('Фото слишком большое')));
       return null;
     }
     if (response.statusCode == 400) {
-      messenger.showSnackBar(const SnackBar(content: Text('Это не похоже на фото')));
+      messenger
+          .showSnackBar(const SnackBar(content: Text('Это не похоже на фото')));
       return null;
     }
-    if (response.statusCode != 200) throw Exception(response.body);
+    expectStatus(response, const [200]);
     return (jsonDecode(response.body) as Map)['avatar']?.toString();
   } catch (e) {
-    messenger.showSnackBar(SnackBar(content: Text('Не удалось загрузить фото: $e')));
+    showGarbaError(context, e, prefix: 'Не удалось загрузить фото');
     return null;
   }
 }

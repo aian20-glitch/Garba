@@ -63,7 +63,7 @@ class _CreateRoomScreenState extends State<CreateRoomScreen> {
       }
 
       if (response.statusCode < 200 || response.statusCode >= 300) {
-        throw Exception(response.body);
+        throw ApiFailure.fromResponse(response);
       }
 
       final data = jsonDecode(response.body) as Map<String, dynamic>;
@@ -80,9 +80,7 @@ class _CreateRoomScreenState extends State<CreateRoomScreen> {
       );
     } catch (e) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Ошибка создания комнаты: $e')),
-      );
+      showGarbaError(context, e, prefix: 'Не удалось создать комнату');
     } finally {
       if (mounted) setState(() => loading = false);
     }
@@ -301,7 +299,7 @@ class _JoinRoomScreenState extends State<JoinRoomScreen> {
       }
 
       if (response.statusCode < 200 || response.statusCode >= 300) {
-        throw Exception(response.body);
+        throw ApiFailure.fromResponse(response);
       }
 
       if (!mounted) return;
@@ -316,9 +314,7 @@ class _JoinRoomScreenState extends State<JoinRoomScreen> {
       );
     } catch (e) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Ошибка входа: $e')),
-      );
+      showGarbaError(context, e, prefix: 'Не удалось войти');
     } finally {
       if (mounted) setState(() => loading = false);
     }

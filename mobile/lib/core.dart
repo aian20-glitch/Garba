@@ -159,6 +159,110 @@ Map<String, String> authHeaders() => {
       'Authorization': 'Bearer ${Session.token}',
     };
 
+// Сервер отвечает короткими стабильными кодами на английском. В интерфейсе игрок
+// всегда получает понятную причину и действие, без Exception и сырого JSON.
+class ApiFailure implements Exception {
+  ApiFailure(this.statusCode, this.code, this.body);
+
+  factory ApiFailure.fromResponse(http.Response response) {
+    Object? body;
+    String code = '';
+    try {
+      body = jsonDecode(response.body);
+      if (body is Map) code = body['error']?.toString() ?? '';
+    } catch (_) {
+      body = response.body;
+    }
+    return ApiFailure(response.statusCode, code, body);
+  }
+
+  final int statusCode;
+  final String code;
+  final Object? body;
+}
+
+const _apiErrorMessages = <String, String>{
+  'unauthorized': 'Сессия закончилась. Войдите в аккаунт заново.',
+  'invalid recovery credentials': 'Код игрока или код восстановления неверный.',
+  'too many recovery attempts, try later':
+      'Слишком много попыток. Подождите 15 минут и попробуйте снова.',
+  'too many accounts, try later':
+      'С этого подключения недавно создавали много аккаунтов. Попробуйте позже.',
+  'name must be 1 to 20 characters': 'Введите имя длиной от 1 до 20 символов.',
+  'invite code not found': 'Код приглашения не найден.',
+  'room not found': 'Комната не найдена или уже закрыта.',
+  'room is full': 'В комнате уже нет свободных мест.',
+  'game already started': 'Игра в этой комнате уже началась.',
+  'already in another room': 'Вы уже находитесь в другой комнате.',
+  'not enough coins to enter': 'Недостаточно монет для входа в эту комнату.',
+  'only the creator can change this': 'Настройки может менять только создатель комнаты.',
+  'only creator can start the game': 'Начать игру может только создатель комнаты.',
+  'room is not full': 'Сначала дождитесь всех игроков.',
+  'player is not in this room': 'Игрок уже вышел из комнаты.',
+  'not your turn': 'Сейчас ход другого игрока.',
+  'invalid bid': 'Эта ставка сейчас недоступна.',
+  'choose a suit for ДВА': 'Выберите масть для ДВА.',
+  'card is not in your hand': 'Этой карты уже нет у вас в руке.',
+  'card is not allowed by the rules': 'Этой картой сейчас ходить нельзя.',
+  'play is not active': 'Розыгрыш уже закончился.',
+  'bidding is not active': 'Торги уже закончились.',
+  'cards are already dealt': 'Карты уже розданы.',
+  'already voted': 'Ваш голос уже принят.',
+  'too fast': 'Слишком быстро. Подождите секунду.',
+  'image too large': 'Фото слишком большое.',
+  'not an image': 'Выбранный файл не похож на фотографию.',
+  'finish your game first': 'Сначала завершите текущую игру.',
+};
+
+String userErrorMessage(Object error, {String fallback = 'Не удалось выполнить действие'}) {
+  if (error is ApiFailure) {
+    final details = error.body is Map ? error.body as Map : const {};
+    if (error.code == 'already in another room' && details['roomId'] != null) {
+      return 'Вы уже в комнате #${details['roomId']}. Вернитесь в неё с главного экрана.';
+    }
+    if (error.code == 'not enough coins to enter') {
+      final need = (details['minBalance'] as num?)?.toInt();
+      final balance = (details['balance'] as num?)?.toInt();
+      if (need != null && balance != null) {
+        return 'Для входа нужно ${fmtCoins(need)} монет. У вас ${fmtCoins(balance)}.';
+      }
+    }
+    final known = _apiErrorMessages[error.code];
+    if (known != null) return known;
+    if (error.statusCode >= 500) return 'Сервер временно недоступен. Попробуйте ещё раз.';
+    if (error.statusCode == 404) return 'Нужные данные не найдены.';
+    if (error.statusCode == 429) return 'Слишком много попыток. Попробуйте позже.';
+    return fallback;
+  }
+  if (error is TimeoutException) return 'Сервер отвечает слишком долго. Проверьте интернет и повторите.';
+  if (error is SocketException || error is http.ClientException) {
+    return 'Нет связи с сервером. Проверьте интернет и повторите.';
+  }
+  final text = error.toString().replaceFirst(RegExp(r'^Exception:\s*'), '').trim();
+  if (text.isNotEmpty && !text.startsWith('{') && !text.startsWith('[')) return text;
+  return fallback;
+}
+
+void expectStatus(http.Response response, Iterable<int> allowed) {
+  if (!allowed.contains(response.statusCode)) throw ApiFailure.fromResponse(response);
+}
+
+Future<http.Response> apiRequest(Future<http.Response> request) =>
+    request.timeout(const Duration(seconds: 15));
+
+void showGarbaError(BuildContext context, Object error, {String? prefix}) {
+  final message = userErrorMessage(error);
+  final messenger = ScaffoldMessenger.of(context);
+  messenger.hideCurrentSnackBar();
+  messenger.showSnackBar(
+    SnackBar(
+      behavior: SnackBarBehavior.floating,
+      backgroundColor: const Color(0xFF7A1F2A),
+      content: Text(prefix == null ? message : '$prefix: $message'),
+    ),
+  );
+}
+
 // Текст ошибки «уже играешь в другой комнате» — или null, если ошибка другая.
 String? busyInRoomMessage(http.Response response) {
   if (response.statusCode != 409) return null;

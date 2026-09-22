@@ -37,7 +37,7 @@ class _GiftScreenState extends State<GiftScreen> {
   Future<void> loadMe() async {
     try {
       final response = await http.get(Uri.parse('$apiBase/me'), headers: authHeaders());
-      if (response.statusCode != 200) throw Exception(response.body);
+      expectStatus(response, const [200]);
       final me = jsonDecode(response.body) as Map<String, dynamic>;
       if (!mounted) return;
       setState(() {
@@ -46,8 +46,8 @@ class _GiftScreenState extends State<GiftScreen> {
         inRoom = me['roomId'] != null;
         loaded = true;
       });
-    } catch (_) {
-      if (mounted) setState(() => error = 'Нет связи с сервером');
+    } catch (e) {
+      if (mounted) setState(() => error = userErrorMessage(e));
     }
   }
 
@@ -85,11 +85,11 @@ class _GiftScreenState extends State<GiftScreen> {
         setState(() => error = _errors['player not found']);
         return;
       }
-      if (response.statusCode != 200) throw Exception(response.body);
+      expectStatus(response, const [200]);
       final player = jsonDecode(response.body) as Map<String, dynamic>;
       setState(() => recipientName = player['name'].toString());
     } catch (e) {
-      if (mounted) setState(() => error = 'Нет связи с сервером');
+      if (mounted) setState(() => error = userErrorMessage(e));
     }
   }
 
@@ -117,7 +117,7 @@ class _GiftScreenState extends State<GiftScreen> {
       );
       Navigator.pop(context);
     } catch (e) {
-      if (mounted) setState(() => error = 'Нет связи с сервером');
+      if (mounted) setState(() => error = userErrorMessage(e));
     } finally {
       if (mounted) setState(() => sending = false);
     }

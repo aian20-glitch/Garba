@@ -123,15 +123,13 @@ class _DealerSelectionScreenState extends State<DealerSelectionScreen> {
       );
 
       if (response.statusCode < 200 || response.statusCode >= 300) {
-        throw Exception(response.body);
+        throw ApiFailure.fromResponse(response);
       }
 
       await refreshRoom();
     } catch (e) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Не удалось продолжить: $e')),
-      );
+      showGarbaError(context, e, prefix: 'Не удалось продолжить');
     } finally {
       if (mounted) setState(() => continuing = false);
     }

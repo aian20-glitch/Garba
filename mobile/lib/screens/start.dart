@@ -14,10 +14,13 @@ class _StartScreenState extends State<StartScreen> {
   final nameController = TextEditingController();
   // Код друга, который пригласил (ТЗ §4). Необязательно.
   final inviteController = TextEditingController();
+  final playerCodeController = TextEditingController();
+  final recoveryCodeController = TextEditingController();
   // checking — проверяем сохранённый аккаунт; needName — аккаунта нет, нужно имя.
   bool checking = true;
   bool needName = false;
   bool creating = false;
+  bool recovering = false;
   String? error;
 
   @override
@@ -31,6 +34,8 @@ class _StartScreenState extends State<StartScreen> {
   void dispose() {
     nameController.dispose();
     inviteController.dispose();
+    playerCodeController.dispose();
+    recoveryCodeController.dispose();
     super.dispose();
   }
 
@@ -53,7 +58,8 @@ class _StartScreenState extends State<StartScreen> {
     }
 
     try {
-      final response = await http.get(Uri.parse('$apiBase/me'), headers: authHeaders());
+      final response = await apiRequest(
+          http.get(Uri.parse('$apiBase/me'), headers: authHeaders()));
       if (response.statusCode == 401) {
         // Сервер не знает этот аккаунт — заводим новый.
         await Session.clear();
@@ -63,14 +69,14 @@ class _StartScreenState extends State<StartScreen> {
         });
         return;
       }
-      if (response.statusCode != 200) throw Exception(response.body);
+      expectStatus(response, const [200]);
       openHome();
-    } catch (_) {
+    } catch (e) {
       // Сеть недоступна — токен НЕ стираем, просто предлагаем повторить.
       if (!mounted) return;
       setState(() {
         checking = false;
-        error = 'Нет связи с сервером';
+        error = userErrorMessage(e);
       });
     }
   }
@@ -84,33 +90,78 @@ class _StartScreenState extends State<StartScreen> {
     });
 
     try {
-      final response = await http.post(
+      final response = await apiRequest(http.post(
         Uri.parse('$apiBase/accounts'),
         headers: {'Content-Type': 'application/json'},
         body: jsonEncode({
           'name': name,
-          if (inviteController.text.trim().isNotEmpty) 'inviteCode': inviteController.text.trim(),
+          if (inviteController.text.trim().isNotEmpty)
+            'inviteCode': inviteController.text.trim(),
         }),
+      ));
+      expectStatus(response, const [201]);
+      final account = jsonDecode(response.body) as Map<String, dynamic>;
+      await Session.save(account);
+      if (!mounted) return;
+      await showRecoveryCode(
+        context,
+        playerCode: account['code'].toString(),
+        recoveryCode: account['recoveryCode'].toString(),
+        firstTime: true,
       );
-      if (response.statusCode == 400 && response.body.contains('invite code not found')) {
-        setState(() => error = 'Код приглашения не найден. Проверьте его или оставьте поле пустым.');
-        return;
-      }
-      // С одного адреса — не больше 5 новых аккаунтов в час (защита от накрутки).
-      if (response.statusCode == 429) {
-        setState(() => error = 'С вашего подключения недавно создавали много аккаунтов. '
-            'Попробуйте позже.');
-        return;
-      }
-      if (response.statusCode != 201) throw Exception(response.body);
-      await Session.save(jsonDecode(response.body) as Map<String, dynamic>);
       openHome();
     } catch (e) {
       if (!mounted) return;
-      setState(() => error = 'Не удалось создать аккаунт: $e');
+      setState(() =>
+          error = userErrorMessage(e, fallback: 'Не удалось создать аккаунт'));
     } finally {
       if (mounted) setState(() => creating = false);
     }
+  }
+
+  Future<void> recoverAccount() async {
+    if (creating) return;
+    final playerCode = playerCodeController.text.trim();
+    final recoveryCode = recoveryCodeController.text.trim();
+    if (playerCode.isEmpty || recoveryCode.isEmpty) {
+      setState(() => error = 'Введите оба кода.');
+      return;
+    }
+    setState(() {
+      creating = true;
+      error = null;
+    });
+    try {
+      final response = await apiRequest(http.post(
+        Uri.parse('$apiBase/accounts/recover'),
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode(
+            {'playerCode': playerCode, 'recoveryCode': recoveryCode}),
+      ));
+      expectStatus(response, const [200]);
+      final account = jsonDecode(response.body) as Map<String, dynamic>;
+      await Session.save(account);
+      if (!mounted) return;
+      await showRecoveryCode(
+        context,
+        playerCode: account['code'].toString(),
+        recoveryCode: account['recoveryCode'].toString(),
+      );
+      openHome();
+    } catch (e) {
+      if (mounted)
+        setState(() => error =
+            userErrorMessage(e, fallback: 'Не удалось восстановить аккаунт'));
+    } finally {
+      if (mounted) setState(() => creating = false);
+    }
+  }
+
+  void toggleRecovery() {
+    setState(() {
+      recovering = !recovering;
+      error = null;
+    });
   }
 
   // Отладка на симуляторе iPhone, где нечем нажимать: если в настройках приложения лежит
@@ -122,7 +173,9 @@ class _StartScreenState extends State<StartScreen> {
     if (room == null || room.isEmpty) return;
     await prefs.remove('debug.room');
     navigatorKey.currentState?.push(
-      MaterialPageRoute(builder: (_) => LobbyScreen(roomCode: room, currentPlayerId: Session.id)),
+      MaterialPageRoute(
+          builder: (_) =>
+              LobbyScreen(roomCode: room, currentPlayerId: Session.id)),
     );
   }
 
@@ -153,40 +206,72 @@ class _StartScreenState extends State<StartScreen> {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.stretch,
                   children: [
-                    const Align(alignment: Alignment.centerLeft, child: GarbaTitle()),
+                    const Align(
+                        alignment: Alignment.centerLeft, child: GarbaTitle()),
                     const Spacer(),
                     if (checking)
                       const Center(child: CircularProgressIndicator())
                     else if (needName) ...[
-                      const Text(
-                        'Как вас зовут?',
-                        style: TextStyle(fontSize: 24, fontWeight: FontWeight.w800),
+                      Text(
+                        recovering
+                            ? 'Восстановление аккаунта'
+                            : 'Как вас зовут?',
+                        style: TextStyle(
+                            fontSize: 24, fontWeight: FontWeight.w800),
                       ),
                       const SizedBox(height: 8),
-                      const Text(
-                        'Это имя увидят другие игроки за столом.',
+                      Text(
+                        recovering
+                            ? 'Введите код игрока и секретный код, который вы сохранили.'
+                            : 'Это имя увидят другие игроки за столом.',
                         style: TextStyle(color: Colors.white70),
                       ),
                       const SizedBox(height: 16),
-                      TextField(
-                        controller: nameController,
-                        maxLength: 20,
-                        textCapitalization: TextCapitalization.words,
-                        decoration: const InputDecoration(
-                          labelText: 'Имя игрока',
-                          border: OutlineInputBorder(),
+                      if (recovering) ...[
+                        TextField(
+                          controller: playerCodeController,
+                          maxLength: 6,
+                          textCapitalization: TextCapitalization.characters,
+                          autocorrect: false,
+                          decoration: const InputDecoration(
+                            labelText: 'Код игрока',
+                            hintText: 'Например, A7K9MP',
+                            border: OutlineInputBorder(),
+                          ),
                         ),
-                        onSubmitted: (_) => createAccount(),
-                      ),
-                      const SizedBox(height: 8),
-                      TextField(
-                        controller: inviteController,
-                        textCapitalization: TextCapitalization.characters,
-                        decoration: const InputDecoration(
-                          labelText: 'Код приглашения (если есть)',
-                          border: OutlineInputBorder(),
+                        const SizedBox(height: 8),
+                        TextField(
+                          controller: recoveryCodeController,
+                          textCapitalization: TextCapitalization.characters,
+                          autocorrect: false,
+                          decoration: const InputDecoration(
+                            labelText: 'Код восстановления',
+                            hintText: 'XXXX-XXXX-XXXX-XXXX',
+                            border: OutlineInputBorder(),
+                          ),
+                          onSubmitted: (_) => recoverAccount(),
                         ),
-                      ),
+                      ] else ...[
+                        TextField(
+                          controller: nameController,
+                          maxLength: 20,
+                          textCapitalization: TextCapitalization.words,
+                          decoration: const InputDecoration(
+                            labelText: 'Имя игрока',
+                            border: OutlineInputBorder(),
+                          ),
+                          onSubmitted: (_) => createAccount(),
+                        ),
+                        const SizedBox(height: 8),
+                        TextField(
+                          controller: inviteController,
+                          textCapitalization: TextCapitalization.characters,
+                          decoration: const InputDecoration(
+                            labelText: 'Код приглашения (если есть)',
+                            border: OutlineInputBorder(),
+                          ),
+                        ),
+                      ],
                     ],
                     if (error != null) ...[
                       const SizedBox(height: 12),
@@ -198,9 +283,25 @@ class _StartScreenState extends State<StartScreen> {
                     ],
                     const Spacer(),
                     if (!checking && needName)
-                      GarbaButton(
-                        label: creating ? 'СОЗДАЁМ...' : 'НАЧАТЬ',
-                        onTap: createAccount,
+                      Column(
+                        crossAxisAlignment: CrossAxisAlignment.stretch,
+                        children: [
+                          GarbaButton(
+                            label: creating
+                                ? 'ПОДОЖДИТЕ...'
+                                : recovering
+                                    ? 'ВОССТАНОВИТЬ'
+                                    : 'НАЧАТЬ',
+                            onTap: recovering ? recoverAccount : createAccount,
+                          ),
+                          const SizedBox(height: 8),
+                          TextButton(
+                            onPressed: creating ? null : toggleRecovery,
+                            child: Text(recovering
+                                ? 'СОЗДАТЬ НОВЫЙ АККАУНТ'
+                                : 'ВОССТАНОВИТЬ АККАУНТ'),
+                          ),
+                        ],
                       )
                     else if (!checking && error != null)
                       GarbaButton(label: 'ПОВТОРИТЬ', onTap: checkAccount),
@@ -213,4 +314,67 @@ class _StartScreenState extends State<StartScreen> {
       ),
     );
   }
+}
+
+Future<void> showRecoveryCode(
+  BuildContext context, {
+  required String playerCode,
+  required String recoveryCode,
+  bool firstTime = false,
+}) async {
+  await showDialog<void>(
+    context: context,
+    barrierDismissible: false,
+    builder: (dialogContext) => AlertDialog(
+      title: Text(firstTime
+          ? 'Сохраните доступ к аккаунту'
+          : 'Новый код восстановления'),
+      content: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          const Text(
+              'Эти два кода вернут аккаунт после смены или потери телефона.'),
+          const SizedBox(height: 18),
+          const Text('КОД ИГРОКА',
+              style: TextStyle(color: Colors.white60, fontSize: 12)),
+          SelectableText(playerCode,
+              style:
+                  const TextStyle(fontSize: 22, fontWeight: FontWeight.w900)),
+          const SizedBox(height: 12),
+          const Text('КОД ВОССТАНОВЛЕНИЯ',
+              style: TextStyle(color: Colors.white60, fontSize: 12)),
+          SelectableText(recoveryCode,
+              style:
+                  const TextStyle(fontSize: 20, fontWeight: FontWeight.w900)),
+          const SizedBox(height: 12),
+          const Text(
+            'Никому не отправляйте код восстановления. После использования он изменится.',
+            style: TextStyle(color: Colors.white70),
+          ),
+        ],
+      ),
+      actions: [
+        TextButton.icon(
+          onPressed: () async {
+            await Clipboard.setData(
+              ClipboardData(
+                  text:
+                      'Код игрока: $playerCode\nКод восстановления: $recoveryCode'),
+            );
+            if (dialogContext.mounted) {
+              ScaffoldMessenger.of(dialogContext).showSnackBar(
+                  const SnackBar(content: Text('Коды скопированы')));
+            }
+          },
+          icon: const Icon(Icons.copy),
+          label: const Text('КОПИРОВАТЬ'),
+        ),
+        FilledButton(
+          onPressed: () => Navigator.pop(dialogContext),
+          child: const Text('Я СОХРАНИЛ(А)'),
+        ),
+      ],
+    ),
+  );
 }

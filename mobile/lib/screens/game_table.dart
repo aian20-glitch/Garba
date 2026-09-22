@@ -207,15 +207,13 @@ class _GameTableScreenState extends State<GameTableScreen> {
       );
 
       if (response.statusCode < 200 || response.statusCode >= 300) {
-        throw Exception(response.body);
+        throw ApiFailure.fromResponse(response);
       }
 
       await refreshRoom();
     } catch (e) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Ошибка хода: $e')),
-      );
+      showGarbaError(context, e, prefix: 'Не удалось сделать ход');
     } finally {
       if (mounted) setState(() => sendingBid = false);
     }
@@ -243,15 +241,13 @@ class _GameTableScreenState extends State<GameTableScreen> {
       );
 
       if (response.statusCode < 200 || response.statusCode >= 300) {
-        throw Exception(response.body);
+        throw ApiFailure.fromResponse(response);
       }
 
       await refreshRoom();
     } catch (e) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Не удалось раздать: $e')),
-      );
+      showGarbaError(context, e, prefix: 'Не удалось раздать');
     } finally {
       if (mounted) setState(() => dealing = false);
     }
@@ -274,15 +270,13 @@ class _GameTableScreenState extends State<GameTableScreen> {
       );
 
       if (response.statusCode < 200 || response.statusCode >= 300) {
-        throw Exception(response.body);
+        throw ApiFailure.fromResponse(response);
       }
 
       await refreshRoom();
     } catch (e) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Ошибка хода: $e')),
-      );
+      showGarbaError(context, e, prefix: 'Не удалось сделать ход');
     } finally {
       if (mounted) setState(() => sendingCard = false);
     }
@@ -353,15 +347,13 @@ class _GameTableScreenState extends State<GameTableScreen> {
       );
 
       if (response.statusCode < 200 || response.statusCode >= 300) {
-        throw Exception(response.body);
+        throw ApiFailure.fromResponse(response);
       }
 
       await refreshRoom();
     } catch (e) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Ошибка: $e')),
-      );
+      showGarbaError(context, e);
     } finally {
       if (mounted) setState(() => sendingSpecial = false);
     }
@@ -408,15 +400,13 @@ class _GameTableScreenState extends State<GameTableScreen> {
       );
 
       if (response.statusCode < 200 || response.statusCode >= 300) {
-        throw Exception(response.body);
+        throw ApiFailure.fromResponse(response);
       }
 
       await refreshRoom();
     } catch (e) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Не удалось назвать козырь: $e')),
-      );
+      showGarbaError(context, e, prefix: 'Не удалось назвать козырь');
     } finally {
       if (mounted) setState(() => choosingKonTrump = false);
     }
@@ -449,15 +439,13 @@ class _GameTableScreenState extends State<GameTableScreen> {
       );
 
       if (response.statusCode < 200 || response.statusCode >= 300) {
-        throw Exception(response.body);
+        throw ApiFailure.fromResponse(response);
       }
 
       await refreshRoom();
     } catch (e) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Не удалось проголосовать: $e')),
-      );
+      showGarbaError(context, e, prefix: 'Не удалось проголосовать');
     } finally {
       if (mounted) setState(() => voting = false);
     }

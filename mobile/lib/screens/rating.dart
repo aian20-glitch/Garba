@@ -50,11 +50,11 @@ class _RatingListState extends State<RatingList> {
         Uri.parse('$apiBase/rating?scope=${widget.scope}'),
         headers: authHeaders(),
       );
-      if (response.statusCode != 200) throw Exception(response.body);
+      expectStatus(response, const [200]);
       if (!mounted) return;
       setState(() => board = jsonDecode(response.body) as Map<String, dynamic>);
-    } catch (_) {
-      if (mounted) setState(() => error = 'Нет связи с сервером');
+    } catch (e) {
+      if (mounted) setState(() => error = userErrorMessage(e));
     }
   }
 
