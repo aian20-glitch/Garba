@@ -36,6 +36,7 @@ const STEP_MS = 1_200; // заявка, ход картой, голос
 const DEAL_MS = 2_500; // раздача после вскрытия на туза или пересдачи
 const NEXT_DEAL_MS = 10_000; // следующая раздача — сначала прочитать итог и отправить смайлик
 const REDEAL_MS = 6_000; // пересдача после всеобщего ПАСа — прочитать, кто сколько долил
+const THREE_IZZHOGA_MS = 11_000; // три карты открываются по 3 секунды и возвращаются в колоду
 
 const card = (c: any) => `${c.rank} ${c.suit}`;
 
@@ -74,7 +75,13 @@ function nextAction(bot: Bot, room: any): Action | null {
         path: `${at}/dealer/continue`,
         body: {},
         say: 'раздаёт карты',
-        delay: g.stage === 'round_done' ? NEXT_DEAL_MS : g.stage === 'awaiting_deal' ? REDEAL_MS : DEAL_MS,
+        delay: g.stage === 'round_done'
+          ? NEXT_DEAL_MS
+          : g.stage === 'awaiting_deal' && g.lastRedeal === 'three_izzhoga'
+            ? THREE_IZZHOGA_MS
+            : g.stage === 'awaiting_deal'
+              ? REDEAL_MS
+              : DEAL_MS,
       };
 
     case 'bidding': {

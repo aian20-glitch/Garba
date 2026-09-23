@@ -42,6 +42,18 @@ class _GameTableScreenState extends State<GameTableScreen> {
   int lastReactionId = 0;
   bool firstReactions = true;
   bool sendingReaction = false;
+  // Сервер сразу присылает готовые руки, но за живым столом карты появляются
+  // по одной. Эти поля хранят только визуальный прогресс раздачи; правила и
+  // содержимое рук по-прежнему определяет сервер.
+  Timer? dealStartTimer;
+  Timer? dealStepTimer;
+  Timer? threeIzzhogaTimer;
+  String? presentedDealKey;
+  String? threeIzzhogaKey;
+  int presentedCards = 0;
+  int presentedTarget = 0;
+  bool dealAnimationActive = false;
+  bool threeIzzhogaLocked = false;
 
   late final RoomLink link;
 
@@ -74,6 +86,7 @@ class _GameTableScreenState extends State<GameTableScreen> {
   // Свежее состояние комнаты — по сокету или по HTTP.
   void applyRoom(Map<String, dynamic> data) {
     if (!mounted) return;
+    updateDealPresentation(data);
     setState(() {
       room = data;
       pauseReceivedAt = DateTime.now();
@@ -103,6 +116,94 @@ class _GameTableScreenState extends State<GameTableScreen> {
       pauseTicker?.cancel();
       pauseTicker = null;
     }
+  }
+
+  void updateDealPresentation(Map<String, dynamic> data) {
+    final game = data['game'];
+    if (game is! Map) return;
+    final players = (data['players'] as List?) ?? const [];
+    if (players.isEmpty) return;
+
+    final dealNumber = (game['dealNumber'] as num?)?.toInt() ?? 0;
+    final key = '${widget.roomCode}:$dealNumber';
+    final stage = game['stage']?.toString();
+    final izzhogaCount = ((game['izzhoga'] as List?) ?? const []).length;
+
+    if (stage == 'awaiting_deal' && game['lastRedeal'] == 'three_izzhoga') {
+      if (threeIzzhogaKey != key) {
+        threeIzzhogaKey = key;
+        threeIzzhogaLocked = true;
+        threeIzzhogaTimer?.cancel();
+        threeIzzhogaTimer = Timer(
+          Duration(milliseconds: izzhogaCount * 3000 + 900),
+          () {
+            if (mounted && threeIzzhogaKey == key) {
+              setState(() => threeIzzhogaLocked = false);
+            }
+          },
+        );
+      }
+      return;
+    }
+
+    if (game['openCard'] is! Map) return;
+    final eligible = stage == 'special' ||
+        stage == 'special_discard' ||
+        stage == 'bidding' ||
+        stage == 'kon_trump';
+    if (!eligible && presentedDealKey != key) return;
+
+    final cardsPerPlayer = stage == 'special' ? 1 : 5;
+    final target = players.length * cardsPerPlayer;
+    if (presentedDealKey != key) {
+      dealStartTimer?.cancel();
+      dealStepTimer?.cancel();
+      presentedDealKey = key;
+      presentedCards = 0;
+      presentedTarget = target;
+      dealAnimationActive = true;
+      // Сначала на столе открываются ИЗЖОГИ и карта РАЗ, затем начинается сдача.
+      final openingDelay = Duration(milliseconds: 1000 + izzhogaCount * 3000);
+      dealStartTimer = Timer(openingDelay, startDealSteps);
+    } else if (target > presentedTarget) {
+      // После решения по спецкарте дораздаём оставшиеся четыре круга.
+      presentedTarget = target;
+      dealAnimationActive = true;
+      if (dealStepTimer == null && dealStartTimer == null) {
+        dealStartTimer = Timer(const Duration(milliseconds: 500), startDealSteps);
+      }
+    }
+  }
+
+  void startDealSteps() {
+    dealStartTimer = null;
+    dealStepTimer?.cancel();
+    if (!mounted || presentedCards >= presentedTarget) {
+      if (mounted) setState(() => dealAnimationActive = false);
+      return;
+    }
+    dealStepTimer = Timer.periodic(const Duration(milliseconds: 430), (timer) {
+      if (!mounted) {
+        timer.cancel();
+        dealStepTimer = null;
+        return;
+      }
+      setState(() {
+        presentedCards++;
+        if (presentedCards >= presentedTarget) {
+          timer.cancel();
+          dealStepTimer = null;
+          dealAnimationActive = false;
+        }
+      });
+    });
+  }
+
+  int presentedCountFor(String playerId, List<Map<String, dynamic>> players) {
+    if (presentedDealKey == null || presentedTarget == 0) return 5;
+    final index = players.indexWhere((p) => p['id'].toString() == playerId);
+    if (index < 0 || presentedCards <= index) return 0;
+    return ((presentedCards - 1 - index) ~/ players.length + 1).clamp(0, 5);
   }
 
   // Новые заявки (кроме ПАС) и перехват спецкарты — крупным объявлением над столом.
@@ -223,6 +324,9 @@ class _GameTableScreenState extends State<GameTableScreen> {
   void dispose() {
     timer?.cancel();
     pauseTicker?.cancel();
+    dealStartTimer?.cancel();
+    dealStepTimer?.cancel();
+    threeIzzhogaTimer?.cancel();
     link.dispose();
     super.dispose();
   }
@@ -587,6 +691,15 @@ class _GameTableScreenState extends State<GameTableScreen> {
         .toList();
 
     final capacity = (data['capacity'] as num).toInt();
+    final currentDealKey =
+        '${widget.roomCode}:${(game['dealNumber'] as num?)?.toInt() ?? 0}';
+    final presentingCurrentDeal = presentedDealKey == currentDealKey;
+    final presentationBusy =
+        (presentingCurrentDeal && dealAnimationActive) || threeIzzhogaLocked;
+    final shownHandCount = presentingCurrentDeal
+        ? presentedCountFor(widget.currentPlayerId, players).clamp(0, hand.length)
+        : hand.length;
+    final shownHand = hand.take(shownHandCount).toList();
 
     // Розыгрыш.
     final isPlaying = stage == 'playing';
@@ -727,7 +840,8 @@ class _GameTableScreenState extends State<GameTableScreen> {
 
     final myTurn = (stage == 'bidding' || isPlaying || isSpecial) &&
         actorId == widget.currentPlayerId &&
-        !paused;
+        !paused &&
+        !presentationBusy;
 
     String activeName = '';
     if (actorId != null) {
@@ -738,7 +852,11 @@ class _GameTableScreenState extends State<GameTableScreen> {
     }
 
     final String headline;
-    if (isRoomDone) {
+    if (threeIzzhogaLocked) {
+      headline = 'Открываем карты';
+    } else if (presentingCurrentDeal && dealAnimationActive) {
+      headline = 'Раздаём карты';
+    } else if (isRoomDone) {
       headline = 'Комната закрыта';
     } else if (paused) {
       headline = 'ПАУЗА';
@@ -1227,11 +1345,16 @@ class _GameTableScreenState extends State<GameTableScreen> {
         }
         final revealedCards = revealedOf[pId] ?? const <Map<String, dynamic>>[];
         final showCardFan = pId != widget.currentPlayerId &&
-            (stage == 'bidding' ||
+            (presentingCurrentDeal ||
+                isSpecial ||
+                stage == 'bidding' ||
                 isPlaying ||
                 isRoundDone ||
                 isDiscard ||
                 stage == 'kon_trump');
+        final shownCardCount = presentingCurrentDeal
+            ? presentedCountFor(pId, players)
+            : 5;
 
         final namePlate = Container(
           width: seatWidth,
@@ -1386,7 +1509,10 @@ class _GameTableScreenState extends State<GameTableScreen> {
                       Positioned(
                         left: -7,
                         top: -13,
-                        child: PlayerCardFan(revealedCards: revealedCards),
+                        child: PlayerCardFan(
+                          revealedCards: revealedCards,
+                          cardCount: shownCardCount,
+                        ),
                       ),
                     Positioned(top: 48, child: namePlate),
                     Positioned(top: 13, child: avatarBadge),
@@ -1460,14 +1586,24 @@ class _GameTableScreenState extends State<GameTableScreen> {
             ],
           ),
         ),
-        TrumpOpeningView(
-          izzhoga: izzhoga,
-          openCard: openCard,
-          shownSuit: shownSuit,
-          suitLabel: trumpSuit != null ? 'КОЗЫРЬ' : 'РАЗ',
-          // Взятую спецкарту уже добавили владельцу в руку — в центре
-          // оставляем только объявленную масть.
-          showOpenCard: specialOutcome == null,
+        Row(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.center,
+          children: [
+            if (presentationBusy) ...[
+              const TableDeckView(width: 34),
+              const SizedBox(width: 7),
+            ],
+            TrumpOpeningView(
+              izzhoga: izzhoga,
+              openCard: openCard,
+              shownSuit: shownSuit,
+              suitLabel: trumpSuit != null ? 'КОЗЫРЬ' : 'РАЗ',
+              // Взятую спецкарту уже добавили владельцу в руку — в центре
+              // оставляем только объявленную масть.
+              showOpenCard: specialOutcome == null,
+            ),
+          ],
         ),
         if (showLast)
           Text(
@@ -1507,6 +1643,44 @@ class _GameTableScreenState extends State<GameTableScreen> {
                   alignment: Alignment.center,
                   child: Column(mainAxisSize: MainAxisSize.min, children: centerParts),
                 ),
+                if (presentingCurrentDeal &&
+                    dealAnimationActive &&
+                    dealStartTimer == null &&
+                    presentedCards < presentedTarget)
+                  ...() {
+                    final targetIndex = presentedCards % n;
+                    final k = (targetIndex - myIndex + n) % n;
+                    final angle = -math.pi / 2 + 2 * math.pi * k / n;
+                    final x = math.cos(angle);
+                    final y = -math.sin(angle);
+                    final horizontalSpread = crowdedTable ? 0.94 : 0.86;
+                    final verticalSpread = crowdedTable ? 0.73 : 0.65;
+                    final isNeighbour = crowdedTable && (k == 1 || k == n - 1);
+                    final isTopPair = n == 7 && (k == 3 || k == 4);
+                    final target = Alignment(
+                      (x * horizontalSpread +
+                              (isTopPair ? (x.isNegative ? -0.10 : 0.10) : 0.0))
+                          .clamp(-1.0, 1.0),
+                      (y * verticalSpread +
+                              (isNeighbour ? 0.12 : 0.0) -
+                              (isTopPair ? 0.08 : 0.0) +
+                              (crowdedTable && k == 0 ? 0.06 : 0.0))
+                          .clamp(-1.0, 1.0),
+                    );
+                    return [
+                      TweenAnimationBuilder<Alignment>(
+                        key: ValueKey('deal-$currentDealKey-$presentedCards'),
+                        tween: AlignmentTween(begin: Alignment.center, end: target),
+                        duration: const Duration(milliseconds: 390),
+                        curve: Curves.easeOutCubic,
+                        builder: (_, alignment, child) => Align(
+                          alignment: alignment,
+                          child: child,
+                        ),
+                        child: const TableDeckView(width: 24),
+                      ),
+                    ];
+                  }(),
                 for (var i = 0; i < n; i++) ...() {
                   // Смещение от меня по кругу: 0 — я (внизу), 1 — сосед справа, …
                   final k = (i - myIndex + n) % n;
@@ -1556,7 +1730,9 @@ class _GameTableScreenState extends State<GameTableScreen> {
     final String? resultKey = isRoundDone && result.isNotEmpty
         ? 'r-$konBefore-$kon-${playedTricks.length}-'
             '${result.map((r) => '${r['playerId']}${r['delta']}').join()}'
-        : stage == 'awaiting_deal' && redealText != null
+        : stage == 'awaiting_deal' &&
+                redealText != null &&
+                game['lastRedeal'] != 'three_izzhoga'
             ? 'a-$kon-${game['emptyStreak']}-${game['lastRedeal']}'
             : null;
     if (resultKey != null && resultKey != dismissedResultKey) {
@@ -1839,12 +2015,16 @@ class _GameTableScreenState extends State<GameTableScreen> {
                 ),
               ),
               const SizedBox(height: 4),
-              hand.isEmpty && myPlayed.isEmpty
+              shownHand.isEmpty && myPlayed.isEmpty
                     ? SizedBox(
                         height: 40,
                         child: Center(
                         child: Text(
-                          stage == 'awaiting_deal'
+                          presentationBusy
+                              ? (threeIzzhogaLocked
+                                  ? 'Открываем карты для пересдачи…'
+                                  : 'Карты раздаются по одной…')
+                              : stage == 'awaiting_deal'
                               ? 'Карты ещё не розданы'
                               : isRoundDone
                                   ? 'Все карты сыграны'
@@ -1853,12 +2033,12 @@ class _GameTableScreenState extends State<GameTableScreen> {
                         ),
                       )
                     : PlayerHandRow(
-                        itemCount: hand.length + myPlayed.length,
+                        itemCount: shownHand.length + myPlayed.length,
                         itemBuilder: (_, index) {
                           // Сначала карты на руках, за ними мои сыгранные —
                           // серые и неактивные, но видны до конца раздачи (§10.6).
-                          if (index >= hand.length) {
-                            final played = myPlayed[index - hand.length];
+                          if (index >= shownHand.length) {
+                            final played = myPlayed[index - shownHand.length];
                             return Opacity(
                               opacity: 0.45,
                               child: ColorFiltered(
@@ -1876,7 +2056,7 @@ class _GameTableScreenState extends State<GameTableScreen> {
                             );
                           }
 
-                          final card = hand[index];
+                          final card = shownHand[index];
                           final cardId = card['id'].toString();
 
                           // Сброс после спецкарты: нажатием выбираем карту (RULES.md §7.5).
@@ -1933,7 +2113,18 @@ class _GameTableScreenState extends State<GameTableScreen> {
                     style: const TextStyle(color: Colors.white60, fontSize: 13),
                   ),
                 ),
-              if (isVote)
+              if (presentationBusy)
+                Text(
+                  threeIzzhogaLocked
+                      ? 'Смотрим три ИЗЖОГИ — следующая раздача начнётся после анимации'
+                      : 'Карты раздаются по одной…',
+                  textAlign: TextAlign.center,
+                  style: const TextStyle(
+                    color: Color(0xFFE6B74F),
+                    fontWeight: FontWeight.w800,
+                  ),
+                )
+              else if (isVote)
                 myVote == null
                     ? Row(
                         children: [

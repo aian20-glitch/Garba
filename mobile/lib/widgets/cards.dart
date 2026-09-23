@@ -291,10 +291,12 @@ class SmallCard extends StatelessWidget {
 // а сыгранные по одной открываются слева направо.
 class PlayerCardFan extends StatelessWidget {
   final List<Map<String, dynamic>> revealedCards;
+  final int cardCount;
 
   const PlayerCardFan({
     super.key,
     required this.revealedCards,
+    this.cardCount = 5,
   });
 
   @override
@@ -305,7 +307,7 @@ class PlayerCardFan extends StatelessWidget {
       child: Stack(
         clipBehavior: Clip.none,
         children: [
-          for (var index = 0; index < 5; index++)
+          for (var index = 0; index < cardCount.clamp(0, 5); index++)
             Positioned(
               left: 1 + index * 18,
               top: (index - 2).abs() * 2,
@@ -316,6 +318,47 @@ class PlayerCardFan extends StatelessWidget {
                   card: index < revealedCards.length
                       ? revealedCards[index]
                       : null,
+                ),
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+}
+
+// Небольшая колода в центре стола во время вскрытия и раздачи.
+class TableDeckView extends StatelessWidget {
+  const TableDeckView({super.key, this.width = 38});
+
+  final double width;
+
+  @override
+  Widget build(BuildContext context) {
+    final height = width * 1.52;
+    return SizedBox(
+      width: width + 6,
+      height: height + 5,
+      child: Stack(
+        children: [
+          for (var i = 2; i >= 0; i--)
+            Positioned(
+              left: i * 2,
+              top: i * 1.5,
+              child: Container(
+                width: width,
+                height: height,
+                decoration: BoxDecoration(
+                  borderRadius: BorderRadius.circular(5),
+                  border: Border.all(color: _cardGold, width: 0.8),
+                  boxShadow: const [
+                    BoxShadow(color: Colors.black38, blurRadius: 3)
+                  ],
+                ),
+                child: ClipRRect(
+                  borderRadius: BorderRadius.circular(4),
+                  child: Image.asset('assets/branding/card_back.png',
+                      fit: BoxFit.cover),
                 ),
               ),
             ),

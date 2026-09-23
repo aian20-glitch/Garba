@@ -217,6 +217,9 @@ type GameState = {
   dealerId: string;
   dealerName: string;
   revealLog: RevealCard[];
+  // Номер попытки раздачи. Клиент использует его как стабильный ключ анимации,
+  // в том числе когда три ИЗЖОГИ не дали открытой карты.
+  dealNumber: number;
 
   // Открытая карта и козырь — разные вещи. При 4 игроках козырь всегда черви,
   // а открытая некозырная карта просто лежит (RULES.md §5.1).
@@ -1511,6 +1514,7 @@ function makeDealerSelection(room: Room): GameState {
     dealerId: dealer.id,
     dealerName: dealer.name,
     revealLog,
+    dealNumber: 0,
     openCard: null,
     razSuit: null,
     trumpSuit: null,
@@ -1704,6 +1708,8 @@ function beginBidding(room: Room) {
   if (!room.game) return;
   const game = room.game;
 
+  game.dealNumber = (game.dealNumber ?? 0) + 1;
+
   game.trumpSuit = null;
   game.mains = [];
   game.lastRedeal = null;
@@ -1813,7 +1819,9 @@ function beginBidding(room: Room) {
 // Во время борьбы за спецкарту карты раздаются по одной (§7.2, §7.3).
 function visibleCardCount(game: GameState): number | null {
   if (game.stage !== 'special' || !game.special) return null;
-  return game.special.contest.phase === 'blind' ? 0 : 1;
+  // Сначала каждый получает одну карту и принимает решение по спецкарте.
+  // Остальные четыре становятся видны только после завершения борьбы.
+  return 1;
 }
 
 // Хватает ли игроку денег взять спецкарту на этом риске: проигрыш — кон × риск (§11.7).
@@ -2140,6 +2148,7 @@ function publicRoom(room: Room, viewerId?: string) {
       dealerId: room.game.dealerId,
       dealerName: room.game.dealerName,
       revealLog: room.game.revealLog,
+      dealNumber: room.game.dealNumber ?? 0,
       openCard: room.game.openCard,
       razSuit: room.game.razSuit,
       trumpSuit: room.game.trumpSuit,
