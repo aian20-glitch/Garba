@@ -27,7 +27,22 @@ class _StartScreenState extends State<StartScreen> {
   void initState() {
     super.initState();
     DeepLinks.start();
+    // На новом устройстве аккаунта ещё нет, поэтому checkAccount() не делает
+    // сетевой запрос. Короткая проверка сервера сразу вызывает системный запрос
+    // iOS на доступ к локальной сети, а пользователь не ждёт тайм-аута при
+    // первой попытке создать аккаунт.
+    unawaited(_warmUpServerConnection());
     checkAccount();
+  }
+
+  Future<void> _warmUpServerConnection() async {
+    try {
+      await http
+          .get(Uri.parse('$apiBase/health'))
+          .timeout(const Duration(seconds: 5));
+    } catch (_) {
+      // Ошибку покажет обычное действие пользователя с понятным сообщением.
+    }
   }
 
   @override
