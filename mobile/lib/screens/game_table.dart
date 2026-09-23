@@ -218,6 +218,7 @@ class _GameTableScreenState extends State<GameTableScreen> {
     final cardsPerPlayer =
         counts.isEmpty ? 5 : counts.reduce((a, b) => a > b ? a : b).clamp(0, 5);
     final target = players.length * cardsPerPlayer;
+    presentedDealerId = game['dealerId']?.toString();
     if (presentedDealKey != key) {
       dealStartTimer?.cancel();
       dealStepTimer?.cancel();
@@ -263,12 +264,22 @@ class _GameTableScreenState extends State<GameTableScreen> {
     });
   }
 
+  // Раздающий сдаёт по кругу, начиная с соседа справа (следующего в players),
+  // себе — последним. Номер игрока в очереди раздачи: 0 — сосед справа.
+  String? presentedDealerId;
+  int dealOrderOf(int index, int n, List<Map<String, dynamic>> players) {
+    final dealer = players.indexWhere((p) => p['id'].toString() == presentedDealerId);
+    return dealer < 0 ? index : (index - dealer - 1 + n) % n;
+  }
+
   int presentedCountFor(String playerId, List<Map<String, dynamic>> players) {
     if (presentedDealKey == null) return 5;
     // Слепой круг туза: сервер ещё не раздал ни одной карты (§7.2) — рисуем пусто.
     if (presentedTarget == 0) return 0;
-    final index = players.indexWhere((p) => p['id'].toString() == playerId);
-    if (index < 0 || presentedCards <= index) return 0;
+    final seat = players.indexWhere((p) => p['id'].toString() == playerId);
+    if (seat < 0) return 0;
+    final index = dealOrderOf(seat, players.length, players);
+    if (presentedCards <= index) return 0;
     return ((presentedCards - 1 - index) ~/ players.length + 1).clamp(0, 5);
   }
 
@@ -1729,7 +1740,11 @@ class _GameTableScreenState extends State<GameTableScreen> {
                     dealStartTimer == null &&
                     presentedCards < presentedTarget)
                   ...() {
-                    final targetIndex = presentedCards % n;
+                    // Место, куда летит карта: очередь раздачи начинается справа от раздающего.
+                    final dealer = players.indexWhere(
+                        (p) => p['id'].toString() == presentedDealerId);
+                    final targetIndex =
+                        dealer < 0 ? presentedCards % n : (dealer + 1 + presentedCards) % n;
                     final k = (targetIndex - myIndex + n) % n;
                     final angle = -math.pi / 2 + 2 * math.pi * k / n;
                     final x = math.cos(angle);
