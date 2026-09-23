@@ -71,6 +71,13 @@ function nextAction(bot: Bot, room: any): Action | null {
     case 'awaiting_deal':
     case 'round_done':
       if (g.dealerId !== bot.id) return null;
+      // На первом круге карты открываются у игроков по одной до туза, затем
+      // возвращаются в колоду и только после этого можно начинать раздачу.
+      // Иначе бот-раздающий обрывал длинную анимацию через фиксированные 2,5 с.
+      const dealerSelectionMs = Math.max(
+        DEAL_MS,
+        (g.revealLog?.length ?? 0) * 900 + 2_200,
+      );
       return {
         path: `${at}/dealer/continue`,
         body: {},
@@ -81,7 +88,7 @@ function nextAction(bot: Bot, room: any): Action | null {
             ? THREE_IZZHOGA_MS
             : g.stage === 'awaiting_deal'
               ? REDEAL_MS
-              : DEAL_MS,
+              : dealerSelectionMs,
       };
 
     case 'bidding': {
