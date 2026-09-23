@@ -39,10 +39,12 @@ class _GameTableScreenState extends State<GameTableScreen> {
   bool firstAnnounce = true;
   // Итог раздачи всплывает поверх стола; закрытый нажатием больше не показываем.
   String? dismissedResultKey;
-  // Раздача сыграна: окно итога ждёт 2,5 секунды — все смотрят последнюю взятку.
-  // При ГАРБЕ в это время всем показываются дама, король и туз козыря под барабан.
+  // Раздача сыграна: сразу окно итога, через 2,5 секунды оно закрывается само —
+  // дальше все смотрят на столе, у кого какие карты были. При ГАРБЕ сначала
+  // 2,5 секунды показываются дама, король и туз козыря под барабан.
   String? roundShownKey;
   bool resultHeld = false;
+  bool resultAutoClosed = false;
   Timer? resultHoldTimer;
   ({String name, String suit})? garbaReveal;
   int lastReactionId = 0;
@@ -99,30 +101,43 @@ class _GameTableScreenState extends State<GameTableScreen> {
     if (roundKey == null) {
       resultHoldTimer?.cancel();
       resultHeld = false;
+      resultAutoClosed = false;
       garbaReveal = null;
       return;
     }
     if (roundKey == roundShownKey) return;
     roundShownKey = roundKey;
-    resultHeld = true;
+    resultAutoClosed = false;
+    resultHeld = false;
     final garba = ((game!['result'] as List?) ?? const [])
         .map((r) => Map<String, dynamic>.from(r as Map))
         .where((r) => r['garba'] == true)
         .firstOrNull;
     final trump = game['trumpSuit']?.toString();
+    const showFor = Duration(milliseconds: 2500);
+    void autoClose() {
+      resultHoldTimer = Timer(showFor, () {
+        if (mounted) setState(() => resultAutoClosed = true);
+      });
+    }
+
+    resultHoldTimer?.cancel();
     if (garba != null && trump != null) {
       garbaReveal = (name: garba['playerName'].toString(), suit: trump);
+      resultHeld = true;
       GarbaSounds.garba();
       HapticFeedback.heavyImpact();
-    }
-    resultHoldTimer?.cancel();
-    resultHoldTimer = Timer(const Duration(milliseconds: 2500), () {
-      if (!mounted) return;
-      setState(() {
-        resultHeld = false;
-        garbaReveal = null;
+      resultHoldTimer = Timer(showFor, () {
+        if (!mounted) return;
+        setState(() {
+          resultHeld = false;
+          garbaReveal = null;
+        });
+        autoClose();
       });
-    });
+    } else {
+      autoClose();
+    }
   }
 
   // Свежее состояние комнаты — по сокету или по HTTP.
@@ -1809,7 +1824,7 @@ class _GameTableScreenState extends State<GameTableScreen> {
             : null;
     if (resultKey != null &&
         resultKey != dismissedResultKey &&
-        !(isRoundDone && resultHeld)) {
+        !(isRoundDone && (resultHeld || resultAutoClosed))) {
       resultPopup = DealResultPopup(
         key: ValueKey(resultKey),
         lines: [
