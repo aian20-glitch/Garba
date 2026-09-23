@@ -38,6 +38,18 @@ const NEXT_DEAL_MS = 10_000; // следующая раздача — снача
 const REDEAL_MS = 6_000; // пересдача после всеобщего ПАСа — прочитать, кто сколько долил
 const THREE_IZZHOGA_MS = 11_000; // три карты открываются по 3 секунды и возвращаются в колоду
 
+// Анимация раздачи в приложении (updateDealPresentation в game_table.dart): сначала
+// ИЗЖОГИ и открытая карта, потом карты по одной. Пока она идёт, живой игрок ещё не видел
+// своих карт — бот не должен успеть сказать РАЗ раньше. Числа — те же, что в приложении.
+const DEAL_OPENING_MS = 1_000;
+const DEAL_IZZHOGA_MS = 3_000;
+const DEAL_CARD_MS = 430;
+const DEAL_MORE_MS = 500; // дораздача после борьбы за спецкарту
+
+// Сколько карт уже роздано каждому — по handCounts сервера (в слепом круге туза — 0).
+const dealtNow = (g: any): number =>
+  Math.min(5, Math.max(0, ...Object.values(g.handCounts ?? {}).map(Number)));
+
 const card = (c: any) => `${c.rank} ${c.suit}`;
 
 // Когда брать РАЗ: 3+ карты масти РАЗ или 2 со старшей (туз / король). Иначе ПАС.
@@ -50,11 +62,10 @@ function wantsRaz(hand: any[], razSuit: string): boolean {
 // Что бот должен сделать в этом состоянии (он видит комнату своими глазами).
 function nextAction(bot: Bot, room: any): Action | null {
   const at = `/rooms/${roomId}`;
-  // Комнату создал бот (открытая комната для «Быстрой игры») — он и запускает игру,
-  // как только все места заняты.
+  // Комната набралась — бот жмёт «ГОТОВ» (игра начнётся, когда нажмут все).
   if (room.status === 'lobby') {
-    if (room.creatorId !== bot.id || room.players.length < room.capacity) return null;
-    return { path: `${at}/start`, body: {}, say: 'начинает игру', delay: DEAL_MS };
+    if (!room.readyCheck || room.readyCheck.readyIds.includes(bot.id)) return null;
+    return { path: `${at}/ready`, body: {}, say: 'готов', delay: STEP_MS };
   }
   const g = room.game;
   if (!g || room.status === 'finished' || room.pause) return null;
@@ -154,11 +165,33 @@ function playFor(bot: Bot) {
   let timer: NodeJS.Timeout | null = null;
   let busy = false;
   let waitingFresh = false;
+  // Когда у живого игрока закончится анимация раздачи — до этого бот не ходит.
+  let dealKey = '';
+  let dealt = 0;
+  let dealShownAt = 0;
+
+  const trackDeal = (room: any) => {
+    const g = room.game;
+    if (!g?.openCard) return;
+    const key = String(g.dealNumber ?? 0);
+    const cards = dealtNow(g);
+    const players = room.players.length;
+    const now = Date.now();
+    if (key !== dealKey) {
+      dealKey = key;
+      dealt = cards;
+      dealShownAt = now + DEAL_OPENING_MS + (g.izzhoga?.length ?? 0) * DEAL_IZZHOGA_MS + players * cards * DEAL_CARD_MS;
+    } else if (cards > dealt) {
+      dealShownAt = Math.max(dealShownAt, now) + DEAL_MORE_MS + players * (cards - dealt) * DEAL_CARD_MS;
+      dealt = cards;
+    }
+  };
 
   const consider = () => {
     if (manual || busy || waitingFresh || timer || !latest) return;
     const action = nextAction(bot, latest);
     if (!action) return;
+    const delay = Math.max(action.delay, dealShownAt - Date.now() + STEP_MS);
     timer = setTimeout(async () => {
       timer = null;
       // За время паузы состояние могло измениться — берём свежее.
@@ -183,11 +216,12 @@ function playFor(bot: Bot) {
         waitingFresh = false;
         consider();
       }, 3_000);
-    }, action.delay);
+    }, delay);
   };
 
   return (room: any) => {
     latest = room;
+    trackDeal(room);
     if (!busy) waitingFresh = false;
     consider();
   };

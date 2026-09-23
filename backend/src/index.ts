@@ -113,9 +113,25 @@ import {
   type SpecialKind,
 } from './special.js';
 import { canProposeEnd, endVoteOutcome, END_VOTE_MS, type EndVote } from './endVote.js';
+import {
+  markReady,
+  READY_MS,
+  readyOutcome,
+  readySecondsLeft,
+  startReadyCheck,
+  type ReadyCheck,
+} from './readyCheck.js';
 import { rateCheck } from './rateLimit.js';
 import { openRoomsFor, QUICK_ROOM } from './openRooms.js';
-import { addMiss, clockFor, pickRandom, TURN_MS, turnSecondsLeft, type TurnClock } from './turnTimer.js';
+import {
+  addMiss,
+  clockFor,
+  pickRandom,
+  TURN_SECONDS_OPTIONS,
+  turnMsFor,
+  turnSecondsLeft,
+  type TurnClock,
+} from './turnTimer.js';
 import {
   canConcede,
   mainStatuses,
@@ -151,6 +167,7 @@ type RoomSettings = {
   emptyLimit: number; // лимит пустых раздач подряд, 3…10
   konThreshold: number; // КОН открывается при коне ≥ базовый × это число, 3…10
   minBalance: number; // минимум денег для входа, 1 000…10 000, не меньше взноса × 10
+  turnSeconds?: number; // время на ход, 20 или 40 (§13a); нет — 20 (старые комнаты)
 };
 
 type RevealCard = Card & {
@@ -325,6 +342,10 @@ type Room = {
   players: Player[];
   status: RoomStatus;
   createdAt: number;
+  // Лобби набралось — ждём «ГОТОВ» от всех (решение владельца, 23.09.2026).
+  readyCheck?: ReadyCheck | null;
+  // Кто вышел, не нажав «ГОТОВ» в прошлый раз, — чтобы его телефон сказал почему.
+  readyDroppedIds?: string[];
   game?: GameState;
   // Статистика игроков за эту комнату (ТЗ §35, этап 9.4). Заводится при старте игры.
   stats?: Record<string, PlayerStats>;
@@ -359,7 +380,11 @@ const DB_FILE = process.env.GARBA_DB ?? 'data/garba.db';
 if (DB_FILE !== ':memory:') mkdirSync(dirname(DB_FILE), { recursive: true });
 const db = openDb(DB_FILE);
 
-for (const room of loadUnfinishedRooms<Room>(db)) rooms.set(room.id, room);
+for (const room of loadUnfinishedRooms<Room>(db)) {
+  // Сервер лежал — 30 секунд на «ГОТОВ» начнутся заново (проверка готовности ниже).
+  room.readyCheck = null;
+  rooms.set(room.id, room);
+}
 if (rooms.size > 0) console.log(`[DB] restored ${rooms.size} unfinished room(s)`);
 
 // Незаконченная комната игрока. Играть можно только в одной комнате за раз:
@@ -374,9 +399,16 @@ function activeRoomOf(accountId: string): Room | undefined {
 }
 
 // Сохранить комнату и балансы её игроков — одной транзакцией.
+// Вызывается после ответа игроку и из таймеров, где ошибку некому поймать: брошенная
+// дальше, она уронила бы весь сервер. Поэтому только пишем в журнал — комната цела
+// в памяти, и следующее сохранение запишет её целиком.
 function persistRoom(room: Room) {
-  saveRoom(db, room);
-  if (room.status === 'finished') payReferrals(room);
+  try {
+    saveRoom(db, room);
+    if (room.status === 'finished') payReferrals(room);
+  } catch (e) {
+    console.error(`[ROOM ${room.id}] save to database failed:`, e);
+  }
 }
 
 // Комната доиграна: кто из её игроков пришёл по приглашению и уже доиграл 3 комнаты —
@@ -384,13 +416,15 @@ function persistRoom(room: Room) {
 const referralsChecked = new Set<string>();
 function payReferrals(room: Room) {
   if (referralsChecked.has(room.id)) return;
-  referralsChecked.add(room.id);
   for (const p of room.players) {
     const inviterId = unpaidInviter(db, p.id);
     if (!inviterId || !referralDue(profileStats(db, p.id).rooms, false)) continue;
     moveCoins([{ accountId: inviterId, delta: REFERRAL_BONUS }], () => markReferralPaid(db, p.id));
     console.log(`[REFERRAL] ${p.name} доиграл ${REFERRAL_ROOMS} комнаты — пригласившему +${REFERRAL_BONUS}`);
   }
+  // Отмечаем после выплат: не прошла — попробуем при следующем сохранении
+  // (дважды не заплатим — выплаченный помечен в базе, markReferralPaid).
+  referralsChecked.add(room.id);
 }
 
 // Изменить баланс аккаунта вне игры: бонус, подарок, приглашение (этап 9.3).
@@ -894,6 +928,26 @@ app.delete('/friends/:code', (req, res) => {
 // Подарить монеты по коду игрока (ТЗ §5): до 1 000, не чаще раза в сутки.
 // Дарить можно, только когда не сидишь в комнате: там деньги нужны для ставок,
 // и минимум для входа проверялся по балансу на момент входа.
+// Начислить или списать монеты вручную (решение владельца, 23.09.2026) — для проверок
+// и помощи игрокам. Только с этого же компьютера: в интернете все запросы идут через
+// Caddy и несут X-Forwarded-For, такие отклоняются. Через moveCoins — как бонус и подарок,
+// поэтому начисление игроку за столом не затрётся и не посчитается выигрышем.
+app.post('/admin/coins', (req, res) => {
+  if (!LOOPBACK.includes(req.socket.remoteAddress ?? '') || req.headers['x-forwarded-for'] !== undefined) {
+    return res.status(403).json({ error: 'local only' });
+  }
+  const account = findAccountByCode(db, normalizeCode(req.body?.code) ?? '') ?? getAccount(db, String(req.body?.id ?? ''));
+  if (!account) return res.status(404).json({ error: 'player not found' });
+  const amount = Number(req.body?.amount);
+  if (!Number.isInteger(amount) || amount === 0 || account.balance + amount < 0) {
+    return res.status(400).json({ error: 'bad amount' });
+  }
+  moveCoins([{ accountId: account.id, delta: amount }]);
+  const balance = getAccount(db, account.id)!.balance;
+  console.log(`[ADMIN] ${account.name}: ${amount > 0 ? '+' : ''}${amount} → ${balance}`);
+  return res.json({ name: account.name, amount, balance });
+});
+
 app.post('/gifts', (req, res) => {
   const from = accountOf(req);
   if (!from) {
@@ -1209,7 +1263,7 @@ setInterval(() => {
 
 // Запрос игрока к своей комнате — тоже знак, что он на месте (приложение без сокета
 // опрашивает сервер). На паузе ходы не принимаются: ждём отключившегося.
-const LOBBY_ACTIONS = ['/join', '/leave', '/start', '/back'];
+const LOBBY_ACTIONS = ['/join', '/leave', '/ready', '/back'];
 app.use('/rooms/:id', (req, res, next) => {
   const room = rooms.get(req.params.id);
   if (!room || !tracksPresence(room)) return next();
@@ -1253,7 +1307,9 @@ function publicPause(room: Room) {
 
 // --- Время на ход (§13a) ---
 
-const turnOpts = { turnMs: Number(process.env.GARBA_TURN_MS ?? TURN_MS) };
+// Время на ход — из настроек комнаты (§13a). GARBA_TURN_MS — для проверок, сразу всем.
+const TEST_TURN_MS = process.env.GARBA_TURN_MS ? Number(process.env.GARBA_TURN_MS) : null;
+const turnMsOf = (room: Room) => TEST_TURN_MS ?? turnMsFor(room.settings.turnSeconds);
 const turnClocks = new Map<string, TurnClock>();
 const turnBusy = new Set<string>();
 
@@ -1375,7 +1431,7 @@ async function sweepTurns() {
   for (const room of rooms.values()) {
     if (turnBusy.has(room.id)) continue;
     const clock = turnClockOf(room);
-    if (!clock || now - clock.since < turnOpts.turnMs) continue;
+    if (!clock || now - clock.since < turnMsOf(room)) continue;
     const awaited = awaitedMoves(room);
     if (!awaited) continue;
 
@@ -1819,9 +1875,10 @@ function beginBidding(room: Room) {
 // Во время борьбы за спецкарту карты раздаются по одной (§7.2, §7.3).
 function visibleCardCount(game: GameState): number | null {
   if (game.stage !== 'special' || !game.special) return null;
-  // Сначала каждый получает одну карту и принимает решение по спецкарте.
+  // Туз: слепой круг — до того, как роздана хоть одна карта (RULES.md §7.2), карт 0.
+  // Потом (окно перехвата, король, дама, 6, 10) — по одной карте (§7.3).
   // Остальные четыре становятся видны только после завершения борьбы.
-  return 1;
+  return game.special.contest.phase === 'blind' ? 0 : 1;
 }
 
 // Хватает ли игроку денег взять спецкарту на этом риске: проигрыш — кон × риск (§11.7).
@@ -2346,7 +2403,7 @@ function publicRoom(room: Room, viewerId?: string) {
         }),
       lastEndVote: room.game.lastEndVote ?? null,
       // Время на ход (§13a): сколько секунд осталось тому, кого ждём; кого ждём.
-      turnSecondsLeft: turnSecondsLeft(turnClockOf(room), Date.now(), turnOpts.turnMs),
+      turnSecondsLeft: turnSecondsLeft(turnClockOf(room), Date.now(), turnMsOf(room)),
       awaitedIds: awaitedMoves(room)?.moves.map((m) => m.playerId) ?? [],
       // Владелец спецкарты сбрасывает одну свою карту — кроме самой спецкарты (§7.5).
       myDiscardOptions:
@@ -2367,6 +2424,14 @@ function publicRoom(room: Room, viewerId?: string) {
     creatorId: room.creatorId,
     settings: room.settings,
     isPublic: !!room.isPublic,
+    // «ГОТОВ» перед стартом: кто уже нажал и сколько секунд осталось.
+    readyCheck: room.readyCheck
+      ? {
+          readyIds: room.readyCheck.readyIds,
+          secondsLeft: readySecondsLeft(room.readyCheck, Date.now(), readyMs),
+        }
+      : null,
+    readyDroppedIds: room.readyDroppedIds ?? [],
     // У каждого игрока — адрес его фото (этап 9.5) или null.
     // И рейтинг (этап 9.6): сейчас и с каким сел за стол — для итогов «4.0 → 4.9».
     players: room.players.map((p) => {
@@ -2399,7 +2464,7 @@ app.get('/health', (_req, res) => {
 });
 
 app.post('/rooms', (req, res) => {
-  const { playerId, name, capacity, ante, emptyLimit, konThreshold, minBalance } =
+  const { playerId, name, capacity, ante, emptyLimit, konThreshold, minBalance, turnSeconds } =
     req.body ?? {};
   const cap = Number(capacity);
   const anteValue = Number(ante);
@@ -2452,6 +2517,12 @@ app.post('/rooms', (req, res) => {
     });
   }
 
+  // Время на ход — 20 или 40 секунд (§13a). Не прислали — 20, как было раньше.
+  const turnSecondsValue = turnSeconds === undefined ? 20 : Number(turnSeconds);
+  if (!TURN_SECONDS_OPTIONS.includes(turnSecondsValue)) {
+    return res.status(400).json({ error: `turnSeconds must be one of ${TURN_SECONDS_OPTIONS.join(', ')}` });
+  }
+
   // Играть можно только в одной комнате за раз — roomId, чтобы вернуться в неё.
   const busyIn = activeRoomOf(me(res).id);
   if (busyIn) {
@@ -2481,7 +2552,13 @@ app.post('/rooms', (req, res) => {
   const room = makeRoom(
     me(res),
     cap,
-    { ante: anteValue, emptyLimit: limitValue, konThreshold: thresholdValue, minBalance: minBalanceValue },
+    {
+      ante: anteValue,
+      emptyLimit: limitValue,
+      konThreshold: thresholdValue,
+      minBalance: minBalanceValue,
+      turnSeconds: turnSecondsValue,
+    },
     req.body?.isPublic === true,
   );
   return res.status(201).json(publicRoom(room, String(playerId)));
@@ -2548,6 +2625,10 @@ function joinRoom(room: Room, account: Account): { status: number; body: unknown
     startBalance: account.balance,
   });
   console.log(`[ROOM ${room.id}] ${account.name} joined ${room.players.length}/${room.capacity}`);
+  if (room.players.length === room.capacity) {
+    room.readyCheck = startReadyCheck(Date.now());
+    console.log(`[ROOM ${room.id}] набралась — ждём «ГОТОВ» от всех`);
+  }
   return { status: 200, body: publicRoom(room, account.id) };
 }
 
@@ -2679,26 +2760,31 @@ app.post('/rooms/:id/leave', (req, res) => {
     console.log(`[ROOM ${room.id}] creator left, room closed`);
   } else {
     room.players = room.players.filter((p) => p.id !== playerId);
+    room.readyCheck = null; // место освободилось — ждём нового игрока
     console.log(`[ROOM ${room.id}] ${me(res).name} left ${room.players.length}/${room.capacity}`);
   }
 
   return res.json(publicRoom(room, playerId));
 });
 
-app.post('/rooms/:id/start', (req, res) => {
+// «ГОТОВ» (решение владельца, 23.09.2026): кнопка появляется, когда комната набралась.
+// Нажали все — игра начинается сама. Кто не нажал за 30 секунд — выходит (sweepReady).
+app.post('/rooms/:id/ready', (req, res) => {
   const room = rooms.get(req.params.id);
-
   if (!room) {
     return res.status(404).json({ error: 'room not found' });
   }
-
-  const { playerId } = req.body ?? {};
-
-  if (String(playerId) !== room.creatorId) {
-    return res.status(403).json({ error: 'only creator can start the game' });
+  const playerId = me(res).id;
+  if (room.status === 'started' && room.game) {
+    return res.json(publicRoom(room, playerId));
   }
-
-  if (room.players.length !== room.capacity) {
+  if (room.status !== 'lobby') {
+    return res.status(409).json({ error: 'room finished' });
+  }
+  if (!room.players.some((p) => p.id === playerId)) {
+    return res.status(403).json({ error: 'player is not in this room' });
+  }
+  if (!room.readyCheck) {
     return res.status(409).json({
       error: 'room is not full',
       players: room.players.length,
@@ -2706,11 +2792,52 @@ app.post('/rooms/:id/start', (req, res) => {
     });
   }
 
-  if (room.status === 'started' && room.game) {
-    return res.json(publicRoom(room, String(playerId)));
+  room.readyCheck = markReady(room.readyCheck, playerId);
+  console.log(`[ROOM ${room.id}] ${me(res).name} готов ${room.readyCheck.readyIds.length}/${room.capacity}`);
+  settleReadyCheck(room);
+  return res.json(publicRoom(room, playerId));
+});
+
+// Проверка готовности: все нажали — старт; 30 секунд вышли — не нажавшие выходят.
+// true — комната изменилась (нужно сохранить и разослать).
+function settleReadyCheck(room: Room): boolean {
+  if (room.status !== 'lobby' || !room.readyCheck) return false;
+  const outcome = readyOutcome(
+    room.readyCheck,
+    room.players.map((p) => p.id),
+    room.creatorId,
+    Date.now(),
+    readyMs,
+  );
+  if (outcome.kind === 'wait') return false;
+
+  if (outcome.kind === 'start') {
+    startGame(room);
+    return true;
   }
 
+  const names = room.players.filter((p) => outcome.drop.includes(p.id)).map((p) => p.name);
+  room.players = room.players.filter((p) => !outcome.drop.includes(p.id));
+  room.readyCheck = null;
+  room.readyDroppedIds = outcome.drop;
+  if (outcome.creatorId === null) {
+    room.status = 'finished';
+    console.log(`[ROOM ${room.id}] «ГОТОВ» не нажал никто — комната закрыта`);
+  } else {
+    if (outcome.creatorId !== room.creatorId) {
+      room.creatorId = outcome.creatorId;
+      const creator = room.players.find((p) => p.id === outcome.creatorId)?.name;
+      console.log(`[ROOM ${room.id}] создатель теперь ${creator}`);
+    }
+    console.log(`[ROOM ${room.id}] не нажали «ГОТОВ» — вышли: ${names.join(', ')}`);
+  }
+  return true;
+}
+
+function startGame(room: Room) {
   room.status = 'started';
+  room.readyCheck = null;
+  room.readyDroppedIds = undefined;
 
   // Посадка за столом случайная и НЕ совпадает с порядком входа в комнату
   // (RULES.md §2). После этой перетасовки room.players — это и есть места за
@@ -2725,9 +2852,28 @@ app.post('/rooms/:id/start', (req, res) => {
   console.log(
     `[ROOM ${room.id}] GAME STARTED, dealer=${room.game.dealerName}`,
   );
+}
 
-  return res.json(publicRoom(room, String(playerId)));
-});
+// Для проверок время на «ГОТОВ» можно укоротить.
+const readyMs = Number(process.env.GARBA_READY_MS ?? READY_MS);
+
+// Раз в секунду: набравшееся лобби без проверки (например, после перезапуска) — начинаем
+// её; у кого вышли 30 секунд — выходят.
+setInterval(() => {
+  for (const room of rooms.values()) {
+    if (room.status !== 'lobby') continue;
+    let changed = false;
+    if (!room.readyCheck && room.players.length === room.capacity) {
+      room.readyCheck = startReadyCheck(Date.now());
+      changed = true;
+    }
+    if (settleReadyCheck(room)) changed = true;
+    if (changed) {
+      persistRoom(room);
+      broadcastRoom(room.id).catch((e) => console.error(`[ROOM ${room.id}] broadcast failed:`, e));
+    }
+  }
+}, 1000);
 
 app.post('/rooms/:id/dealer/continue', (req, res) => {
   const room = rooms.get(req.params.id);

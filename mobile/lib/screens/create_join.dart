@@ -17,6 +17,8 @@ class _CreateRoomScreenState extends State<CreateRoomScreen> {
   int konThreshold = 10;
   // Минимум денег для входа: 1 000…10 000, не меньше взноса × 10 (RULES.md §9.1a).
   int minBalance = 1000;
+  // Время на ход: 20 или 40 секунд (RULES.md §13a).
+  int turnSeconds = 20;
   // Открытая — видна всем в «Открытых комнатах», войти можно без кода.
   bool isPublic = false;
   bool loading = false;
@@ -45,6 +47,7 @@ class _CreateRoomScreenState extends State<CreateRoomScreen> {
           'emptyLimit': emptyLimit,
           'konThreshold': konThreshold,
           'minBalance': minBalance,
+          'turnSeconds': turnSeconds,
           'isPublic': isPublic,
         }),
       );
@@ -226,6 +229,28 @@ class _CreateRoomScreenState extends State<CreateRoomScreen> {
               'Играть на базовый кон можно, когда кон дорастёт до '
               '${fmtCoins(capacity * ante * konThreshold)}',
               style: const TextStyle(color: Colors.white60),
+            ),
+            const SizedBox(height: 24),
+            const Text(
+              'Время на ход',
+              style: TextStyle(fontSize: 20, fontWeight: FontWeight.w800),
+            ),
+            const SizedBox(height: 12),
+            Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              children: [20, 40].map((n) {
+                return ChoiceChip(
+                  label: Text('$n секунд'),
+                  selected: turnSeconds == n,
+                  onSelected: (_) => setState(() => turnSeconds = n),
+                );
+              }).toList(),
+            ),
+            const SizedBox(height: 6),
+            const Text(
+              'Не успел — за игрока сходит игра: в торгах ПАС, в розыгрыше — любая допустимая карта',
+              style: TextStyle(color: Colors.white60),
             ),
           ],
                 ),

@@ -74,6 +74,8 @@ class _DealerSelectionScreenState extends State<DealerSelectionScreen> {
                 return;
               }
 
+              // Каждая открытая карта — со звуком, как при раздаче.
+              GarbaSounds.card();
               setState(() => visibleCount++);
 
               if (visibleCount >= revealLog.length) {

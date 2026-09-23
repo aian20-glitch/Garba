@@ -19,9 +19,14 @@ class _LobbyScreenState extends State<LobbyScreen> {
   Timer? timer;
   late final RoomLink link;
   Map<String, dynamic>? room;
-  bool starting = false;
+  bool sendingReady = false;
   bool firstLoad = true;
   bool moved = false;
+  // «ГОТОВ» (23.09.2026): когда пришёл отсчёт и была ли проверка в прошлый раз —
+  // чтобы сигнал прозвучал один раз, в момент, когда комната набралась.
+  DateTime readyReceivedAt = DateTime.now();
+  bool hadReadyCheck = false;
+  Timer? readyTicker;
 
   @override
   void initState() {
@@ -78,10 +83,29 @@ class _LobbyScreenState extends State<LobbyScreen> {
   void applyRoom(Map<String, dynamic> data) {
     if (!mounted) return;
 
+    final hasReadyCheck = data['readyCheck'] is Map;
     setState(() {
       room = data;
       firstLoad = false;
+      readyReceivedAt = DateTime.now();
     });
+
+    // Комната набралась — звук и вибрация, чтобы игрок, занятый другим, успел нажать.
+    final imIn = ((data['players'] as List?) ?? const [])
+        .any((p) => (p as Map)['id'].toString() == widget.currentPlayerId);
+    if (hasReadyCheck && !hadReadyCheck && imIn) {
+      GarbaSounds.ready();
+      HapticFeedback.heavyImpact();
+    }
+    hadReadyCheck = hasReadyCheck;
+    if (hasReadyCheck) {
+      readyTicker ??= Timer.periodic(const Duration(seconds: 1), (_) {
+        if (mounted) setState(() {});
+      });
+    } else {
+      readyTicker?.cancel();
+      readyTicker = null;
+    }
 
     if (data['status']?.toString() == 'started' &&
         data['game'] is Map &&
@@ -104,27 +128,24 @@ class _LobbyScreenState extends State<LobbyScreen> {
     }
   }
 
-  Future<void> startGame() async {
-    if (starting) return;
-    setState(() => starting = true);
+  // «ГОТОВ»: нажали все — игра начнётся сама (решает сервер).
+  Future<void> sendReady() async {
+    if (sendingReady) return;
+    setState(() => sendingReady = true);
 
     try {
       final response = await http.post(
-        Uri.parse('$apiBase/rooms/${widget.roomCode}/start'),
+        Uri.parse('$apiBase/rooms/${widget.roomCode}/ready'),
         headers: authHeaders(),
         body: jsonEncode({}),
       );
-
-      if (response.statusCode < 200 || response.statusCode >= 300) {
-        throw ApiFailure.fromResponse(response);
-      }
-
-      await refreshRoom();
+      expectStatus(response, const [200]);
+      applyRoom(jsonDecode(response.body) as Map<String, dynamic>);
     } catch (e) {
       if (!mounted) return;
-      showGarbaError(context, e, prefix: 'Не удалось начать игру');
+      showGarbaError(context, e, prefix: 'Не удалось отметиться');
     } finally {
-      if (mounted) setState(() => starting = false);
+      if (mounted) setState(() => sendingReady = false);
     }
   }
 
@@ -151,6 +172,7 @@ class _LobbyScreenState extends State<LobbyScreen> {
   @override
   void dispose() {
     timer?.cancel();
+    readyTicker?.cancel();
     link.dispose();
     super.dispose();
   }
@@ -178,10 +200,12 @@ class _LobbyScreenState extends State<LobbyScreen> {
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
               const Spacer(),
-              const Text(
-                'Создатель закрыл комнату',
+              Text(
+                ((room!['readyDroppedIds'] as List?) ?? const []).isNotEmpty
+                    ? 'Никто не нажал «ГОТОВ» — комната закрыта'
+                    : 'Создатель закрыл комнату',
                 textAlign: TextAlign.center,
-                style: TextStyle(fontSize: 22, fontWeight: FontWeight.w800),
+                style: const TextStyle(fontSize: 22, fontWeight: FontWeight.w800),
               ),
               const Spacer(),
               GarbaButton(
@@ -200,8 +224,58 @@ class _LobbyScreenState extends State<LobbyScreen> {
         .map((e) => Map<String, dynamic>.from(e as Map))
         .toList();
 
+    // Не нажал «ГОТОВ» за 30 секунд — сервер вывел из комнаты, место ждёт других.
+    final droppedMe = ((room!['readyDroppedIds'] as List?) ?? const [])
+            .any((id) => id.toString() == widget.currentPlayerId) &&
+        !players.any((p) => p['id'].toString() == widget.currentPlayerId);
+    if (droppedMe) {
+      return Scaffold(
+        appBar: backOnlyAppBar(),
+        body: Padding(
+          padding: const EdgeInsets.all(20),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              const Spacer(),
+              const Text(
+                'Вы не нажали «ГОТОВ» за 30 секунд',
+                textAlign: TextAlign.center,
+                style: TextStyle(fontSize: 22, fontWeight: FontWeight.w800),
+              ),
+              const SizedBox(height: 12),
+              const Text(
+                'Вы вышли из комнаты — ваше место ждёт другого игрока. '
+                'Можно зайти снова, если место ещё свободно.',
+                textAlign: TextAlign.center,
+                style: TextStyle(color: Colors.white70),
+              ),
+              const Spacer(),
+              GarbaButton(
+                label: 'В ГЛАВНОЕ МЕНЮ',
+                onTap: () => Navigator.pop(context),
+              ),
+            ],
+          ),
+        ),
+      );
+    }
+
+    final readyCheck = room!['readyCheck'] is Map
+        ? Map<String, dynamic>.from(room!['readyCheck'] as Map)
+        : null;
+    final readyIds = ((readyCheck?['readyIds'] as List?) ?? const [])
+        .map((e) => e.toString())
+        .toSet();
+    final iAmReady = readyIds.contains(widget.currentPlayerId);
+    final readyLeft = readyCheck == null
+        ? 0
+        : math.max(
+            0,
+            (readyCheck['secondsLeft'] as num).toInt() -
+                DateTime.now().difference(readyReceivedAt).inSeconds,
+          );
+
     final isCreator = creatorId == widget.currentPlayerId;
-    final isFull = players.length == capacity;
 
     return Scaffold(
       appBar: backOnlyAppBar(),
@@ -235,7 +309,8 @@ class _LobbyScreenState extends State<LobbyScreen> {
                   padding: const EdgeInsets.only(top: 8),
                   child: Text(
                     'Взнос ${fmtCoins(v('ante'))} · вход от ${fmtCoins(v('minBalance'))}\n'
-                    'Лимит пустых раздач ${v('emptyLimit')} · КОН с ×${v('konThreshold')}',
+                    'Лимит пустых раздач ${v('emptyLimit')} · КОН с ×${v('konThreshold')}\n'
+                    'Время на ход ${s['turnSeconds'] ?? 20} с',
                     style: const TextStyle(color: Colors.white60),
                   ),
                 );
@@ -263,16 +338,19 @@ class _LobbyScreenState extends State<LobbyScreen> {
               ),
             const SizedBox(height: 20),
             // Список прокручивается: при 6–7 игроках он не влезает, и кнопки
-            // «НАЧАТЬ ИГРУ» / «ЗАКРЫТЬ КОМНАТУ» уходили за край экрана.
+            // «ГОТОВ» / «ЗАКРЫТЬ КОМНАТУ» уходили за край экрана.
             Expanded(
               child: ListView(
                 children: [
                   ...players.map((p) {
                     final isOwner = p['id'].toString() == creatorId;
+                    final isReady =
+                        readyCheck == null || readyIds.contains(p['id'].toString());
                     return PlayerTile(
                       name: p['name'].toString(),
-                      subtitle: '${isOwner ? 'Создатель' : 'Игрок'} • ⭐ ${fmtRating(p['rating'])}',
-                      ready: true,
+                      subtitle: '${isOwner ? 'Создатель' : 'Игрок'} • ⭐ ${fmtRating(p['rating'])}'
+                          '${readyCheck == null ? '' : isReady ? ' • готов' : ' • ждём «ГОТОВ»'}',
+                      ready: isReady,
                       avatar: p['avatar']?.toString(),
                       onTap: () => openPlayerCard(context, p),
                     );
@@ -301,11 +379,32 @@ class _LobbyScreenState extends State<LobbyScreen> {
               label: const Text('ПРИГЛАСИТЬ'),
             ),
             const SizedBox(height: 12),
-            FilledButton.icon(
-              onPressed: isCreator && isFull ? startGame : null,
-              icon: const Icon(Icons.play_arrow),
-              label: Text(starting ? 'ЗАПУСК...' : 'НАЧАТЬ ИГРУ'),
-            ),
+            // Комната набралась — у всех «ГОТОВ» с отсчётом; нажали все — игра начнётся сама.
+            if (readyCheck == null)
+              FilledButton.icon(
+                onPressed: null,
+                icon: const Icon(Icons.hourglass_empty),
+                label: Text('ЖДЁМ ИГРОКОВ ${players.length} / $capacity'),
+              )
+            else if (iAmReady)
+              FilledButton.icon(
+                onPressed: null,
+                icon: const Icon(Icons.check_circle),
+                label: Text('ВЫ ГОТОВЫ · ждём остальных ${readyIds.length} / $capacity · $readyLeft'),
+              )
+            else
+              FilledButton.icon(
+                style: FilledButton.styleFrom(
+                  backgroundColor: readyLeft <= 10 ? Colors.redAccent : Colors.green,
+                  minimumSize: const Size.fromHeight(56),
+                ),
+                onPressed: sendingReady ? null : sendReady,
+                icon: const Icon(Icons.check),
+                label: Text(
+                  'ГОТОВ · $readyLeft',
+                  style: const TextStyle(fontSize: 20, fontWeight: FontWeight.w900),
+                ),
+              ),
             const SizedBox(height: 12),
             TextButton(
               onPressed: leaveRoom,

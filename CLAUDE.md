@@ -219,6 +219,8 @@ GET  /health
 POST /accounts                   { name }   → 201 { id, name, balance, createdAt, token }
                                  имя 1..20 символов; новый аккаунт — 10 000 монет;
                                  токен выдаётся один раз, телефон обязан его сохранить
+POST /accounts/recover           { playerCode, recoveryCode } → новый токен и новый код; 401, 429
+POST /me/recovery-code           → { recoveryCode } — выпустить новый, старый перестаёт работать
 POST /accounts                   { name, inviteCode? }   inviteCode — код пригласившего (этап 9.3),
                                  ему +1 000, когда новый игрок доиграет 3 комнаты (с 19.09.2026);
                                  неизвестный код — 400 invite code not found; с одного адреса
@@ -257,7 +259,8 @@ POST /gifts                      { toCode, amount }  → { amount, balance, to: 
                                  first (дарить нельзя, пока сидишь в комнате); 404 player not found
 
 — дальше всё с токеном —
-POST /rooms                      { capacity, ante, emptyLimit, konThreshold, minBalance, isPublic? }
+POST /rooms                      { capacity, ante, emptyLimit, konThreshold, minBalance, isPublic?,
+                                   turnSeconds? }   turnSeconds 20 | 40, без него — 20 (§13a, 23.09.2026)
                                  capacity 4..7; ante 100..1000 кратно 100;
                                  emptyLimit 3..10; konThreshold 3..10;
                                  minBalance 1000..10000 кратно 1000, не меньше ante × 10
@@ -295,6 +298,10 @@ POST /rooms/:id/end-game         { choice }   yes | no — закончить и
                                               30 с без ответа — «нет»; пока идёт — раздавать нельзя (409)
 POST /rooms/:id/react            { emoji }    смайлик (этап 9.7): только в round_done и room_done;
                                  409 не сейчас, 400 не из набора, 429 чаще раза в 2 секунды
+
+— служебное, только с этого компьютера (23.09.2026) —
+POST /admin/coins                { code | id, amount }  → { name, amount, balance }; через moveCoins;
+                                 с X-Forwarded-For (из интернета через Caddy) — 403 local only
 
 — без токена, для людей (этап 9.7) —
 GET  /r/:roomId                  страница-приглашение в комнату: кнопка garba://room/<номер>
@@ -352,6 +359,12 @@ GET  /i/:code                    страница-приглашение дру�
 считаются в комнате. Поэтому создать или войти во вторую незаконченную комнату нельзя —
 409 с `roomId` той, где он сидит; приложение предлагает вернуться в неё.
 
+**База надёжно пишется (23.09.2026).** `openDb` включает `journal_mode=WAL` и ждёт занятую
+базу до 5 с (`timeout`) — ночная копия (`sqlite3 .backup`) и чтение базы не мешают записи.
+`persistRoom` ошибку записи только пишет в журнал: он вызывается после ответа и из таймеров,
+где брошенная ошибка уронила бы весь сервер; комната цела в памяти, следующее сохранение
+запишет её целиком. Рядом с базой лежат `garba.db-wal` и `garba.db-shm` — это нормально.
+
 **Деньги и база.** `players[].balance` в комнате — это баланс аккаунта. После каждого
 `POST /rooms/:id/...` сервер записывает балансы игроков комнаты в базу
 (`syncBalances`, в том же middleware, что и рассылка). База — `backend/data/garba.db`
@@ -375,7 +388,7 @@ pause: null | { players: [{ id, name, secondsLeft }] }   — на уровне �
 ```
 
 **Время на ход (§13a).** Раз в секунду сервер смотрит, кого ждёт (`awaitedMoves` в `index.ts`),
-и через 20 с ходит за него **запросом самому себе** — через те же проверки, базу и рассылку.
+и через `room.settings.turnSeconds` (20 или 40 с; нет поля — 20) ходит за него **запросом самому себе** — через те же проверки, базу и рассылку.
 Пропуск — заголовки `x-garba-internal` (случайный секрет процесса) + `x-garba-player`, только
 с 127.0.0.1. Два пропуска подряд — `game.awayAt[id]`: пауза как при отключении, 5 минут.
 Любой POST самого игрока (в том числе `POST /rooms/:id/back` — «Я ЗДЕСЬ», разрешён на паузе)
@@ -455,7 +468,7 @@ pause: null | { players: [{ id, name, secondsLeft }] }   — на уровне �
 
 **Деньги** (с этапа 4):
 
-- `room.settings` — `{ ante, emptyLimit, konThreshold, minBalance }`, выбирает создатель.
+- `room.settings` — `{ ante, emptyLimit, konThreshold, minBalance, turnSeconds }`, выбирает создатель.
   `minBalance` при входе сравнивается с настоящим балансом аккаунта (этап 9.1).
 - `players[].balance` — баланс аккаунта, пока игрок в комнате; `players[].startBalance` —
   баланс при входе. Новый аккаунт получает 10 000 (`STARTING_COINS`). Балансы открыты всем — так и по ТЗ.
@@ -536,6 +549,8 @@ pause: null | { players: [{ id, name, secondsLeft }] }   — на уровне �
 ./tools/garba discard  12345              бот-владелец спецкарты сбрасывает карту
 ./tools/garba online   12345 [--manual]   снова посадить ботов на связь
 ./tools/garba offline                     «отключить» ботов — проверка паузы (§13)
+./tools/garba coins    ER6XKJ 60000       начислить монеты игроку по коду (минус — списать)
+./tools/garba coins    bots 60000         всем шести ботам
 ```
 
 **На Windows — `tools\garba.ps1`** с теми же командами (`.\tools\garba.ps1 join -Room 12345`,

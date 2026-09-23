@@ -96,10 +96,16 @@ async function main() {
   check('игроки вошли — Серик узнал сам: 4 из 4', serikWatch.state.last?.players?.length, 4);
 
   const botWatch = watcher(roomId, bots[0].token);
-  check('старт не от создателя — 403 (playerId в теле не помогает)',
-    (await post(`/rooms/${roomId}/start`, bots[0].token, { playerId: serik.id })).status, 403);
-  await post(`/rooms/${roomId}/start`, serik.token);
+  // «ГОТОВ» (23.09.2026): комната набралась — старт только когда нажали все.
+  check('комната набралась — все видят кнопку «ГОТОВ», 30 секунд',
+    [serikWatch.state.last?.readyCheck?.readyIds, serikWatch.state.last?.readyCheck?.secondsLeft], [[], 30]);
+  for (const p of [serik, bots[0], bots[1]]) await post(`/rooms/${roomId}/ready`, p.token);
   await wait(300);
+  check('трое готовы из четырёх — игра ещё не началась',
+    [serikWatch.state.last?.status, serikWatch.state.last?.readyCheck?.readyIds?.length], ['lobby', 3]);
+  await post(`/rooms/${roomId}/ready`, bots[2].token);
+  await wait(300);
+  check('нажал последний — игра началась сама, без кнопки создателя', serikWatch.state.last?.status, 'started');
   const dealerId = serikWatch.state.last?.game?.dealerId;
   const dealer = [serik, ...bots].find((p) => p.id === dealerId)!;
   await post(`/rooms/${roomId}/dealer/continue`, dealer.token);

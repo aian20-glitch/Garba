@@ -246,3 +246,73 @@ class GarbaBanner extends StatelessWidget {
     );
   }
 }
+
+// ГАРБА на столе: всем открываются дама, король и туз козыря — по одной, под
+// барабанную дробь, — потом «ГАРБА!». Что это ГАРБА, решил сервер (result[].garba).
+class GarbaReveal extends StatelessWidget {
+  final String name;
+  final String suit;
+
+  const GarbaReveal({super.key, required this.name, required this.suit});
+
+  @override
+  Widget build(BuildContext context) {
+    Widget card(String rank, int index) {
+      // Карты ложатся по очереди, к финальному удару барабана (2 с) — все три.
+      final delay = 0.15 + index * 0.2;
+      return TweenAnimationBuilder<double>(
+        tween: Tween(begin: 0, end: 1),
+        duration: const Duration(milliseconds: 1900),
+        builder: (_, t, child) {
+          final k = ((t - delay) / 0.25).clamp(0.0, 1.0);
+          return Opacity(
+            opacity: k,
+            child: Transform.translate(
+              offset: Offset(0, 40 * (1 - k)),
+              child: Transform.rotate(angle: (index - 1) * 0.12, child: child),
+            ),
+          );
+        },
+        child: SizedBox(
+          width: 96,
+          height: 134,
+          child: FittedBox(
+            child: PlayingCardView(rank: rank, suit: suit, glow: true),
+          ),
+        ),
+      );
+    }
+
+    return Container(
+      color: const Color(0xCC05090D),
+      alignment: Alignment.center,
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Text(
+            name,
+            style: const TextStyle(fontSize: 22, fontWeight: FontWeight.w900, color: Colors.white),
+          ),
+          const SizedBox(height: 14),
+          Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              for (final (i, rank) in ['Q', 'K', 'A'].indexed) ...[
+                if (i > 0) const SizedBox(width: 6),
+                card(rank, i),
+              ],
+            ],
+          ),
+          const SizedBox(height: 18),
+          // Надпись — на финальном ударе барабана.
+          TweenAnimationBuilder<double>(
+            tween: Tween(begin: 0, end: 1),
+            duration: const Duration(milliseconds: 2100),
+            builder: (_, t, child) => t < 0.97 ? const SizedBox(height: 70) : child!,
+            child: const GarbaBanner(),
+          ),
+        ],
+      ),
+    );
+  }
+}

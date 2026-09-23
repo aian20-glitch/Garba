@@ -1,4 +1,5 @@
-// Время на ход (RULES.md §13a, решение владельца правил): 20 секунд на любое решение.
+// Время на ход (RULES.md §13a, решение владельца правил): 20 или 40 секунд на любое
+// решение — выбирает создатель комнаты (решение владельца, 23.09.2026).
 // Не успел — за игрока ходит сервер: в торгах и в борьбе за спецкарту — ПАС, в розыгрыше
 // и при сбросе — случайная допустимая карта, КОН — козырь по РАЗ, раздающий — раздаёт,
 // в голосовании «продолжаем / делим» — «делим».
@@ -6,6 +7,13 @@
 // Чистые функции; таймеры и сами ходы — в index.ts.
 
 export const TURN_MS = 20_000;
+export const TURN_SECONDS_OPTIONS = [20, 40];
+export const DEFAULT_TURN_SECONDS = 20;
+
+// Время на ход в комнате. Нет в настройках (комнаты до 23.09.2026) — 20 секунд.
+export function turnMsFor(turnSeconds: number | undefined): number {
+  return (turnSeconds ?? DEFAULT_TURN_SECONDS) * 1000;
+}
 export const AWAY_AFTER_MISSES = 2;
 
 export type TurnClock = { key: string; since: number };

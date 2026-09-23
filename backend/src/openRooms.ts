@@ -13,7 +13,7 @@ export type RoomSummary = {
 };
 
 // «Быстрая игра», когда подходящих открытых комнат нет: создаём открытую с такими условиями.
-export const QUICK_ROOM = { capacity: 5, ante: 100, emptyLimit: 5, konThreshold: 10, minBalance: 1_000 };
+export const QUICK_ROOM = { capacity: 5, ante: 100, emptyLimit: 5, konThreshold: 10, minBalance: 1_000, turnSeconds: 20 };
 
 export function openRoomsFor<T extends RoomSummary>(rooms: T[], balance: number, playerId: string): T[] {
   return rooms

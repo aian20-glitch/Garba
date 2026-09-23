@@ -35,7 +35,10 @@ export const NAME_MAX_LENGTH = 20;
 
 // file — путь к файлу базы или ':memory:' для проверок.
 export function openDb(file: string): DatabaseSync {
-  const db = new DatabaseSync(file);
+  // timeout — сколько ждать, если база занята (например, ночной копией), вместо
+  // мгновенной ошибки «database is locked». WAL — читатели не мешают записи.
+  const db = new DatabaseSync(file, { timeout: 5000 });
+  db.exec('PRAGMA journal_mode = WAL');
   db.exec(`
     CREATE TABLE IF NOT EXISTS accounts (
       id          TEXT PRIMARY KEY,

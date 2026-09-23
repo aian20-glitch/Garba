@@ -1,6 +1,6 @@
 // Локальная подготовка ручной проверки: flutter run -t tool/prepare_manual.dart.
 // Затем tools/garba join <номер из журнала> подключает ботов; когда комната
-// заполнится, этот запуск сам нажмёт «НАЧАТЬ ИГРУ».
+// заполнится, этот запуск сам нажмёт «ГОТОВ» (игра начнётся, когда нажмут все).
 import 'dart:async';
 import 'dart:convert';
 import 'package:flutter/foundation.dart';
@@ -36,12 +36,14 @@ Future<void> startWhenFull(String roomId) async {
       }
       return;
     }
-    final players = (data['players'] as List?)?.length ?? 0;
-    final capacity = (data['capacity'] as num?)?.toInt() ?? 0;
-    if (players != capacity) continue;
+    final readyCheck = data['readyCheck'];
+    if (readyCheck is! Map ||
+        ((readyCheck['readyIds'] as List?) ?? const []).contains(app.Session.id)) {
+      continue;
+    }
 
     final response = await http.post(
-      Uri.parse('${app.apiBase}/rooms/$roomId/start'),
+      Uri.parse('${app.apiBase}/rooms/$roomId/ready'),
       headers: app.authHeaders(),
       body: '{}',
     );
@@ -49,7 +51,7 @@ Future<void> startWhenFull(String roomId) async {
       debugPrint('GARBA_MANUAL_STARTED=$roomId');
       continue;
     }
-    debugPrint('Не удалось автоматически начать игру: ${response.statusCode}');
+    debugPrint('Не удалось нажать «ГОТОВ»: ${response.statusCode}');
     return;
   }
   debugPrint('Комната не заполнилась за 3 минуты');

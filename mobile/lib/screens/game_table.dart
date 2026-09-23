@@ -39,6 +39,12 @@ class _GameTableScreenState extends State<GameTableScreen> {
   bool firstAnnounce = true;
   // Итог раздачи всплывает поверх стола; закрытый нажатием больше не показываем.
   String? dismissedResultKey;
+  // Раздача сыграна: окно итога ждёт 2,5 секунды — все смотрят последнюю взятку.
+  // При ГАРБЕ в это время всем показываются дама, король и туз козыря под барабан.
+  String? roundShownKey;
+  bool resultHeld = false;
+  Timer? resultHoldTimer;
+  ({String name, String suit})? garbaReveal;
   int lastReactionId = 0;
   bool firstReactions = true;
   bool sendingReaction = false;
@@ -83,10 +89,47 @@ class _GameTableScreenState extends State<GameTableScreen> {
     } catch (_) {}
   }
 
+  // Раздача только что сыграна — придержать окно итога (только показ, итог уже
+  // посчитал сервер).
+  void holdRoundResult(Map<String, dynamic> data) {
+    final game = data['game'];
+    final roundKey = game is Map && game['stage'] == 'round_done'
+        ? '${widget.roomCode}:${game['dealNumber']}'
+        : null;
+    if (roundKey == null) {
+      resultHoldTimer?.cancel();
+      resultHeld = false;
+      garbaReveal = null;
+      return;
+    }
+    if (roundKey == roundShownKey) return;
+    roundShownKey = roundKey;
+    resultHeld = true;
+    final garba = ((game!['result'] as List?) ?? const [])
+        .map((r) => Map<String, dynamic>.from(r as Map))
+        .where((r) => r['garba'] == true)
+        .firstOrNull;
+    final trump = game['trumpSuit']?.toString();
+    if (garba != null && trump != null) {
+      garbaReveal = (name: garba['playerName'].toString(), suit: trump);
+      GarbaSounds.garba();
+      HapticFeedback.heavyImpact();
+    }
+    resultHoldTimer?.cancel();
+    resultHoldTimer = Timer(const Duration(milliseconds: 2500), () {
+      if (!mounted) return;
+      setState(() {
+        resultHeld = false;
+        garbaReveal = null;
+      });
+    });
+  }
+
   // Свежее состояние комнаты — по сокету или по HTTP.
   void applyRoom(Map<String, dynamic> data) {
     if (!mounted) return;
     updateDealPresentation(data);
+    holdRoundResult(data);
     setState(() {
       room = data;
       pauseReceivedAt = DateTime.now();
@@ -95,7 +138,7 @@ class _GameTableScreenState extends State<GameTableScreen> {
     applyReactions((data['reactions'] as List?) ?? const []);
     applyAnnouncements(data);
 
-    // Очередь дошла до меня — телефон это подсказывает: на ход даётся 20 секунд (§13a).
+    // Очередь дошла до меня — телефон это подсказывает: на ход даётся 20 или 40 секунд (§13a).
     final g = data['game'];
     final myTurnNow = g is Map &&
         data['pause'] == null &&
@@ -153,7 +196,12 @@ class _GameTableScreenState extends State<GameTableScreen> {
         stage == 'kon_trump';
     if (!eligible && presentedDealKey != key) return;
 
-    final cardsPerPlayer = stage == 'special' ? 1 : 5;
+    // Сколько карт уже роздано — говорит сервер (handCounts): в слепом круге туза
+    // ни одной (§7.2), в окне борьбы — по одной, дальше — по пять.
+    final counts = (game['handCounts'] as Map?)?.values.map((n) => (n as num).toInt()) ??
+        const <int>[];
+    final cardsPerPlayer =
+        counts.isEmpty ? 5 : counts.reduce((a, b) => a > b ? a : b).clamp(0, 5);
     final target = players.length * cardsPerPlayer;
     if (presentedDealKey != key) {
       dealStartTimer?.cancel();
@@ -188,6 +236,7 @@ class _GameTableScreenState extends State<GameTableScreen> {
         dealStepTimer = null;
         return;
       }
+      GarbaSounds.card();
       setState(() {
         presentedCards++;
         if (presentedCards >= presentedTarget) {
@@ -200,7 +249,9 @@ class _GameTableScreenState extends State<GameTableScreen> {
   }
 
   int presentedCountFor(String playerId, List<Map<String, dynamic>> players) {
-    if (presentedDealKey == null || presentedTarget == 0) return 5;
+    if (presentedDealKey == null) return 5;
+    // Слепой круг туза: сервер ещё не раздал ни одной карты (§7.2) — рисуем пусто.
+    if (presentedTarget == 0) return 0;
     final index = players.indexWhere((p) => p['id'].toString() == playerId);
     if (index < 0 || presentedCards <= index) return 0;
     return ((presentedCards - 1 - index) ~/ players.length + 1).clamp(0, 5);
@@ -323,6 +374,7 @@ class _GameTableScreenState extends State<GameTableScreen> {
   @override
   void dispose() {
     timer?.cancel();
+    resultHoldTimer?.cancel();
     pauseTicker?.cancel();
     dealStartTimer?.cancel();
     dealStepTimer?.cancel();
@@ -1287,7 +1339,9 @@ class _GameTableScreenState extends State<GameTableScreen> {
       );
       // Взятка только что закрылась — ещё показываем её, чтобы была видна последняя
       // карта и кто забрал.
-      final showLast = isPlaying && currentTrick.isEmpty && lastTrick != null;
+      // После раздачи последняя взятка лежит на столе, пока не откроется итог.
+      final showLast =
+          (isPlaying || isRoundDone) && currentTrick.isEmpty && lastTrick != null;
       final trickCardOf = <String, Map<String, dynamic>>{
         if (showLast)
           for (final t in ((lastTrick['cards'] as List?) ?? const []))
@@ -1352,9 +1406,15 @@ class _GameTableScreenState extends State<GameTableScreen> {
                 isRoundDone ||
                 isDiscard ||
                 stage == 'kon_trump');
-        final shownCardCount = presentingCurrentDeal
-            ? presentedCountFor(pId, players)
-            : 5;
+        // Во время борьбы за спецкарту карт столько, сколько раздал сервер:
+        // в слепом круге туза — ни одной, в окне — по одной (§7.2, §7.3).
+        final serverCount = isSpecial
+            ? ((game['handCounts'] as Map?)?[pId] as num?)?.toInt()
+            : null;
+        final shownCardCount = math.min(
+          presentingCurrentDeal ? presentedCountFor(pId, players) : 5,
+          serverCount ?? 5,
+        );
 
         final namePlate = Container(
           width: seatWidth,
@@ -1505,13 +1565,19 @@ class _GameTableScreenState extends State<GameTableScreen> {
                   clipBehavior: Clip.none,
                   alignment: Alignment.topCenter,
                   children: [
+                    // Веер чуть меньше места игрока: у боковых мест он не уходит
+                    // за край экрана и не наезжает на соседей.
                     if (showCardFan)
                       Positioned(
                         left: -7,
-                        top: -13,
-                        child: PlayerCardFan(
-                          revealedCards: revealedCards,
-                          cardCount: shownCardCount,
+                        top: -9,
+                        child: Transform.scale(
+                          scale: 0.82,
+                          alignment: Alignment.topCenter,
+                          child: PlayerCardFan(
+                            revealedCards: revealedCards,
+                            cardCount: shownCardCount,
+                          ),
                         ),
                       ),
                     Positioned(top: 48, child: namePlate),
@@ -1653,8 +1719,8 @@ class _GameTableScreenState extends State<GameTableScreen> {
                     final angle = -math.pi / 2 + 2 * math.pi * k / n;
                     final x = math.cos(angle);
                     final y = -math.sin(angle);
-                    final horizontalSpread = crowdedTable ? 0.94 : 0.86;
-                    final verticalSpread = crowdedTable ? 0.73 : 0.65;
+                    final horizontalSpread = crowdedTable ? 0.94 : 0.9;
+                    final verticalSpread = crowdedTable ? 0.73 : 0.8;
                     final isNeighbour = crowdedTable && (k == 1 || k == n - 1);
                     final isTopPair = n == 7 && (k == 3 || k == 4);
                     final target = Alignment(
@@ -1690,8 +1756,8 @@ class _GameTableScreenState extends State<GameTableScreen> {
                   final p = players[i];
                   final pId = p['id'].toString();
                   final card = trickCardOf[pId];
-                  final horizontalSpread = crowdedTable ? 0.94 : 0.86;
-                  final verticalSpread = crowdedTable ? 0.73 : 0.65;
+                  final horizontalSpread = crowdedTable ? 0.94 : 0.9;
+                  final verticalSpread = crowdedTable ? 0.73 : 0.8;
                   final isNeighbour = crowdedTable && (k == 1 || k == n - 1);
                   final isTopPair = n == 7 && (k == 3 || k == 4);
                   final seatX = (x * horizontalSpread +
@@ -1707,11 +1773,17 @@ class _GameTableScreenState extends State<GameTableScreen> {
                       alignment: Alignment(seatX, seatY),
                       child: seat(p),
                     ),
+                    // Карта взятки — на полпути от места игрока к центру (в точках
+                    // экрана, а не по кругу): не наезжает ни на его табличку, ни на
+                    // открытую карту в центре, при любом числе игроков.
                     if (card != null)
                       Align(
-                        alignment: Alignment(x * 0.42, y * 0.42),
+                        alignment: Alignment(
+                          ((width - seatWidth) / 2 * seatX * 0.52) / ((width - 44) / 2),
+                          ((height - 106) / 2 * seatY * 0.6) / ((height - 28) / 2),
+                        ),
                         child: Opacity(
-                          opacity: showLast ? 0.6 : 1,
+                          opacity: showLast && !isRoundDone ? 0.6 : 1,
                           child: cardChip(card, current: true),
                         ),
                       ),
@@ -1735,7 +1807,9 @@ class _GameTableScreenState extends State<GameTableScreen> {
                 game['lastRedeal'] != 'three_izzhoga'
             ? 'a-$kon-${game['emptyStreak']}-${game['lastRedeal']}'
             : null;
-    if (resultKey != null && resultKey != dismissedResultKey) {
+    if (resultKey != null &&
+        resultKey != dismissedResultKey &&
+        !(isRoundDone && resultHeld)) {
       resultPopup = DealResultPopup(
         key: ValueKey(resultKey),
         lines: [
@@ -2000,6 +2074,13 @@ class _GameTableScreenState extends State<GameTableScreen> {
                       ),
                     ),
                   if (resultPopup != null) Positioned.fill(child: resultPopup),
+                  if (isRoundDone && garbaReveal != null)
+                    Positioned.fill(
+                      child: GarbaReveal(
+                        name: garbaReveal!.name,
+                        suit: garbaReveal!.suit,
+                      ),
+                    ),
                     ],
                   ),
                 ),

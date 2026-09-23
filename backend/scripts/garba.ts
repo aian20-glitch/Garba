@@ -47,8 +47,8 @@ for (let i = 0; i < argv.length; i++) {
 }
 const [command, room, extra] = positional;
 
-const commands = ['join', 'state', 'deal', 'bid', 'passall', 'playall', 'vote', 'kontrump', 'special', 'discard', 'online', 'offline'];
-if (!commands.includes(command) || (command !== 'offline' && !/^\d+$/.test(room ?? ''))) {
+const commands = ['coins', 'join', 'state', 'deal', 'bid', 'passall', 'playall', 'vote', 'kontrump', 'special', 'discard', 'online', 'offline'];
+if (!commands.includes(command) || (!['offline', 'coins'].includes(command) && !/^\d+$/.test(room ?? ''))) {
   console.log('Использование: ./tools/garba <команда> <номер комнаты> [...]');
   console.log(`Команды: ${commands.join(', ')}. Подробно — в начале backend/scripts/garba.ts`);
   process.exit(1);
@@ -423,11 +423,27 @@ async function vote() {
   await showState();
 }
 
+// Начислить монеты: ./tools/garba coins <код игрока | bots> <сумма> (минус — списать).
+// bots — всем шести ботам. Идёт через сервер (POST /admin/coins, только с этого компьютера).
+async function coins() {
+  const amount = Number(extra);
+  if (!room || !Number.isInteger(amount)) {
+    console.log('Использование: ./tools/garba coins <код игрока | bots> <сумма>');
+    process.exit(1);
+  }
+  const targets = room === 'bots' ? (await loadBots()).map((b) => ({ id: b.id })) : [{ code: room }];
+  for (const t of targets) {
+    const r = await request('POST', '/admin/coins', undefined, { ...t, amount });
+    console.log(`${r.name}: ${amount > 0 ? '+' : ''}${amount} → баланс ${r.balance}`);
+  }
+}
+
 async function main() {
   if (command === 'offline') {
     console.log(stopOnline() ? 'Боты «отключились». Через 10 секунд — пауза, через 5 минут — конец игры.' : 'Боты и так не на связи.');
     return;
   }
+  if (command === 'coins') return coins();
   bots = await loadBots();
   switch (command) {
     case 'join': return join();

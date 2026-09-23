@@ -8,6 +8,7 @@ environment:
 
 dependencies:
   app_links: ^7.2.1
+  audioplayers: ^6.8.1
   flutter:
     sdk: flutter
   http: ^1.2.2
@@ -17,6 +18,8 @@ dependencies:
   socket_io_client: ^3.1.6
 
 dev_dependencies:
+  integration_test:
+    sdk: flutter
   flutter_test:
     sdk: flutter
 
@@ -25,3 +28,6 @@ flutter:
   assets:
     - assets/branding/card_back.png
     - assets/branding/court_cards.png
+    - assets/sounds/ready.wav
+    - assets/sounds/card.mp3
+    - assets/sounds/garba.wav

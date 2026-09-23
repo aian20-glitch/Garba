@@ -107,6 +107,55 @@ class RoomLink {
   void dispose() => _socket.dispose();
 }
 
+// Звуки игры (23.09.2026): сигнал «ГОТОВ», когда комната набралась, и шлепок карты
+// при раздаче. Сигнал сгенерирован для проекта, звук карты выбрал владелец
+// (oxidvideos «taking playing card», assets/sounds/card.mp3). Беззвучный режим
+// телефона уважаем, музыку игрока не выключаем. Звук не завёлся — пишем в журнал,
+// игра идёт без него.
+class GarbaSounds {
+  static AudioPool? _card;
+  static final _alert = AudioPlayer();
+
+  static Future<void> init() async {
+    try {
+      // iPhone: ambient — молчит при беззвучном режиме и не останавливает музыку.
+      // Android: звук игры, фокус не забираем — музыка игрока продолжает играть.
+      await AudioPlayer.global.setAudioContext(AudioContext(
+        iOS: AudioContextIOS(category: AVAudioSessionCategory.ambient),
+        android: const AudioContextAndroid(
+          contentType: AndroidContentType.sonification,
+          usageType: AndroidUsageType.game,
+          audioFocus: AndroidAudioFocus.none,
+        ),
+      ));
+      _card = await AudioPool.createFromAsset(path: 'sounds/card.mp3', maxPlayers: 4);
+    } catch (e) {
+      debugPrint('Звук недоступен: $e');
+    }
+  }
+
+  static void ready() {
+    _alert.play(AssetSource('sounds/ready.wav')).catchError((Object e) {
+      debugPrint('Сигнал «ГОТОВ» не проигрался: $e');
+    });
+  }
+
+  // ГАРБА: барабанная дробь и удар (сгенерирован для проекта, assets/sounds/garba.wav).
+  static final _garba = AudioPlayer();
+  static void garba() {
+    _garba.play(AssetSource('sounds/garba.wav')).catchError((Object e) {
+      debugPrint('Звук ГАРБЫ не проигрался: $e');
+    });
+  }
+
+  static void card() {
+    _card?.start(volume: 0.6).catchError((Object e) {
+      debugPrint('Звук карты не проигрался: $e');
+      return () async {};
+    });
+  }
+}
+
 // Пока сокет подключён, опрос не нужен. Если отвалился — раз в столько опрашиваем сервер.
 const fallbackPollInterval = Duration(seconds: 3);
 

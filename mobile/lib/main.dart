@@ -7,6 +7,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:http/http.dart' as http;
 import 'package:app_links/app_links.dart';
+import 'package:audioplayers/audioplayers.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:share_plus/share_plus.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -35,6 +36,7 @@ Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   // Только вертикально: круглый стол и карты в руке под горизонталь не рассчитаны.
   await SystemChrome.setPreferredOrientations([DeviceOrientation.portraitUp]);
+  unawaited(GarbaSounds.init());
   runApp(const GarbaApp());
 }
 

@@ -167,3 +167,26 @@ section('заявки в друзья — только с согласия (ре
   requestFriend(db3, x.id, z.id);
   check('встречная заявка — сразу друзья', requestFriend(db3, z.id, x.id), 'friends');
 }
+
+section('база занята чтением (ночная копия) — запись ждёт, а не падает');
+{
+  const file = join(tmpdir(), `garba-busy-${process.pid}.db`);
+  const writer = openDb(file);
+  const mode = writer.prepare('PRAGMA journal_mode').get() as { journal_mode: string };
+  check('журнал WAL', mode.journal_mode, 'wal');
+
+  const reader = new DatabaseSync(file);
+  reader.exec('BEGIN');
+  reader.prepare('SELECT COUNT(*) FROM accounts').get();
+  let saved = true;
+  try {
+    createAccount(writer, 'Во время копии');
+  } catch {
+    saved = false;
+  }
+  reader.exec('COMMIT');
+  check('аккаунт записан, пока база читается', saved, true);
+  reader.close();
+  writer.close();
+  for (const f of [file, `${file}-wal`, `${file}-shm`]) rmSync(f, { force: true });
+}

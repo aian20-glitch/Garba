@@ -27,6 +27,7 @@ async function startServer() {
       GARBA_DB: DB_FILE,
       GARBA_GRACE_MS: '1000',
       GARBA_DISCONNECT_MS: '3000',
+      GARBA_READY_MS: '2000',
     },
     stdio: 'ignore',
   });
@@ -86,7 +87,7 @@ async function main() {
   const sockets = new Map(players.map((p) => [p.id, sit(roomId, p.token)]));
   await wait(500);
 
-  await request('POST', `/rooms/${roomId}/start`, serik.token);
+  for (const p of players) await request('POST', `/rooms/${roomId}/ready`, p.token);
   const dealerId = (await request('GET', `/rooms/${roomId}`, serik.token)).body.game.dealerId;
   const dealer = players.find((p) => p.id === dealerId)!;
   await request('POST', `/rooms/${roomId}/dealer/continue`, dealer.token);
@@ -166,6 +167,27 @@ async function main() {
   check('рейтинг друзей без друзей — только я, место 1', [friendsBoard.total, friendsBoard.myPlace], [1, 1]);
 
   for (const s of sockets.values()) s.close();
+
+  // «ГОТОВ» (23.09.2026): кто не нажал за отведённое время (здесь 2 с), выходит.
+  section('не нажал «ГОТОВ» — вышел из комнаты, остальные ждут новых');
+  const lobbyPlayers: Me[] = [];
+  for (const name of ['Асан', 'Болат', 'Гульнар', 'Диас']) {
+    lobbyPlayers.push((await request('POST', '/accounts', undefined, { name })).body);
+  }
+  const [asan, bolat, gulnar, dias] = lobbyPlayers;
+  const lobby = (await request('POST', '/rooms', asan.token, {
+    capacity: 4, ante: 100, emptyLimit: 5, konThreshold: 10, minBalance: 1000,
+  })).body;
+  for (const p of [bolat, gulnar, dias]) await request('POST', `/rooms/${lobby.id}/join`, p.token);
+  await request('POST', `/rooms/${lobby.id}/ready`, bolat.token);
+  await request('POST', `/rooms/${lobby.id}/ready`, dias.token);
+  await wait(3500);
+  const lobbyAfter = (await request('GET', `/rooms/${lobby.id}`, bolat.token)).body;
+  check('остались только нажавшие, игра не началась',
+    [lobbyAfter.status, lobbyAfter.players.map((p: any) => p.name)], ['lobby', ['Болат', 'Диас']]);
+  check('создатель Асан не нажал — создателем стал Болат', lobbyAfter.creatorId, bolat.id);
+  check('не нажавшие знают, почему вышли', lobbyAfter.readyDroppedIds, [asan.id, gulnar.id]);
+  check('вышедший свободен — может зайти в другую комнату', (await request('GET', '/me', asan.token)).body.roomId, null);
 }
 
 main()
@@ -175,7 +197,9 @@ main()
   })
   .finally(async () => {
     await stopServer();
-    try { rmSync(DB_FILE, { force: true }); } catch {}
+    for (const f of [DB_FILE, `${DB_FILE}-wal`, `${DB_FILE}-shm`]) {
+      try { rmSync(f, { force: true }); } catch {}
+    }
     const failed = summary();
     process.exit(failed === 0 && process.exitCode !== 1 ? 0 : 1);
   });
