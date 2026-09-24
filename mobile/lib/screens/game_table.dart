@@ -116,7 +116,9 @@ class _GameTableScreenState extends State<GameTableScreen> {
     resultHeld = false;
     final garba = ((game!['result'] as List?) ?? const [])
         .map((r) => Map<String, dynamic>.from(r as Map))
-        .where((r) => r['garba'] == true)
+        // ДВА с Q K A своей масти — та же анимация, что у ГАРБЫ (решение владельца,
+        // 25.09.2026); в статистику ГАРБ по-прежнему не идёт (RULES.md §8).
+        .where((r) => r['garba'] == true || (r['instant'] == true && r['declaration'] == 'ДВА'))
         .firstOrNull;
     final trump = game['trumpSuit']?.toString();
     const showFor = Duration(milliseconds: 2500);
@@ -2030,7 +2032,7 @@ class _GameTableScreenState extends State<GameTableScreen> {
               delta: (r['delta'] as num?)?.toInt() ?? 0,
             ),
         ],
-        garba: result.any((r) => r['garba'] == true),
+        garba: result.any((r) => r['garba'] == true || (r['instant'] == true && r['declaration'] == 'ДВА')),
         konBefore: konBefore,
         konAfter: kon,
         redealText: isRoundDone ? null : redealText,

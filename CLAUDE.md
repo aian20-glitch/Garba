@@ -533,7 +533,7 @@ pause: null | { players: [{ id, name, secondsLeft }] }   — на уровне �
 - `game.result[].instant` — главный выиграл сразу, без розыгрыша: у него дама, король и туз
   козыря; тогда `trickNumber = 0`. Так бывает при РАЗ, КОНЕ и ДВА.
 - `game.result[].garba` — это ГАРБА: `instant` при РАЗ или КОНЕ. Анимация «ГАРБА!» и
-  статистика — только по этому флагу. ДВА с Q K A — `instant`, но **не** `garba` (RULES.md §8).
+  статистика — только по этому флагу. ДВА с Q K A — `instant`, но **не** `garba` (RULES.md §8): анимация та же (с 25.09.2026), в статистику не идёт.
 - `game.special` — спецкарта и борьба за неё (этап 7): `{ kind: A|K|Q|6|10, card, phase: blind|window,
   holderId, holderName, risk, passedIds, activeId, outcome }`. `outcome` — `{ holderId, risk }`
   или `'nobody'` (тогда обычные торги). Взявший — главный как РАЗ, проигрыш × `risk`.
