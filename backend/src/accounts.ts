@@ -79,18 +79,6 @@ export function openDb(file: string): DatabaseSync {
     )
   `);
   db.exec('CREATE INDEX IF NOT EXISTS friend_requests_to ON friend_requests (to_id)');
-  // Вход через Google/Apple (23.09.2026): кто за каким аккаунтом. Только provider + sub —
-  // ни email, ни имени (решение владельца). Один Google — один аккаунт, и наоборот.
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS account_logins (
-      provider    TEXT NOT NULL,
-      subject     TEXT NOT NULL,
-      account_id  TEXT NOT NULL,
-      created_at  INTEGER NOT NULL,
-      PRIMARY KEY (provider, subject),
-      UNIQUE (account_id, provider)
-    )
-  `);
   ensureRoomTable(db); // комнаты — этап 9.2
   ensureAvatarTable(db); // аватары — этап 9.5
   return db;
@@ -286,50 +274,6 @@ export function recoverAccount(
   return { account, token, recoveryCode };
 }
 
-// --- Вход через Google/Apple ---
-
-export function accountByLogin(db: DatabaseSync, provider: string, subject: string): Account | null {
-  const row = db
-    .prepare(`SELECT ${ACCOUNT_FIELDS_A} FROM account_logins l JOIN accounts a ON a.id = l.account_id
-              WHERE l.provider = ? AND l.subject = ?`)
-    .get(provider, subject) as Record<string, unknown> | undefined;
-  return toAccount(row);
-}
-
-export function loginsOf(db: DatabaseSync, accountId: string): string[] {
-  return (db.prepare('SELECT provider FROM account_logins WHERE account_id = ? ORDER BY provider').all(accountId) as {
-    provider: string;
-  }[]).map((r) => r.provider);
-}
-
-// Привязать. 'taken' — этот Google уже за другим аккаунтом; 'already' — у аккаунта
-// уже есть такой вход (другой Google): сначала отвязать.
-export function addLogin(
-  db: DatabaseSync,
-  accountId: string,
-  provider: string,
-  subject: string,
-): 'ok' | 'taken' | 'already' {
-  const owner = accountByLogin(db, provider, subject);
-  if (owner) return owner.id === accountId ? 'ok' : 'taken';
-  if (loginsOf(db, accountId).includes(provider)) return 'already';
-  db.prepare('INSERT INTO account_logins (provider, subject, account_id, created_at) VALUES (?, ?, ?, ?)')
-    .run(provider, subject, accountId, Date.now());
-  return 'ok';
-}
-
-export function removeLogin(db: DatabaseSync, accountId: string, provider: string): boolean {
-  return Number(db.prepare('DELETE FROM account_logins WHERE account_id = ? AND provider = ?').run(accountId, provider).changes) > 0;
-}
-
-// Новый токен входа (вход с другого телефона): прежний телефон выходит — как при
-// восстановлении по коду. Токен отдаётся один раз, в базе — только хеш.
-export function issueToken(db: DatabaseSync, accountId: string): string {
-  const token = randomBytes(32).toString('hex');
-  db.prepare('UPDATE accounts SET token_hash = ? WHERE id = ?').run(hashToken(token), accountId);
-  return token;
-}
-
 export function findAccountByToken(db: DatabaseSync, token: string): Account | null {
   if (!token) return null;
   const row = db
@@ -496,7 +440,6 @@ export function deleteAccountData(db: DatabaseSync, id: string) {
   db.prepare('DELETE FROM friends WHERE owner_id = ? OR friend_id = ?').run(id, id);
   db.prepare('DELETE FROM friend_requests WHERE from_id = ? OR to_id = ?').run(id, id);
   db.prepare('DELETE FROM avatars WHERE account_id = ?').run(id);
-  db.prepare('DELETE FROM account_logins WHERE account_id = ?').run(id);
   db.prepare('DELETE FROM room_stats WHERE player_id = ?').run(id);
   db.prepare('UPDATE accounts SET invited_by = NULL WHERE invited_by = ?').run(id);
 

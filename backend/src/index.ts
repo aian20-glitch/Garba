@@ -31,12 +31,7 @@ import {
   removeFriend,
   recoverAccount,
   replaceRecoveryCode,
-  accountByLogin,
-  addLogin,
   setBalance,
-  issueToken,
-  loginsOf,
-  removeLogin,
   setDaily,
   tokenFromHeader,
   transaction,
@@ -119,7 +114,6 @@ import {
   type SpecialKind,
 } from './special.js';
 import { betweenDeals, seatFor, vacancyExpired, vacancySecondsLeft, type Vacancy } from './seats.js';
-import { JwksCache, PROVIDER_INFO, PROVIDERS, tokenKid, verifyIdToken, type Provider } from './oauth.js';
 import { canProposeEnd, endVoteOutcome, END_VOTE_MS, type EndVote } from './endVote.js';
 import {
   markReady,
@@ -578,122 +572,6 @@ app.post('/accounts/recover', (req, res) => {
   return res.json({ ...recovered.account, token: recovered.token, recoveryCode: recovered.recoveryCode });
 });
 
-// --- Вход через Google и Apple (23.09.2026, src/oauth.ts) ---
-//
-// Для кого выдан токен (aud): Google — идентификаторы клиентов iOS/Android/сервера из
-// Google Cloud, Apple — bundle id приложения. Не задано — вход этим способом выключен (503).
-// Адреса ключей меняются только для проверок (tests/live-socket.ts).
-const LOGIN_AUDIENCES: Record<Provider, string[]> = {
-  google: (process.env.GARBA_GOOGLE_CLIENT_IDS ?? '').split(',').map((s) => s.trim()).filter(Boolean),
-  apple: (process.env.GARBA_APPLE_CLIENT_IDS ?? 'kz.garba.app').split(',').map((s) => s.trim()).filter(Boolean),
-};
-const loginKeys: Record<Provider, JwksCache> = {
-  google: new JwksCache(process.env.GARBA_GOOGLE_JWKS_URL ?? PROVIDER_INFO.google.jwksUrl),
-  apple: new JwksCache(process.env.GARBA_APPLE_JWKS_URL ?? PROVIDER_INFO.apple.jwksUrl),
-};
-const loginsByIp = new Map<string, number[]>();
-
-async function checkLogin(provider: Provider, idToken: unknown) {
-  const keys = await loginKeys[provider].get(tokenKid(idToken));
-  return verifyIdToken(idToken, {
-    issuers: PROVIDER_INFO[provider].issuers,
-    audiences: LOGIN_AUDIENCES[provider],
-    keys,
-    nowS: Math.floor(Date.now() / 1000),
-  });
-}
-
-function loginProvider(raw: string): Provider | null {
-  return (PROVIDERS as string[]).includes(raw) ? (raw as Provider) : null;
-}
-
-// Войти через Google/Apple. Привязан к аккаунту — новый токен, прежний телефон выходит.
-// Не привязан: без name — 404 (приложение спросит имя, suggestedName — подсказка из Google),
-// с name — новый аккаунт с этим входом (те же лимиты и приглашение, что у /accounts).
-app.post('/auth/:provider', async (req, res) => {
-  const provider = loginProvider(req.params.provider);
-  if (!provider) return res.status(404).json({ error: 'unknown provider' });
-  if (LOGIN_AUDIENCES[provider].length === 0) return res.status(503).json({ error: 'login not configured' });
-
-  const ip = req.ip ?? 'unknown';
-  const limit = rateCheck(loginsByIp.get(ip) ?? [], Date.now(), [{ max: 30, windowMs: 15 * 60_000 }]);
-  loginsByIp.set(ip, limit.times);
-  if (!limit.allowed && !LOOPBACK.includes(ip)) {
-    return res.status(429).json({ error: 'too many attempts, try later' });
-  }
-
-  let checked;
-  try {
-    checked = await checkLogin(provider, req.body?.idToken);
-  } catch (e) {
-    console.error(`[AUTH] ${provider}: keys unavailable`, e);
-    return res.status(503).json({ error: 'login provider unavailable' });
-  }
-  if (!checked.ok) return res.status(401).json({ error: 'invalid token', reason: checked.error });
-
-  const linked = accountByLogin(db, provider, checked.sub);
-  if (linked) {
-    const token = issueToken(db, linked.id);
-    console.log(`[AUTH] ${linked.name} вошёл через ${provider}`);
-    return res.json({ ...linked, token, created: false });
-  }
-
-  if (req.body?.name === undefined) {
-    return res.status(404).json({ error: 'no account for this login', suggestedName: checked.name });
-  }
-  const accLimit = rateCheck(accountsByIp.get(ip) ?? [], Date.now(), ACCOUNT_LIMITS);
-  if (!accLimit.allowed && !LOOPBACK.includes(ip)) {
-    return res.status(429).json({ error: 'too many accounts, try later' });
-  }
-  const name = cleanName(req.body?.name);
-  if (!name) return res.status(400).json({ error: 'name must be 1 to 20 characters' });
-  const inviteCode = normalizeCode(req.body?.inviteCode);
-  const inviter = inviteCode ? findAccountByCode(db, inviteCode) : null;
-  if (inviteCode && !inviter) return res.status(400).json({ error: 'invite code not found' });
-
-  const created = transaction(db, () => {
-    const c = createAccount(db, name, inviter?.id ?? null);
-    addLogin(db, c.account.id, provider, checked.sub);
-    return c;
-  });
-  accountsByIp.set(ip, accLimit.times);
-  console.log(`[AUTH] новый аккаунт ${name} через ${provider}`);
-  return res.status(201).json({ ...created.account, token: created.token, recoveryCode: created.recoveryCode, created: true });
-});
-
-// Привязать Google/Apple к своему аккаунту (из профиля).
-app.post('/me/logins/:provider', async (req, res) => {
-  const account = accountOf(req);
-  if (!account) return res.status(401).json({ error: 'unauthorized' });
-  const provider = loginProvider(req.params.provider);
-  if (!provider) return res.status(404).json({ error: 'unknown provider' });
-  if (LOGIN_AUDIENCES[provider].length === 0) return res.status(503).json({ error: 'login not configured' });
-
-  let checked;
-  try {
-    checked = await checkLogin(provider, req.body?.idToken);
-  } catch (e) {
-    console.error(`[AUTH] ${provider}: keys unavailable`, e);
-    return res.status(503).json({ error: 'login provider unavailable' });
-  }
-  if (!checked.ok) return res.status(401).json({ error: 'invalid token', reason: checked.error });
-
-  const result = addLogin(db, account.id, provider, checked.sub);
-  if (result === 'taken') return res.status(409).json({ error: 'login belongs to another account' });
-  if (result === 'already') return res.status(409).json({ error: 'another login already linked' });
-  console.log(`[AUTH] ${account.name}: привязан ${provider}`);
-  return res.json({ logins: loginsOf(db, account.id) });
-});
-
-// Отвязать Google/Apple.
-app.delete('/me/logins/:provider', (req, res) => {
-  const account = accountOf(req);
-  if (!account) return res.status(401).json({ error: 'unauthorized' });
-  if (!removeLogin(db, account.id, req.params.provider)) return res.status(404).json({ error: 'not linked' });
-  console.log(`[AUTH] ${account.name}: отвязан ${req.params.provider}`);
-  return res.json({ logins: loginsOf(db, account.id) });
-});
-
 // Выпустить новый код можно только из уже открытого аккаунта. Сам код сервер
 // возвращает один раз; в базе остаётся лишь его хеш.
 app.post('/me/recovery-code', (req, res) => {
@@ -745,8 +623,6 @@ app.get('/me', (req, res) => {
     // Сколько человек зовут меня в друзья — цифра у кнопки «ДРУЗЬЯ».
     friendRequests: friendRequests(db, account.id).incoming.length,
     hasRecoveryCode: hasRecoveryCode(db, account.id),
-    // К чему привязан аккаунт: ['google'], ['apple'], оба или пусто.
-    logins: loginsOf(db, account.id),
     // Друзья зовут в комнату (25.09.2026) — только те, куда ещё можно сесть.
     roomInvites: invitesFor(account.id),
   });

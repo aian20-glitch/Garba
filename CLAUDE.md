@@ -41,7 +41,6 @@
 | `turnTimer.ts` | **Новый** (19.09.2026). Время на ход 20 с (§13a): часы хода, пропуски, «ушёл». Чистые функции. |
 | `rateLimit.ts` | **Новый** (19.09.2026). Ограничение частоты — новые аккаунты с одного адреса. Чистые функции. |
 | `openRooms.ts` | **Новый** (19.09.2026). Открытые комнаты и «Быстрая игра»: какие показываем, куда сажаем. Чистые функции. |
-| `oauth.ts` | **Новый** (23.09.2026). Вход через Google/Apple: проверка подписи токена (RS256, iss, aud, срок) встроенным `node:crypto`, кеш ключей. |
 | `readyCheck.ts` | **Новый** (23.09.2026). «ГОТОВ» перед стартом: 30 с, не нажал — вышел, создатель — следующему. Чистые функции. |
 | `special.ts` | **Новый** (этап 7). Спецкарты: какая карта, очередь, множители, итог борьбы, первый ход. |
 | `rules.ts` | **Используются** `canPlayCard`, `trickWinner` (этап 3) и `isGarba` (этап 6) — сверены с RULES.md. `specialKind`, `canDeclareMain` — ещё не проверены. |
@@ -82,8 +81,8 @@ cd ~/Garba/backend && npm test
 cd ~/Garba/mobile && flutter analyze
 ```
 
-`npm run test:live` — живая проверка сервера, три файла (третий — `tests/live-auth.ts`,
-порт 3097: вход через Google на своих тестовых ключах):
+`npm run test:live` — живая проверка сервера, три файла (третий — `tests/live-friends.ts`,
+порт 3097: позвать друга в комнату):
 - `tests/live-socket.ts` — порт 3099, база в памяти: аккаунты, рассылка по Socket.IO, чужие карты
   никому не уходят, без токена и с чужим токеном ничего не сделать, одна комната за раз, выход из лобби;
 - `tests/live-restart.ts` — порт 3098, база во временном файле, таймеры укорочены (1 с / 3 с):
@@ -228,17 +227,9 @@ POST /accounts                   { name, inviteCode? }   inviteCode — код �
                                  ему +10 000 (с 25.09.2026), когда новый игрок доиграет 3 комнаты (с 19.09.2026);
                                  неизвестный код — 400 invite code not found; с одного адреса
                                  не больше 5 в час / 20 в сутки — 429 (свой компьютер — без лимита)
-POST /auth/:provider             { idToken, name?, inviteCode? }   provider: google | apple (23.09.2026).
-                                 Сервер сам проверяет подпись токена Google/Apple. Привязан → 200
-                                 { ...аккаунт, token } (новый токен, прежний телефон выходит);
-                                 не привязан и нет name → 404 { suggestedName }; с name → 201 новый
-                                 аккаунт с этим входом. 401 invalid token; 503 login not configured
-POST /me/logins/:provider        { idToken } → { logins }  привязать; 409 чужой / уже есть другой
-DELETE /me/logins/:provider      → { logins }  отвязать; 404 not linked
 GET  /me                         → { id, name, balance, createdAt, code, dailyDay, dailyStreak,
                                      invitedBy, roomId, daily, giftSentToday, invitedCount,
-                                     friendRequests, logins }   friendRequests — сколько зовут в друзья;
-                                 logins — ['google', 'apple'] — к чему привязан
+                                     friendRequests, roomInvites }   friendRequests — сколько зовут в друзья
                                  roomId — незаконченная комната игрока или null;
                                  daily = { claimedToday, streak, amount } — бонус сегодня (этап 9.3)
 POST /me/daily-bonus             → { amount, streak, balance }; 409 already claimed today
@@ -386,15 +377,8 @@ GET  /i/:code                    страница-приглашение дру�
 где брошенная ошибка уронила бы весь сервер; комната цела в памяти, следующее сохранение
 запишет её целиком. Рядом с базой лежат `garba.db-wal` и `garba.db-shm` — это нормально.
 
-**Вход через Google и Apple (23.09.2026).** Вход по имени остаётся; Google/Apple — вход и
-привязка из профиля (решение владельца). Храним только `account_logins(provider, subject,
-account_id)` — ни email, ни имени (решение владельца). Apple — только на iPhone. Настройки:
-`GARBA_GOOGLE_CLIENT_IDS` — идентификаторы клиентов из Google Cloud через запятую (iOS,
-Android, веб); пусто — вход через Google выключен (503). `GARBA_APPLE_CLIENT_IDS` — по умолчанию
-`kz.garba.app`. `GARBA_GOOGLE_JWKS_URL` / `GARBA_APPLE_JWKS_URL` — только для проверок
-(`tests/live-auth.ts`). **Сделан только сервер.** Кнопки в приложении — после того, как владелец
-создаст проект в Google Cloud (Google) и купит Apple Developer (Apple). До App Store: отзыв
-входа Apple при удалении аккаунта (нужен ключ `.p8`).
+**Вход через Google и Apple** был сделан на сервере 23.09.2026 и **удалён 25.09.2026** по решению
+владельца (сначала юрист). Код — в истории git, коммит `56ec794`.
 
 **Деньги и база.** `players[].balance` в комнате — это баланс аккаунта. После каждого
 `POST /rooms/:id/...` сервер записывает балансы игроков комнаты в базу

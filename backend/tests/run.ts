@@ -17,7 +17,6 @@ import './rating.test.js';
 import './reactions.test.js';
 import './endVote.test.js';
 import './readyCheck.test.js';
-import './oauth.test.js';
 import './seats.test.js';
 import './turnTimer.test.js';
 import './rateLimit.test.js';
