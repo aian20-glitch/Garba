@@ -17,6 +17,8 @@ export type StoredRoom = {
   stats?: Record<string, PlayerStats>;
   // Мастерство игроков, пока они за столом (этап 9.6) — как баланс.
   rating?: Record<string, { skill: number }>;
+  // Ушли посреди игры (24.09.2026) — для них комната не «доиграна».
+  departedIds?: string[];
 };
 
 // Колонки статистики в базе и поля PlayerStats — в одном порядке.
@@ -84,8 +86,9 @@ export function writeRoom(db: DatabaseSync, room: StoredRoom) {
          ${cols.map((c) => `${c} = excluded.${c}`).join(', ')}`,
     );
     const finished = room.status === 'finished' ? 1 : 0;
+    const departed = new Set(room.departedIds ?? []);
     for (const [playerId, st] of Object.entries(room.stats)) {
-      upsert.run(room.id, playerId, finished, ...STAT_COLUMNS.map(([, k]) => st[k]));
+      upsert.run(room.id, playerId, departed.has(playerId) ? 0 : finished, ...STAT_COLUMNS.map(([, k]) => st[k]));
     }
   }
 }

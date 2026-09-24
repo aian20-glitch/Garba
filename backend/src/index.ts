@@ -33,6 +33,7 @@ import {
   replaceRecoveryCode,
   accountByLogin,
   addLogin,
+  setBalance,
   issueToken,
   loginsOf,
   removeLogin,
@@ -43,7 +44,7 @@ import {
 } from './accounts.js';
 import { createDeck, shuffle } from './deck.js';
 import { loadUnfinishedRooms, profileStats, ratedPlayers, roomIdTaken, saveRoom, writeRoom } from './roomDb.js';
-import { afterDeal, afterRoom, ratingOf, shownRating, START_SKILL } from './rating.js';
+import { afterDeal, afterRoom, LEFT_GAME, ratingOf, shownRating, START_SKILL } from './rating.js';
 import { addReaction, isPlayerCode, isRoomCode, type ReactionEntry } from './reactions.js';
 import { addDeal, addMoney, emptyStats, roomWinners, type PlayerStats } from './stats.js';
 import { avatarPath, detectImageType, loadAvatar, MAX_AVATAR_BYTES, saveAvatar } from './avatars.js';
@@ -117,6 +118,7 @@ import {
   type Contest,
   type SpecialKind,
 } from './special.js';
+import { betweenDeals, seatFor, vacancyExpired, vacancySecondsLeft, type Vacancy } from './seats.js';
 import { JwksCache, PROVIDER_INFO, PROVIDERS, tokenKid, verifyIdToken, type Provider } from './oauth.js';
 import { canProposeEnd, endVoteOutcome, END_VOTE_MS, type EndVote } from './endVote.js';
 import {
@@ -162,6 +164,9 @@ type Player = {
   balance: number;
   // Баланс при входе в комнату — от него считается, кто больше всех проиграл (§12.2).
   startBalance: number;
+  // Место за столом 0…capacity−1 по кругу против часовой (24.09.2026): где сел — там и
+  // играет. room.players всегда отсортирован по месту. Нет — комната до этого решения.
+  seat?: number;
 };
 
 // finished — комната закрыта, играть в ней больше нельзя (RULES.md §12).
@@ -310,7 +315,21 @@ type GameState = {
   closing: boolean;
   // Почему закрылась комната: кон забрали (§12.1), кон никто не может взять
   // и его поделили поровну (§12.2) или игрок отключился и не вернулся за 5 минут (§13).
-  closeReason: 'kon_taken' | 'nobody_can_play' | 'player_left' | 'agreed_end' | null;
+  // seat_empty — место пустовало 10 минут, никто не сел (24.09.2026).
+  closeReason: 'kon_taken' | 'nobody_can_play' | 'player_left' | 'agreed_end' | 'seat_empty' | null;
+  // Пропали на 5 минут посреди раздачи: за них доигрывает таймер, после раздачи —
+  // место свободно (24.09.2026).
+  goneIds?: string[];
+  // Последний ушедший и как разделили кон — для окна на столе.
+  lastLeave?: {
+    playerId: string;
+    name: string;
+    reason: 'left' | 'gone';
+    kon: number;
+    perPlayer: number;
+    remainder: number;
+    remainderTo: string | null;
+  } | null;
   // Кто не вернулся за 5 минут — ему доля кона не положена (§13).
   leftPlayerIds?: string[];
   // Победитель комнаты (ТЗ §36): лучший итог по монетам; при ничьей — несколько.
@@ -348,6 +367,10 @@ type Room = {
   players: Player[];
   status: RoomStatus;
   createdAt: number;
+  // Свободные места посреди игры — ждём замену 10 минут (24.09.2026).
+  vacancies?: (Vacancy & { wasDealer: boolean })[];
+  // Кто ушёл из этой комнаты посреди игры — комната для него не «доиграна».
+  departedIds?: string[];
   // Лобби набралось — ждём «ГОТОВ» от всех (решение владельца, 23.09.2026).
   readyCheck?: ReadyCheck | null;
   // Кто вышел, не нажав «ГОТОВ» в прошлый раз, — чтобы его телефон сказал почему.
@@ -389,6 +412,8 @@ const db = openDb(DB_FILE);
 for (const room of loadUnfinishedRooms<Room>(db)) {
   // Сервер лежал — 30 секунд на «ГОТОВ» начнутся заново (проверка готовности ниже).
   room.readyCheck = null;
+  // Комнаты до выбора мест: место — по порядку, в котором уже сидят.
+  room.players.forEach((p, i) => (p.seat ??= i));
   rooms.set(room.id, room);
 }
 if (rooms.size > 0) console.log(`[DB] restored ${rooms.size} unfinished room(s)`);
@@ -1259,8 +1284,10 @@ function tracksPresence(room: Room): boolean {
 function absentIds(room: Room): string[] {
   const { disconnectedAt } = presenceOf(room.id);
   const awayAt = room.game?.awayAt ?? {};
+  const gone = room.game?.goneIds ?? [];
   return room.players
     .map((p) => p.id)
+    .filter((id) => !gone.includes(id))
     .filter((id) => disconnectedAt[id] !== undefined || awayAt[id] !== undefined);
 }
 
@@ -1276,12 +1303,11 @@ function absenceOf(room: Room, now: number) {
   );
 }
 
+// Пауза: кто-то отключился или «ушёл» (кроме пропавших — за них ходит таймер), или
+// есть свободное место — ждём нового игрока (24.09.2026).
 function isPaused(room: Room): boolean {
   if (!tracksPresence(room)) return false;
-  return (
-    Object.keys(presenceOf(room.id).disconnectedAt).length > 0 ||
-    Object.keys(room.game?.awayAt ?? {}).length > 0
-  );
+  return absentIds(room).length > 0 || (room.vacancies?.length ?? 0) > 0;
 }
 
 // У кого сейчас открыт сокет к комнате.
@@ -1294,41 +1320,92 @@ function connectedPlayerIds(roomId: string): string[] {
   return ids;
 }
 
-// Не вернулся за 5 минут: игра прекращается, кон поровну между оставшимися,
-// остаток — тому из них, кто за эту игру проиграл больше всех (§13).
-function closeByDisconnect(room: Room, leftIds: string[]) {
+// Игрок ушёл из игры (24.09.2026): «Выйти» между раздачами или пропал на 5 минут.
+// Кон сразу делится между оставшимися (остаток — тому, кто больше всех проиграл, как в
+// §12.2), ушедшему −1.0 рейтинга (§16.3a), его место ждёт нового игрока 10 минут.
+// Новый игрок садится с пустым коном — в следующей раздаче все снова вносят взнос.
+function vacateSeat(room: Room, playerId: string, reason: 'left' | 'gone') {
   const game = room.game!;
-  const remaining = room.players.filter((p) => !leftIds.includes(p.id));
+  const player = room.players.find((p) => p.id === playerId);
+  if (!player) return;
+  const rest = room.players.filter((p) => p.id !== playerId);
+
   const { shares, perPlayer, remainder, remainderTo } = splitKon(
     game.kon,
-    remaining.map((p) => ({ id: p.id, lost: p.startBalance - p.balance })),
+    rest.length > 0 ? rest.map((p) => ({ id: p.id, lost: p.startBalance - p.balance })) : [],
   );
-
-  for (const p of remaining) {
+  for (const p of rest) {
     p.balance += shares[p.id];
     recordMoney(room, p.id, shares[p.id]);
   }
+  game.lastLeave = { playerId, name: player.name, reason, kon: game.kon, perPlayer, remainder, remainderTo };
+  if (rest.length > 0) game.kon = 0;
 
-  game.split = { kon: game.kon, perPlayer, remainder, remainderTo };
-  game.kon = 0;
-  game.stage = 'room_done';
-  game.closeReason = 'player_left';
-  game.leftPlayerIds = leftIds;
-  markWinners(room);
-  game.activeBidderId = null;
-  game.turnPlayerId = null;
-  game.vote = null;
-  game.awayAt = {};
-  room.status = 'finished';
-  presence.delete(room.id);
-  absentSince.delete(room.id);
-  turnClocks.delete(room.id);
+  const r = ratingState(room, playerId);
+  r.skill = Math.max(0, r.skill + LEFT_GAME);
 
-  const names = room.players.filter((p) => leftIds.includes(p.id)).map((p) => p.name);
+  // Его баланс уходит с ним: пишем в аккаунт сейчас — комната его больше не сохраняет.
+  setBalance(db, playerId, player.balance);
+  room.departedIds = [...(room.departedIds ?? []).filter((id) => id !== playerId), playerId];
+  room.vacancies = [
+    ...(room.vacancies ?? []),
+    { seat: player.seat ?? 0, since: Date.now(), wasDealer: game.dealerId === playerId },
+  ];
+  room.players = rest;
+
+  // Всё, что про него помнила пауза и таймер хода.
+  const drop = <T>(rec: Record<string, T> | undefined) => {
+    if (!rec) return rec;
+    const copy = { ...rec };
+    delete copy[playerId];
+    return copy;
+  };
+  game.awayAt = drop(game.awayAt);
+  game.missedTurns = drop(game.missedTurns);
+  game.absenceUsedMs = drop(game.absenceUsedMs);
+  game.goneIds = (game.goneIds ?? []).filter((id) => id !== playerId);
+  const pres = presence.get(room.id);
+  if (pres) presence.set(room.id, { lastSeen: drop(pres.lastSeen)!, disconnectedAt: drop(pres.disconnectedAt)! });
+  absentSince.set(room.id, drop(absentSince.get(room.id)) ?? {});
+
   console.log(
-    `[ROOM ${room.id}] ${names.join(', ')} did not return in time — kon ${game.split.kon} split: ${perPlayer} each`,
+    `[ROOM ${room.id}] ${player.name} ${reason === 'left' ? 'вышел из игры' : 'не вернулся за 5 минут'} — ` +
+      `кон ${game.lastLeave.kon} разделён: по ${perPlayer}, место ${player.seat} свободно`,
   );
+  if (rest.length === 0) {
+    game.stage = 'room_done';
+    game.closeReason = 'seat_empty';
+    room.status = 'finished';
+  }
 }
+
+// Пропал на 5 минут посреди раздачи: главный — сразу проигрыш (как сдался, §10.7),
+// дальше за него доигрывает таймер хода; после раздачи место освобождается.
+function markGone(room: Room, playerId: string) {
+  const game = room.game!;
+  if (game.goneIds?.includes(playerId)) return;
+  game.goneIds = [...(game.goneIds ?? []), playerId];
+  const name = room.players.find((p) => p.id === playerId)?.name;
+  console.log(`[ROOM ${room.id}] ${name} не вернулся за 5 минут — доигрываем раздачу за него`);
+  if (concedeAllowed(game, playerId)) concede(room, playerId);
+}
+
+// Место пустует 10 минут — никто не сел: игра заканчивается, кон (обычно уже пуст —
+// его разделили при уходе) делится между оставшимися. Для проверок — GARBA_VACANCY_MS.
+const vacancyMs = Number(process.env.GARBA_VACANCY_MS ?? 10 * 60_000);
+
+setInterval(() => {
+  const now = Date.now();
+  for (const room of rooms.values()) {
+    if (room.status !== 'started' || !room.game || !room.vacancies?.length) continue;
+    if (!vacancyExpired(room.vacancies, now, vacancyMs)) continue;
+    closeWithSplit(room, 'seat_empty');
+    room.vacancies = [];
+    console.log(`[ROOM ${room.id}] место пустовало ${vacancyMs / 60_000} мин — игра закончена`);
+    persistRoom(room);
+    broadcastRoom(room.id).catch((e) => console.error(`[ROOM ${room.id}] broadcast failed:`, e));
+  }
+}, 1000);
 
 function sweepPresence() {
   const now = Date.now();
@@ -1352,8 +1429,17 @@ function sweepPresence() {
     room.game!.absenceUsedMs = absence.usedMs;
     const expired = absence.expired;
 
-    if (expired.length > 0) {
-      closeByDisconnect(room, expired);
+    // Пропавшие посреди раздачи: раздача сыграна — освобождаем места.
+    const gone = room.game!.goneIds ?? [];
+    const goneNow = betweenDeals(room.game!.stage) ? gone : [];
+
+    if (expired.length > 0 || goneNow.length > 0) {
+      for (const id of goneNow) vacateSeat(room, id, 'gone');
+      for (const id of expired) {
+        if (!room.players.some((p) => p.id === id)) continue;
+        if (betweenDeals(room.game!.stage)) vacateSeat(room, id, 'gone');
+        else markGone(room, id);
+      }
     } else if (step.changed || usedChanged) {
       const off = room.players.filter((p) => step.disconnectedAt[p.id] !== undefined);
       console.log(
@@ -1401,6 +1487,9 @@ app.use('/rooms/:id', (req, res, next) => {
     if (req.method === 'POST') markBack(room, playerId);
   }
 
+  // Ждём только замену (все за столом на месте) — закончить игру по согласию можно.
+  const onlyVacancy = absentIds(room).length === 0;
+  if (req.method === 'POST' && req.path === '/end-game' && onlyVacancy) return next();
   if (req.method === 'POST' && !LOBBY_ACTIONS.includes(req.path) && isPaused(room)) {
     return res.status(409).json({ error: 'game paused', pause: publicPause(room) });
   }
@@ -1414,9 +1503,12 @@ function publicPause(room: Room) {
   const { disconnectedAt } = presenceOf(room.id);
   const awayAt = room.game?.awayAt ?? {};
   const absence = absenceOf(room, now);
+  const absent = absentIds(room);
   return {
+    // Свободные места — ждём нового игрока, сколько секунд осталось до конца игры.
+    vacancies: (room.vacancies ?? []).map((v) => ({ seat: v.seat, secondsLeft: vacancySecondsLeft(v, now, vacancyMs) })),
     players: room.players
-      .filter((p) => disconnectedAt[p.id] !== undefined || awayAt[p.id] !== undefined)
+      .filter((p) => absent.includes(p.id))
       .map((p) => ({
         id: p.id,
         name: p.name,
@@ -1555,9 +1647,13 @@ async function sweepTurns() {
   for (const room of rooms.values()) {
     if (turnBusy.has(room.id)) continue;
     const clock = turnClockOf(room);
-    if (!clock || now - clock.since < turnMsOf(room)) continue;
     const awaited = awaitedMoves(room);
-    if (!awaited) continue;
+    if (!clock || !awaited) continue;
+    // За пропавших на 5 минут (24.09.2026) не ждём полного времени хода — полторы секунды,
+    // чтобы остальные успели увидеть ход.
+    const gone = room.game?.goneIds ?? [];
+    const allGone = awaited.moves.every((m) => gone.includes(m.playerId));
+    if (now - clock.since < (allGone ? 1500 : turnMsOf(room))) continue;
 
     turnBusy.add(room.id);
     turnClocks.delete(room.id);
@@ -1567,6 +1663,7 @@ async function sweepTurns() {
         const name = room.players.find((p) => p.id === move.playerId)?.name;
         console.log(`[ROOM ${room.id}] время вышло — за ${name}: ${move.path} ${JSON.stringify(move.body)}`);
         if (!room.game || room.status !== 'started') break;
+        if (gone.includes(move.playerId)) continue;
         const miss = addMiss(room.game.missedTurns ?? {}, move.playerId);
         room.game.missedTurns = miss.missed;
         if (miss.away && room.game.awayAt?.[move.playerId] === undefined) {
@@ -1667,7 +1764,7 @@ function makeRoomId(): string {
 
 function makeDealerSelection(room: Room): GameState {
   // Выбор первого раздающего: карты открываются по кругу до первого туза (RULES.md §4).
-  // Вскрытие идёт по местам за столом — room.players к этому моменту уже перетасован.
+  // Вскрытие идёт по местам за столом (room.players отсортирован по месту).
   // Состав колоды для вскрытия правилами не оговорён, берём полную (36 карт).
   const deck = shuffle(createDeck(7));
   const revealLog: RevealCard[] = [];
@@ -1833,7 +1930,7 @@ function applyVoteIfDecided(room: Room) {
 }
 
 // Комната закрывается, кон делится поровну (RULES.md §12.2).
-function closeWithSplit(room: Room, reason: 'nobody_can_play' | 'agreed_end' = 'nobody_can_play') {
+function closeWithSplit(room: Room, reason: 'nobody_can_play' | 'agreed_end' | 'seat_empty' = 'nobody_can_play') {
   const game = room.game!;
   const { shares, perPlayer, remainder, remainderTo } = splitKon(
     game.kon,
@@ -2400,6 +2497,9 @@ function publicRoom(room: Room, viewerId?: string) {
       closing: room.game.closing,
       closeReason: room.game.closeReason,
       leftPlayerIds: room.game.leftPlayerIds ?? [],
+      // Кто ушёл из игры последним и как разделили кон; кто пропал посреди раздачи.
+      lastLeave: room.game.lastLeave ?? null,
+      goneIds: room.game.goneIds ?? [],
       winnerIds: room.game.winnerIds ?? [],
       split: room.game.split,
       // Голосование «продолжаем или делим» (§12.2): сколько за что и кто уже голосовал.
@@ -2704,6 +2804,7 @@ function makeRoom(account: Account, capacity: number, settings: RoomSettings, is
         joinedAt: Date.now(),
         balance: account.balance,
         startBalance: account.balance,
+        seat: 0,
       },
     ],
     status: 'lobby',
@@ -2718,15 +2819,26 @@ function makeRoom(account: Account, capacity: number, settings: RoomSettings, is
 }
 
 // Войти в комнату: те же проверки для кнопки «Войти», ссылки и «Быстрой игры».
-function joinRoom(room: Room, account: Account): { status: number; body: unknown } {
-  if (room.status !== 'lobby') {
-    return { status: 409, body: { error: 'game already started' } };
-  }
+// seat — какое место выбрал (нет — первое свободное). В начатую игру — только на
+// освободившееся место (24.09.2026): новый игрок садится, и игра идёт дальше.
+function joinRoom(room: Room, account: Account, wantedSeat?: number): { status: number; body: unknown } {
   if (room.players.some((p) => p.id === account.id)) {
     return { status: 200, body: publicRoom(room, account.id) };
   }
-  if (room.players.length >= room.capacity) {
-    return { status: 409, body: { error: 'room is full' } };
+  const midGame = room.status === 'started' && !!room.game && (room.vacancies?.length ?? 0) > 0;
+  if (room.status !== 'lobby' && !midGame) {
+    return { status: 409, body: { error: 'game already started' } };
+  }
+  const free = midGame
+    ? room.vacancies!.map((v) => v.seat)
+    : null;
+  const seat = free
+    ? wantedSeat !== undefined
+      ? free.includes(wantedSeat) ? wantedSeat : null
+      : free[0]
+    : seatFor(room.players.map((p) => p.seat ?? 0), room.capacity, wantedSeat);
+  if (seat === null) {
+    return { status: 409, body: { error: room.players.length >= room.capacity ? 'room is full' : 'seat taken' } };
   }
   const busyIn = activeRoomOf(account.id);
   if (busyIn) {
@@ -2747,8 +2859,24 @@ function joinRoom(room: Room, account: Account): { status: number; body: unknown
     joinedAt: Date.now(),
     balance: account.balance,
     startBalance: account.balance,
+    seat,
   });
-  console.log(`[ROOM ${room.id}] ${account.name} joined ${room.players.length}/${room.capacity}`);
+  sortSeats(room);
+  console.log(`[ROOM ${room.id}] ${account.name} joined ${room.players.length}/${room.capacity}, место ${seat}`);
+  if (midGame) {
+    // Сел на свободное место посреди игры: со следующей раздачи он играет.
+    const vacancy = room.vacancies!.find((v) => v.seat === seat)!;
+    room.vacancies = room.vacancies!.filter((v) => v.seat !== seat);
+    room.departedIds = (room.departedIds ?? []).filter((id) => id !== account.id);
+    room.stats ??= {};
+    room.stats[account.id] ??= emptyStats();
+    ratingState(room, account.id);
+    if (vacancy.wasDealer) {
+      room.game!.dealerId = account.id;
+      room.game!.dealerName = account.name;
+    }
+    return { status: 200, body: publicRoom(room, account.id) };
+  }
   if (room.players.length === room.capacity) {
     room.readyCheck = startReadyCheck(Date.now());
     console.log(`[ROOM ${room.id}] набралась — ждём «ГОТОВ» от всех`);
@@ -2765,6 +2893,7 @@ function openRoomsForAccount(account: Account) {
       status: r.status,
       capacity: r.capacity,
       memberIds: r.players.map((p) => p.id),
+      vacancies: r.status === 'started' ? (r.vacancies?.length ?? 0) : 0,
       minBalance: r.settings.minBalance,
       createdAt: r.createdAt,
     })),
@@ -2837,8 +2966,28 @@ app.post('/rooms/:id/join', (req, res) => {
     return res.status(404).json({ error: 'room not found' });
   }
 
-  const joined = joinRoom(room, me(res));
+  const wanted = req.body?.seat === undefined ? undefined : Number(req.body.seat);
+  const joined = joinRoom(room, me(res), Number.isInteger(wanted) ? wanted : undefined);
   return res.status(joined.status).json(joined.body);
+});
+
+// Пересесть на свободное место — только в лобби, до начала игры (24.09.2026).
+app.post('/rooms/:id/seat', (req, res) => {
+  const room = rooms.get(req.params.id);
+  if (!room) return res.status(404).json({ error: 'room not found' });
+  if (room.status !== 'lobby') return res.status(409).json({ error: 'game already started' });
+  const player = room.players.find((p) => p.id === me(res).id);
+  if (!player) return res.status(403).json({ error: 'player is not in this room' });
+  const seat = Number(req.body?.seat);
+  if (!Number.isInteger(seat) || seat < 0 || seat >= room.capacity) {
+    return res.status(400).json({ error: 'bad seat' });
+  }
+  if (room.players.some((p) => p.seat === seat && p.id !== player.id)) {
+    return res.status(409).json({ error: 'seat taken' });
+  }
+  player.seat = seat;
+  sortSeats(room);
+  return res.json(publicRoom(room, player.id));
 });
 
 // Открыть комнату для всех или закрыть обратно — только создатель и только в лобби.
@@ -2870,13 +3019,22 @@ app.post('/rooms/:id/leave', (req, res) => {
     return res.status(404).json({ error: 'room not found' });
   }
 
-  if (room.status !== 'lobby') {
-    return res.status(409).json({ error: 'game already started' });
-  }
-
   const playerId = me(res).id;
   if (!room.players.some((p) => p.id === playerId)) {
     return res.status(403).json({ error: 'player is not in this room' });
+  }
+
+  // Посреди игры — только между раздачами (24.09.2026): кон делится между оставшимися,
+  // место свободно, игра ждёт замену.
+  if (room.status === 'started' && room.game) {
+    if (!betweenDeals(room.game.stage) || room.game.endVote) {
+      return res.status(409).json({ error: 'can leave only between deals', stage: room.game.stage });
+    }
+    vacateSeat(room, playerId, 'left');
+    return res.json({ left: true });
+  }
+  if (room.status !== 'lobby') {
+    return res.status(409).json({ error: 'game already started' });
   }
 
   if (playerId === room.creatorId) {
@@ -2958,15 +3116,19 @@ function settleReadyCheck(room: Room): boolean {
   return true;
 }
 
+// room.players — всегда по местам за столом.
+function sortSeats(room: Room) {
+  room.players.sort((a, b) => (a.seat ?? 0) - (b.seat ?? 0));
+}
+
 function startGame(room: Room) {
   room.status = 'started';
   room.readyCheck = null;
   room.readyDroppedIds = undefined;
 
-  // Посадка за столом случайная и НЕ совпадает с порядком входа в комнату
-  // (RULES.md §2). После этой перетасовки room.players — это и есть места за
-  // столом в порядке против часовой стрелки: следующий в массиве = сосед справа.
-  room.players = shuffle(room.players);
+  // Где сел — там и играет (RULES.md §2, решение владельца 24.09.2026): room.players
+  // отсортирован по месту, следующий в массиве = сосед справа.
+  sortSeats(room);
 
   room.game = makeDealerSelection(room);
   room.stats = Object.fromEntries(room.players.map((p) => [p.id, emptyStats()]));
@@ -3389,6 +3551,13 @@ app.post('/rooms/:id/concede', (req, res) => {
     return res.status(409).json({ error: 'cannot concede now', stage: game.stage });
   }
 
+  concede(room, id);
+  return res.json(publicRoom(room, id));
+});
+
+// Главный сдаётся (кнопкой или пропал на 5 минут посреди раздачи).
+function concede(room: Room, id: string) {
+  const game = room.game!;
   game.concededIds = [...(game.concededIds ?? []), id];
   const name = game.mains.find((m) => m.playerId === id)!.playerName;
   const statuses = mainStatuses(game.mains, game.tricksWon, game.playedTricks.length, game.concededIds);
@@ -3396,9 +3565,7 @@ app.post('/rooms/:id/concede', (req, res) => {
     finishRound(room, statuses.map((st) => st === 'won'));
   }
   console.log(`[ROOM ${room.id}] ${name} сдался`);
-
-  return res.json(publicRoom(room, id));
-});
+}
 
 // Выигравший КОН называет козырь: по РАЗ (масть РАЗ) или по ДВА (§6.7).
 // До этого момента козырь не знает никто — trumpSuit пуст.

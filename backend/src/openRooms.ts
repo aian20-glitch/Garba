@@ -8,6 +8,8 @@ export type RoomSummary = {
   status: string;
   capacity: number;
   memberIds: string[];
+  // Начатая игра, где освободилось место (24.09.2026), — тоже ищет игрока.
+  vacancies?: number;
   minBalance: number;
   createdAt: number;
 };
@@ -20,8 +22,8 @@ export function openRoomsFor<T extends RoomSummary>(rooms: T[], balance: number,
     .filter(
       (r) =>
         r.isPublic &&
-        r.status === 'lobby' &&
-        r.memberIds.length < r.capacity &&
+        ((r.status === 'lobby' && r.memberIds.length < r.capacity) ||
+          (r.status === 'started' && (r.vacancies ?? 0) > 0)) &&
         r.minBalance <= balance &&
         !r.memberIds.includes(playerId),
     )

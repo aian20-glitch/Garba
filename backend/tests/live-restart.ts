@@ -28,6 +28,7 @@ async function startServer() {
       GARBA_GRACE_MS: '1000',
       GARBA_DISCONNECT_MS: '3000',
       GARBA_READY_MS: '2000',
+      GARBA_VACANCY_MS: '3000',
     },
     stdio: 'ignore',
   });
@@ -128,41 +129,71 @@ async function main() {
   await wait(1_500);
   check('Ержан вернулся — пауза снята', (await request('GET', `/rooms/${roomId}`, serik.token)).body.pause, null);
 
+  // Доигрываем раздачу: все пасуют — пересдача, между раздачами (24.09.2026).
+  for (let i = 0; i < 30; i++) {
+    const g = (await request('GET', `/rooms/${roomId}`, serik.token)).body.game;
+    if (g.stage === 'bidding') {
+      const p = players.find((x) => x.id === g.activeBidderId)!;
+      await request('POST', `/rooms/${roomId}/bid`, p.token, { bid: 'ПАС' });
+    } else if (g.stage === 'special') {
+      const p = players.find((x) => x.id === g.special.activeId)!;
+      await request('POST', `/rooms/${roomId}/special`, p.token, { action: 'pass' });
+    } else break;
+  }
+  const between = (await request('GET', `/rooms/${roomId}`, serik.token)).body;
+  check('все спасовали — между раздачами', ['awaiting_deal', 'round_done'].includes(between.game.stage), true);
+
+  section('пропал на 5 минут между раздачами — место свободно, кон делится (24.09.2026)');
   sockets.get(erzhan.id)!.close();
-  await wait(1_000 + 3_000 + 1_500);
-  const closed = (await request('GET', `/rooms/${roomId}`, serik.token)).body;
-  check('не вернулся за отведённое время — комната закрыта',
-    [closed.status, closed.game?.closeReason, closed.game?.leftPlayerIds], ['finished', 'player_left', [erzhan.id]]);
-
-  const kon = before.game.kon;
-  const perPlayer = Math.floor(kon / 3);
-  check('кон поделён поровну между тремя оставшимися', closed.game?.split?.perPlayer, perPlayer);
-  const shares = closed.players.map((p: any) => p.balance - 9_900);
-  check('ушедшему — ничего, остаток — одному из оставшихся',
-    shares.filter((s: number) => s === 0).length === 1 && shares.reduce((a: number, b: number) => a + b, 0) === kon, true);
+  // Запас 5 минут (здесь 3 с) общий на игру — ждём, когда место освободится.
+  let freed: any = null;
+  for (let i = 0; i < 60 && !freed; i++) {
+    await wait(200);
+    const b = (await request('GET', `/rooms/${roomId}`, serik.token)).body;
+    if (b.pause?.vacancies?.length) freed = b;
+  }
+  const kon = between.game.kon;
+  check('комната не закрыта, Ержана за столом нет, его место свободно',
+    [freed.status, freed.players.map((p: any) => p.name).includes('Ержан'), freed.pause?.vacancies?.length], ['started', false, 1]);
+  check('кон разделён между тремя оставшимися, кон пуст',
+    [freed.game.lastLeave?.name, freed.game.lastLeave?.perPlayer, freed.game.kon], ['Ержан', Math.floor(kon / 3), 0]);
   check('Ержан свободен для новой комнаты', (await request('GET', '/me', erzhan.token)).body.roomId, null);
-  check('деньги не потерялись: сумма балансов после расчёта', closed.players.reduce((a: number, p: any) => a + p.balance, 0), 40_000);
+  check('ушёл — рейтинг 4.0 → 3.0', (await request('GET', '/me', erzhan.token)).body.rating, 3);
+  const total = (b: any) => b.players.reduce((a: number, p: any) => a + p.balance, 0) + b.game.kon;
+  const erzhanBalance = (await request('GET', '/me', erzhan.token)).body.balance;
+  check('деньги не потерялись: трое за столом + кон + Ержан', total(freed) + erzhanBalance, 40_000);
+  const nextDealer = players.find((p) => p.id === freed.game.dealerId);
+  if (nextDealer && nextDealer.id !== erzhan.id) {
+    check('пока место свободно — раздавать нельзя',
+      (await request('POST', `/rooms/${roomId}/dealer/continue`, nextDealer.token)).body.error, 'game paused');
+  }
 
-  const profile = (await request('GET', '/me/profile', serik.token)).body;
-  check('комната доиграна — в профиле 1 комната, взнос и доля кона учтены',
-    [profile.stats.rooms, profile.stats.coinsLost, profile.stats.coinsWon > 0], [1, 100, true]);
-  check('у ушедшего тоже 1 комната в профиле', (await request('GET', '/me/profile', erzhan.token)).body.stats.rooms, 1);
+  section('на свободное место садится новый игрок — все начинают с пустого кона');
+  const farid: Me = (await request('POST', '/accounts', undefined, { name: 'Фарид' })).body;
+  const open = (await request('GET', '/rooms/open', farid.token)).body.rooms;
+  check('открытой игры со свободным местом нет в списке, пока она закрытая', open.some((r: any) => r.id === roomId), false);
+  const joined = await request('POST', `/rooms/${roomId}/join`, farid.token);
+  sockets.set(farid.id, sit(roomId, farid.token));
+  await wait(1_500);
+  const refilled = (await request('GET', `/rooms/${roomId}`, serik.token)).body;
+  check('Фарид сел на место Ержана, пауза снята',
+    [joined.status, refilled.players.find((p: any) => p.id === farid.id)?.seat, refilled.pause],
+    [200, freed.players.length === 3 ? [0, 1, 2, 3].find((s) => !freed.players.some((p: any) => p.seat === s)) : -1, null]);
+
+  section('«Выйти» между раздачами, никто не сел — игра заканчивается');
+  const leftNow = await request('POST', `/rooms/${roomId}/leave`, serik.token);
+  check('Серик вышел из игры', leftNow.body.left, true);
+  await wait(3_500);
+  const closed = (await request('GET', `/rooms/${roomId}`, farid.token)).body;
+  check('место пустовало — комната закрыта', [closed.status, closed.game?.closeReason], ['finished', 'seat_empty']);
+  check('ушедшему комната не засчитана как доигранная', (await request('GET', '/me/profile', serik.token)).body.stats.rooms, 0);
+  check('доигравшему засчитана', (await request('GET', '/me/profile', farid.token)).body.stats.rooms, 1);
   check('победитель комнаты отмечен сервером', Array.isArray(closed.game?.winnerIds) && closed.game.winnerIds.length > 0, true);
 
-  section('рейтинг (этап 9.6)');
-  const seats = closed.players as any[];
-  check('за столом у каждого рейтинг и с каким сел — новички с 4.0',
-    seats.every((p) => typeof p.rating === 'number' && p.ratingStart === 4), true);
-  const erzhanSeat = seats.find((p) => p.id === erzhan.id);
-  check('ушёл из игры, комната закрылась из-за него — рейтинг 4.0 → 3.0', erzhanSeat.rating, 3);
-  const winnerSeat = seats.find((p) => closed.game.winnerIds.includes(p.id));
-  check('победитель комнаты — рейтинг вырос', winnerSeat.rating > 4, true);
-  check('рейтинг записан в аккаунт', (await request('GET', '/me', erzhan.token)).body.rating, erzhanSeat.rating);
-
   const board = (await request('GET', '/rating?scope=all', serik.token)).body;
-  check('общий рейтинг: все 4 игрока, по убыванию, моё место известно',
+  check('общий рейтинг: все 5 игроков (с Фаридом), по убыванию, моё место известно',
     [board.total, board.players.every((p: any, i: number) => i === 0 || board.players[i - 1].rating >= p.rating), typeof board.myPlace],
-    [4, true, 'number']);
+    [5, true, 'number']);
   const friendsBoard = (await request('GET', '/rating?scope=friends', serik.token)).body;
   check('рейтинг друзей без друзей — только я, место 1', [friendsBoard.total, friendsBoard.myPlace], [1, 1]);
 
