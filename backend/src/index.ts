@@ -747,6 +747,8 @@ app.get('/me', (req, res) => {
     hasRecoveryCode: hasRecoveryCode(db, account.id),
     // К чему привязан аккаунт: ['google'], ['apple'], оба или пусто.
     logins: loginsOf(db, account.id),
+    // Друзья зовут в комнату (25.09.2026) — только те, куда ещё можно сесть.
+    roomInvites: invitesFor(account.id),
   });
 });
 
@@ -1473,7 +1475,7 @@ setInterval(() => {
 
 // Запрос игрока к своей комнате — тоже знак, что он на месте (приложение без сокета
 // опрашивает сервер). На паузе ходы не принимаются: ждём отключившегося.
-const LOBBY_ACTIONS = ['/join', '/leave', '/ready', '/back', '/react'];
+const LOBBY_ACTIONS = ['/join', '/leave', '/ready', '/back', '/react', '/invite'];
 app.use('/rooms/:id', (req, res, next) => {
   const room = rooms.get(req.params.id);
   if (!room || !tracksPresence(room)) return next();
@@ -2971,6 +2973,56 @@ app.post('/rooms/:id/join', (req, res) => {
   const wanted = req.body?.seat === undefined ? undefined : Number(req.body.seat);
   const joined = joinRoom(room, me(res), Number.isInteger(wanted) ? wanted : undefined);
   return res.status(joined.status).json(joined.body);
+});
+
+// --- Позвать друга в комнату (решение владельца, 25.09.2026) ---
+// Из лобби или на свободное место посреди игры — друга из списка «Друзья». Приглашение
+// видно у друга на главном экране 10 минут (без push-уведомлений: приложение должно быть
+// открыто). Живёт в памяти: после перезапуска сервера пропадает — не страшно.
+const INVITE_TTL_MS = 10 * 60_000;
+const roomInvites = new Map<string, { roomId: string; fromId: string; fromName: string; at: number }[]>();
+
+function roomHasSeat(room: Room): boolean {
+  return (room.status === 'lobby' && room.players.length < room.capacity) ||
+    (room.status === 'started' && (room.vacancies?.length ?? 0) > 0);
+}
+
+function invitesFor(accountId: string) {
+  const now = Date.now();
+  const list = (roomInvites.get(accountId) ?? []).filter((inv) => {
+    const room = rooms.get(inv.roomId);
+    return now - inv.at < INVITE_TTL_MS && !!room && roomHasSeat(room) &&
+      !room.players.some((p) => p.id === accountId);
+  });
+  roomInvites.set(accountId, list);
+  return list.map((inv) => ({ roomId: inv.roomId, fromName: inv.fromName, at: inv.at }));
+}
+
+app.post('/rooms/:id/invite', (req, res) => {
+  const room = rooms.get(req.params.id);
+  if (!room) return res.status(404).json({ error: 'room not found' });
+  const from = me(res);
+  if (!room.players.some((p) => p.id === from.id)) {
+    return res.status(403).json({ error: 'player is not in this room' });
+  }
+  if (!roomHasSeat(room)) return res.status(409).json({ error: 'no free seat' });
+  const friend = findAccountByCode(db, normalizeCode(req.body?.code) ?? '');
+  if (!friend) return res.status(404).json({ error: 'player not found' });
+  if (!areFriends(db, from.id, friend.id)) return res.status(403).json({ error: 'not a friend' });
+  if (room.players.some((p) => p.id === friend.id)) return res.status(409).json({ error: 'already in this room' });
+
+  const list = (roomInvites.get(friend.id) ?? []).filter((inv) => inv.roomId !== room.id);
+  roomInvites.set(friend.id, [...list, { roomId: room.id, fromId: from.id, fromName: from.name, at: Date.now() }]);
+  console.log(`[ROOM ${room.id}] ${from.name} зовёт друга ${friend.name}`);
+  return res.json({ ok: true });
+});
+
+// Отказаться от приглашения — убрать его с главного экрана.
+app.delete('/me/invites/:roomId', (req, res) => {
+  const account = accountOf(req);
+  if (!account) return res.status(401).json({ error: 'unauthorized' });
+  roomInvites.set(account.id, (roomInvites.get(account.id) ?? []).filter((inv) => inv.roomId !== req.params.roomId));
+  return res.json({ ok: true });
 });
 
 // Пересесть на свободное место — только в лобби, до начала игры (24.09.2026).

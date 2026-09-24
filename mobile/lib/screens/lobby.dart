@@ -559,7 +559,13 @@ class _LobbyScreenState extends State<LobbyScreen> {
                 ),
               ),
               icon: const Icon(Icons.share),
-              label: const Text('ПРИГЛАСИТЬ'),
+              label: const Text('ПРИГЛАСИТЬ ПО ССЫЛКЕ'),
+            ),
+            const SizedBox(height: 8),
+            OutlinedButton.icon(
+              onPressed: () => showFriendInviteSheet(context, widget.roomCode),
+              icon: const Icon(Icons.group_add),
+              label: const Text('ПОЗВАТЬ ДРУЗЕЙ'),
             ),
             const SizedBox(height: 12),
             // Комната набралась — у всех «ГОТОВ» с отсчётом; нажали все — игра начнётся сама.

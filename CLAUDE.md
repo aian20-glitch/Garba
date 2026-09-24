@@ -284,6 +284,11 @@ POST /rooms/quick                {} → комната: сесть в самую
                                  открытую (5 игроков, взнос 100); 409 already in another room; 403
 POST /rooms/:id/visibility       { isPublic } — открыть для всех / только по коду; создатель, в лобби
 GET  /rooms/:id
+POST /rooms/:id/invite           { code }   позвать друга (25.09.2026): только друга, только когда есть
+                                 свободное место (лобби или освободилось в игре); 403 not a friend;
+                                 приглашение 10 мин в /me → roomInvites: [{ roomId, fromName, at }]
+                                 (в памяти, без push — друг видит его на главном экране)
+DELETE /me/invites/:roomId       → { ok } — отказаться от приглашения
 POST /rooms/:id/seat             { seat }   пересесть на свободное место — только в лобби (24.09.2026);
                                  409 seat taken | game already started; 400 bad seat
 POST /rooms/:id/join             { seat? }   место — выбранное или первое свободное; в начатую

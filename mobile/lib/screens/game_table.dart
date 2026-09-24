@@ -2224,7 +2224,16 @@ class _GameTableScreenState extends State<GameTableScreen> {
                                     ),
                                   ),
                                   icon: const Icon(Icons.share, size: 18),
-                                  label: const Text('ПОЗВАТЬ ИГРОКА'),
+                                  label: const Text('ПОЗВАТЬ ПО ССЫЛКЕ'),
+                                ),
+                              ),
+                            if (vacancies.isNotEmpty)
+                              Padding(
+                                padding: const EdgeInsets.only(top: 6),
+                                child: OutlinedButton.icon(
+                                  onPressed: () => showFriendInviteSheet(context, widget.roomCode),
+                                  icon: const Icon(Icons.group_add, size: 18),
+                                  label: const Text('ПОЗВАТЬ ДРУЗЕЙ'),
                                 ),
                               ),
                             if (iAmAway)

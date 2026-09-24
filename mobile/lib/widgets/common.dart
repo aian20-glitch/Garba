@@ -257,3 +257,120 @@ class AvatarEmoji extends StatelessWidget {
     );
   }
 }
+
+// Позвать друзей в комнату (25.09.2026): список «Друзья», у каждого — «ПОЗВАТЬ».
+// Друг увидит приглашение у себя на главном экране. Решает сервер (друг ли, есть ли место).
+Future<void> showFriendInviteSheet(BuildContext context, String roomCode) {
+  return showModalBottomSheet<void>(
+    context: context,
+    backgroundColor: const Color(0xFF13232E),
+    isScrollControlled: true,
+    builder: (_) => FriendInviteSheet(roomCode: roomCode),
+  );
+}
+
+class FriendInviteSheet extends StatefulWidget {
+  final String roomCode;
+  const FriendInviteSheet({super.key, required this.roomCode});
+
+  @override
+  State<FriendInviteSheet> createState() => _FriendInviteSheetState();
+}
+
+class _FriendInviteSheetState extends State<FriendInviteSheet> {
+  List<Map<String, dynamic>>? friends;
+  final invited = <String>{};
+  String? error;
+
+  @override
+  void initState() {
+    super.initState();
+    load();
+  }
+
+  Future<void> load() async {
+    try {
+      final response = await http.get(Uri.parse('$apiBase/friends'), headers: authHeaders());
+      expectStatus(response, const [200]);
+      final list = ((jsonDecode(response.body) as Map)['friends'] as List)
+          .map((e) => Map<String, dynamic>.from(e as Map))
+          .toList();
+      if (mounted) setState(() => friends = list);
+    } catch (e) {
+      if (mounted) setState(() => error = userErrorMessage(e));
+    }
+  }
+
+  Future<void> invite(String code) async {
+    try {
+      final response = await http.post(
+        Uri.parse('$apiBase/rooms/${widget.roomCode}/invite'),
+        headers: authHeaders(),
+        body: jsonEncode({'code': code}),
+      );
+      expectStatus(response, const [200]);
+      if (mounted) setState(() => invited.add(code));
+    } catch (e) {
+      if (mounted) showGarbaError(context, e, prefix: 'Не удалось позвать');
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final list = friends;
+    return SafeArea(
+      child: ConstrainedBox(
+        constraints: BoxConstraints(maxHeight: MediaQuery.of(context).size.height * 0.6),
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              const Text('Позвать друзей',
+                  textAlign: TextAlign.center, style: TextStyle(fontSize: 20, fontWeight: FontWeight.w800)),
+              const SizedBox(height: 4),
+              const Text('Друг увидит приглашение на главном экране ГАРБЫ',
+                  textAlign: TextAlign.center, style: TextStyle(color: Colors.white60, fontSize: 12)),
+              const SizedBox(height: 12),
+              if (error != null)
+                Text(error!, textAlign: TextAlign.center)
+              else if (list == null)
+                const Center(child: Padding(padding: EdgeInsets.all(16), child: CircularProgressIndicator()))
+              else if (list.isEmpty)
+                const Padding(
+                  padding: EdgeInsets.all(16),
+                  child: Text('Друзей пока нет — добавьте их в разделе «ДРУЗЬЯ»',
+                      textAlign: TextAlign.center, style: TextStyle(color: Colors.white70)),
+                )
+              else
+                Flexible(
+                  child: ListView(
+                    shrinkWrap: true,
+                    children: [
+                      for (final f in list)
+                        () {
+                          final code = f['code'].toString();
+                          final busyRoom = f['roomId']?.toString();
+                          final here = busyRoom == widget.roomCode;
+                          final busy = busyRoom != null && !here;
+                          return ListTile(
+                            leading: AvatarView(avatar: f['avatar']?.toString(), name: f['name'].toString(), radius: 20),
+                            title: Text(f['name'].toString(), style: const TextStyle(fontWeight: FontWeight.w800)),
+                            subtitle: Text(here ? 'уже за этим столом' : busy ? 'сейчас в другой игре' : '⭐ ${fmtRating(f['rating'])}'),
+                            trailing: FilledButton(
+                              onPressed: here || busy || invited.contains(code) ? null : () => invite(code),
+                              child: Text(invited.contains(code) ? 'ПОЗВАЛИ' : 'ПОЗВАТЬ'),
+                            ),
+                          );
+                        }(),
+                    ],
+                  ),
+                ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}

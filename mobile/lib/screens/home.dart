@@ -21,11 +21,17 @@ class _HomeScreenState extends State<HomeScreen> with RouteAware {
   bool claimingBonus = false;
   String? avatar;
   Object? rating;
+  // Друзья зовут в комнату (25.09.2026). Новое приглашение — со звуком.
+  List<Map<String, dynamic>> invites = const [];
+  Set<String> seenInvites = {};
+  Timer? invitesTimer;
 
   @override
   void initState() {
     super.initState();
     refreshMe();
+    // Приглашения приходят, пока главный экран открыт (push-уведомлений нет).
+    invitesTimer = Timer.periodic(const Duration(seconds: 5), (_) => refreshMe());
   }
 
   @override
@@ -37,6 +43,7 @@ class _HomeScreenState extends State<HomeScreen> with RouteAware {
 
   @override
   void dispose() {
+    invitesTimer?.cancel();
     routeObserver.unsubscribe(this);
     super.dispose();
   }
@@ -61,7 +68,16 @@ class _HomeScreenState extends State<HomeScreen> with RouteAware {
         rating = me['rating'];
         invitedCount = (me['invitedCount'] as num?)?.toInt() ?? 0;
         friendRequests = (me['friendRequests'] as num?)?.toInt() ?? 0;
+        invites = ((me['roomInvites'] as List?) ?? const [])
+            .map((e) => Map<String, dynamic>.from(e as Map))
+            .toList();
       });
+      final ids = invites.map((i) => i['roomId'].toString()).toSet();
+      if (ids.difference(seenInvites).isNotEmpty) {
+        GarbaSounds.ready();
+        HapticFeedback.mediumImpact();
+      }
+      seenInvites = ids;
       // Первый вход за день — бонус забирается сам (ТЗ §3: «за ежедневный вход»).
       if (daily['claimedToday'] != true) await claimDailyBonus();
     } catch (_) {
@@ -184,6 +200,46 @@ class _HomeScreenState extends State<HomeScreen> with RouteAware {
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.stretch,
                     children: [
+                      // Друг зовёт за стол — войти одним нажатием.
+                      for (final inv in invites)
+                        Card(
+                          color: const Color(0xFF1E3A2A),
+                          margin: const EdgeInsets.only(bottom: 10),
+                          child: ListTile(
+                            leading: const Icon(Icons.mail, color: Color(0xFFD4A94F)),
+                            title: Text('${inv['fromName']} зовёт за стол',
+                                style: const TextStyle(fontWeight: FontWeight.w800)),
+                            subtitle: Text('Комната #${inv['roomId']}'),
+                            trailing: Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                FilledButton(
+                                  onPressed: roomId != null
+                                      ? null
+                                      : () => Navigator.push(
+                                            context,
+                                            MaterialPageRoute(
+                                              builder: (_) => JoinRoomScreen(initialCode: inv['roomId'].toString()),
+                                            ),
+                                          ),
+                                  child: const Text('ВОЙТИ'),
+                                ),
+                                IconButton(
+                                  icon: const Icon(Icons.close),
+                                  onPressed: () async {
+                                    setState(() => invites = invites.where((i) => i != inv).toList());
+                                    try {
+                                      await http.delete(
+                                        Uri.parse('$apiBase/me/invites/${inv['roomId']}'),
+                                        headers: authHeaders(),
+                                      );
+                                    } catch (_) {}
+                                  },
+                                ),
+                              ],
+                            ),
+                          ),
+                        ),
                       // Игрок уже сидит в комнате — туда и возвращаемся, новую не начать.
                       if (roomId != null) ...[
                         GarbaButton(
