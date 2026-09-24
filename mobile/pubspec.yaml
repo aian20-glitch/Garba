@@ -35,3 +35,10 @@ flutter:
     - assets/sounds/raz.wav
     - assets/sounds/dva.wav
     - assets/sounds/kon.wav
+    - assets/sounds/risk1.wav
+    - assets/sounds/risk2.wav
+    - assets/sounds/risk3.wav
+    - assets/sounds/risk4.wav
+    - assets/sounds/risk5.wav
+    - assets/sounds/win.wav
+    - assets/sounds/lose.wav

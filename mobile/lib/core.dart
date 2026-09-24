@@ -168,6 +168,22 @@ class GarbaSounds {
     });
   }
 
+  // Спецкарта: ×1 — одна нота, дальше с каждым множителем выше и мощнее (24.09.2026).
+  static void risk(int risk) {
+    final r = risk.clamp(1, 5);
+    _bid.play(AssetSource('sounds/risk$r.wav')).catchError((Object e) {
+      debugPrint('Звук риска не проигрался: $e');
+    });
+  }
+
+  // Итог раздачи: главный выиграл — перелив, проиграл — нисходящий звук.
+  static final _result = AudioPlayer();
+  static void result(bool won) {
+    _result.play(AssetSource(won ? 'sounds/win.wav' : 'sounds/lose.wav')).catchError((Object e) {
+      debugPrint('Звук итога не проигрался: $e');
+    });
+  }
+
   static void card() {
     _card?.start(volume: 0.6).catchError((Object e) {
       debugPrint('Звук карты не проигрался: $e');

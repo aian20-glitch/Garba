@@ -126,6 +126,16 @@ class _GameTableScreenState extends State<GameTableScreen> {
       });
     }
 
+    // Звук итога (не ГАРБА — у неё свой барабан): я главный — мой итог, нет — выиграл
+    // ли хоть один главный.
+    final results = ((game['result'] as List?) ?? const [])
+        .map((r) => Map<String, dynamic>.from(r as Map))
+        .toList();
+    final mine = results.where((r) => r['playerId'].toString() == widget.currentPlayerId);
+    if (garba == null && results.isNotEmpty) {
+      GarbaSounds.result(mine.isNotEmpty ? mine.first['won'] == true : results.any((r) => r['won'] == true));
+    }
+
     resultHoldTimer?.cancel();
     if (garba != null && trump != null) {
       garbaReveal = (name: garba['playerName'].toString(), suit: trump);
@@ -302,6 +312,7 @@ class _GameTableScreenState extends State<GameTableScreen> {
 
     String? text;
     String? bidSound;
+    int? riskSound;
     final bids = (game['bids'] as List?) ?? const [];
     if (bids.length < seenBids) seenBids = 0; // новая раздача — заявки с нуля
     for (var i = seenBids; i < bids.length; i++) {
@@ -328,6 +339,7 @@ class _GameTableScreenState extends State<GameTableScreen> {
     if (specialKey != seenSpecial && holder != null) {
       text = '${nameOf(holder)} — '
           '${specialName(special['kind'].toString())} ×${special['risk']}!';
+      riskSound = (special['risk'] as num?)?.toInt();
     }
     seenSpecial = specialKey;
 
@@ -347,6 +359,7 @@ class _GameTableScreenState extends State<GameTableScreen> {
     }
     if (newCard) GarbaSounds.move();
     if (bidSound != null) GarbaSounds.bid(bidSound);
+    if (riskSound != null) GarbaSounds.risk(riskSound);
     if (text == null) return;
     final id = ++announcementSeq;
     setState(() => announcement = (id: id, text: text!));
