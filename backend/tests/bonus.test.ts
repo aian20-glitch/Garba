@@ -40,8 +40,8 @@ check('7 дней подряд — всего 6×1 000 + 6 000 = 12 000', total,
 section('подарки (ТЗ §5)');
 const ok = { amount: 400, balance: 5_000, giftedToday: false, toSelf: false };
 check('400 монет — можно (пример из ТЗ)', giftError(ok), null);
-check('1 000 — максимум, можно', giftError({ ...ok, amount: 1_000 }), null);
-check('1 100 — больше максимума', giftError({ ...ok, amount: 1_100 }), 'bad amount');
+check('10 000 — максимум, можно (с 25.09.2026)', giftError({ ...ok, amount: 10_000, balance: 30_000 }), null);
+check('10 100 — больше максимума', giftError({ ...ok, amount: 10_100, balance: 30_000 }), 'bad amount');
 check('0 — нельзя', giftError({ ...ok, amount: 0 }), 'bad amount');
 check('150 — не кратно сотне', giftError({ ...ok, amount: 150 }), 'bad amount');
 check('сегодня уже дарил 400 — второй подарок нельзя', giftError({ ...ok, giftedToday: true }), 'already gifted today');

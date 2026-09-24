@@ -1,7 +1,7 @@
 // Подарить монеты и пригласить друга.
 part of '../main.dart';
 
-// Подарок монет другому игроку по его коду (ТЗ §5): до 1 000, раз в сутки.
+// Подарок монет другому игроку по его коду (ТЗ §5): до 10 000, раз в сутки (с 25.09.2026).
 // Все проверки — на сервере; экран только подсказывает заранее.
 class GiftScreen extends StatefulWidget {
   // Код получателя, если подарок открыт из карточки друга.
@@ -51,11 +51,11 @@ class _GiftScreenState extends State<GiftScreen> {
     }
   }
 
-  static const _gifts = [100, 200, 300, 400, 500, 600, 700, 800, 900, 1000];
+  static const _gifts = [100, 500, 1000, 2000, 3000, 5000, 7000, 10000];
 
   static const _errors = <String, String>{
     'player not found': 'Игрока с таким кодом нет',
-    'bad amount': 'Сумма — от 100 до 1 000',
+    'bad amount': 'Сумма — от 100 до 10 000',
     'self': 'Себе подарить нельзя',
     'already gifted today': 'Сегодня вы уже дарили. Следующий подарок — завтра',
     'not enough coins': 'Не хватает монет',
@@ -147,7 +147,7 @@ class _GiftScreenState extends State<GiftScreen> {
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
               const Text(
-                'Можно подарить до 1 000 монет, один раз в сутки.',
+                'Можно подарить до 10 000 монет, один раз в сутки.',
                 style: TextStyle(color: Colors.white70),
               ),
               const SizedBox(height: 16),
@@ -215,7 +215,7 @@ class _GiftScreenState extends State<GiftScreen> {
 }
 
 // Приглашение друга (ТЗ §4): друг вводит этот код при первом входе в игру —
-// пригласивший получает 1 000 монет, когда друг доиграет 3 комнаты.
+// пригласивший получает 10 000 монет, когда друг доиграет 3 комнаты.
 class InviteScreen extends StatelessWidget {
   final String code;
   final int invitedCount;
@@ -273,7 +273,7 @@ class InviteScreen extends StatelessWidget {
               const SizedBox(height: 24),
               const Text(
                 'Друг устанавливает ГАРБУ и при первом входе вводит этот код. '
-                'Как только он доиграет 3 комнаты — вы получите 1 000 монет.',
+                'Как только он доиграет 3 комнаты — вы получите 10 000 монет.',
                 style: TextStyle(fontSize: 16),
               ),
               const SizedBox(height: 16),

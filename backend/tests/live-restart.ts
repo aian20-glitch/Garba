@@ -104,7 +104,7 @@ async function main() {
   check('та же стадия и тот же кон', [after.body.game?.stage, after.body.game?.kon], [before.game.stage, before.game.kon]);
   check('те же карты на руке',
     after.body.game?.hand?.map((c: any) => c.id), before.game.hand.map((c: any) => c.id));
-  check('баланс на аккаунте — после взноса', (await request('GET', '/me', serik.token)).body.balance, 9_900);
+  check('баланс на аккаунте — после взноса', (await request('GET', '/me', serik.token)).body.balance, 29_900);
   check('игрок по-прежнему в своей комнате', (await request('GET', '/me', serik.token)).body.roomId, roomId);
 
   await wait(2_500); // сокеты переподключаются сами
@@ -161,7 +161,7 @@ async function main() {
   check('ушёл — рейтинг 4.0 → 3.0', (await request('GET', '/me', erzhan.token)).body.rating, 3);
   const total = (b: any) => b.players.reduce((a: number, p: any) => a + p.balance, 0) + b.game.kon;
   const erzhanBalance = (await request('GET', '/me', erzhan.token)).body.balance;
-  check('деньги не потерялись: трое за столом + кон + Ержан', total(freed) + erzhanBalance, 40_000);
+  check('деньги не потерялись: трое за столом + кон + Ержан', total(freed) + erzhanBalance, 120_000);
   const nextDealer = players.find((p) => p.id === freed.game.dealerId);
   if (nextDealer && nextDealer.id !== erzhan.id) {
     check('пока место свободно — раздавать нельзя',

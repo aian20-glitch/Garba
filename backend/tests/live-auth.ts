@@ -55,7 +55,7 @@ async function main() {
   const unknown = await request('POST', '/auth/google', undefined, { idToken: googleToken('g-1') });
   check('Google ещё ни к кому не привязан — 404 и подсказка имени', [unknown.status, unknown.body.suggestedName], [404, 'Аян Google']);
   const created = await request('POST', '/auth/google', undefined, { idToken: googleToken('g-1'), name: 'Аян' });
-  check('с именем — новый аккаунт, 10 000 монет, токен', [created.status, created.body.name, created.body.balance, typeof created.body.token], [201, 'Аян', 10000, 'string']);
+  check('с именем — новый аккаунт, 30 000 монет, токен', [created.status, created.body.name, created.body.balance, typeof created.body.token], [201, 'Аян', 30000, 'string']);
   check('/me знает, что аккаунт привязан к Google', (await request('GET', '/me', created.body.token)).body.logins, ['google']);
   check('email нигде не хранится и не отдаётся', JSON.stringify((await request('GET', '/me', created.body.token)).body).includes('@'), false);
 

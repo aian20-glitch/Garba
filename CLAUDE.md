@@ -220,12 +220,12 @@ Flutter не был в PATH (`C:\Users\Gold Lombard\Desktop\flutter\bin\flutter.
 ```
 GET  /health
 POST /accounts                   { name }   → 201 { id, name, balance, createdAt, token }
-                                 имя 1..20 символов; новый аккаунт — 10 000 монет;
+                                 имя 1..20 символов; новый аккаунт — 30 000 монет (с 25.09.2026);
                                  токен выдаётся один раз, телефон обязан его сохранить
 POST /accounts/recover           { playerCode, recoveryCode } → новый токен и новый код; 401, 429
 POST /me/recovery-code           → { recoveryCode } — выпустить новый, старый перестаёт работать
 POST /accounts                   { name, inviteCode? }   inviteCode — код пригласившего (этап 9.3),
-                                 ему +1 000, когда новый игрок доиграет 3 комнаты (с 19.09.2026);
+                                 ему +10 000 (с 25.09.2026), когда новый игрок доиграет 3 комнаты (с 19.09.2026);
                                  неизвестный код — 400 invite code not found; с одного адреса
                                  не больше 5 в час / 20 в сутки — 429 (свой компьютер — без лимита)
 POST /auth/:provider             { idToken, name?, inviteCode? }   provider: google | apple (23.09.2026).
@@ -265,7 +265,7 @@ POST /friends/requests/:code/accept | decline | cancel   — принять / о
                                  отменить свою; отклонённому не сообщаем
 DELETE /friends/:code            → { ok }; 404 not a friend
 POST /gifts                      { toCode, amount }  → { amount, balance, to: { code, name } }
-                                 amount 100..1000 кратно 100; ошибки: 400 bad amount | self |
+                                 amount 100..10000 кратно 100 (с 25.09.2026); ошибки: 400 bad amount | self |
                                  not enough coins; 409 already gifted today; 409 finish your game
                                  first (дарить нельзя, пока сидишь в комнате); 404 player not found
 

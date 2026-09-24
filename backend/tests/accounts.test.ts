@@ -38,7 +38,7 @@ const db = openDb(':memory:');
 section('аккаунты (этап 9.1)');
 
 const { account, token, recoveryCode } = createAccount(db, 'Серик');
-check('новый аккаунт получает стартовые 10 000', account.balance, 10_000);
+check('новый аккаунт получает стартовые 30 000 (с 25.09.2026)', account.balance, 30_000);
 check('имя сохраняется как есть, кириллица целая', getAccount(db, account.id)?.name, 'Серик');
 check('по токену находится свой аккаунт', findAccountByToken(db, token)?.id, account.id);
 check('чужой токен не подходит', findAccountByToken(db, 'x'.repeat(64)), null);
@@ -59,7 +59,7 @@ check('и токены у них разные', second.token !== token, true);
 
 setBalance(db, account.id, 7_300);
 check('баланс сохраняется в базе', findAccountByToken(db, token)?.balance, 7_300);
-check('баланс второго аккаунта не задет', getAccount(db, second.account.id)?.balance, 10_000);
+check('баланс второго аккаунта не задет', getAccount(db, second.account.id)?.balance, 30_000);
 
 section('восстановление аккаунта');
 check('дефисы, пробелы и регистр кода не важны', normalizeRecoveryCode(` ${recoveryCode.toLowerCase()} `), recoveryCode.replaceAll('-', ''));

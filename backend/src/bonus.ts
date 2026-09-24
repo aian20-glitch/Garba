@@ -8,7 +8,7 @@ export const STREAK_DAYS = 7;
 export const STREAK_BONUS = 5_000; // сверху на 7-й день подряд: итого 6 000
 
 // --- Приглашение (ТЗ §4) ---
-export const REFERRAL_BONUS = 1_000;
+export const REFERRAL_BONUS = 10_000; // решение владельца, 25.09.2026 (было 1 000)
 // Пригласившему +1 000 — только когда друг доиграл 3 комнаты (решение владельца правил,
 // 19.09.2026): фейковые аккаунты не играют, накрутить бонус нельзя.
 export const REFERRAL_ROOMS = 3;
@@ -18,7 +18,7 @@ export function referralDue(roomsPlayed: number, alreadyPaid: boolean): boolean 
 }
 
 // --- Подарки (ТЗ §5) ---
-export const MAX_GIFT = 1_000;
+export const MAX_GIFT = 10_000; // решение владельца, 25.09.2026 (было 1 000)
 
 // Сутки считаем по времени Казахстана (UTC+5): «сегодня» у всех игроков одно.
 export const DAY_OFFSET_HOURS = 5;

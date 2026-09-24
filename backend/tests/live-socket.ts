@@ -61,7 +61,7 @@ async function main() {
 
   section('аккаунты (этап 9.1)');
   const serik = await account('Серик');
-  check('аккаунт создан, 10 000 на счету', serik.balance, 10_000);
+  check('аккаунт создан, 30 000 на счету', serik.balance, 30_000);
   check('токен выдан', typeof serik.token === 'string' && serik.token.length === 64, true);
   check('пустое имя — отказ', (await request('POST', '/accounts', undefined, { name: '  ' })).status, 400);
 
@@ -127,7 +127,7 @@ async function main() {
 
   const kon = serikWatch.state.last?.game?.kon ?? 0;
   const afterAnte = (await request('GET', '/me', serik.token)).body.balance;
-  check('взнос списан и записан в аккаунт', [kon, afterAnte], [400, 9_900]);
+  check('взнос списан и записан в аккаунт', [kon, afterAnte], [400, 29_900]);
 
   const before = serikWatch.state.count;
   await post(`/rooms/${roomId}/bid`, serik.token, { bid: 'ПАС' }); // скорее всего не его ход — отказ
@@ -157,14 +157,14 @@ async function main() {
   check('у игрока есть код для приглашений и подарков', /^[A-Z2-9]{6}$/.test(aMe.code), true);
   check('неверный код приглашения — отказ', (await request('POST', '/accounts', undefined, { name: 'Асель', inviteCode: 'ZZZZZZ' })).status, 400);
   const invited = (await request('POST', '/accounts', undefined, { name: 'Асель', inviteCode: aMe.code.toLowerCase() })).body;
-  check('пришла по приглашению — у неё обычные 10 000', invited.balance, 10_000);
+  check('пришла по приглашению — у неё обычные 30 000', invited.balance, 30_000);
   const aAfterInvite = (await request('GET', '/me', a.token)).body;
   // Бонус пригласившему — только после 3 комнат друга (решение владельца, 19.09.2026).
-  check('пригласившему пока ничего — бонус после 3 комнат друга', [aAfterInvite.balance, aAfterInvite.invitedCount], [10_000, 1]);
+  check('пригласившему пока ничего — бонус после 3 комнат друга', [aAfterInvite.balance, aAfterInvite.invitedCount], [30_000, 1]);
 
   check('бонус ещё не взят: день 1/7, 1 000', aAfterInvite.daily, { claimedToday: false, streak: 1, amount: 1_000 });
   const bonus = await post('/me/daily-bonus', a.token);
-  check('забрал ежедневный бонус', [bonus.body.amount, bonus.body.streak, bonus.body.balance], [1_000, 1, 11_000]);
+  check('забрал ежедневный бонус', [bonus.body.amount, bonus.body.streak, bonus.body.balance], [1_000, 1, 31_000]);
   check('второй раз за день — нельзя', (await post('/me/daily-bonus', a.token)).status, 409);
   check('на главном экране: сегодня уже взят', (await request('GET', '/me', a.token)).body.daily.claimedToday, true);
 
@@ -172,11 +172,11 @@ async function main() {
   // карточка с 9.4 шире (stats, isFriend, avatar, rating) — здесь важны только код и имя
   const card = (await request('GET', `/players/${bMe.code}`, a.token)).body;
   check('найти игрока по коду перед подарком', { code: card.code, name: card.name }, { code: bMe.code, name: 'Ержан' });
-  check('больше 1 000 подарить нельзя', (await post('/gifts', a.token, { toCode: bMe.code, amount: 1_100 })).body.error, 'bad amount');
+  check('больше 10 000 подарить нельзя', (await post('/gifts', a.token, { toCode: bMe.code, amount: 10_100 })).body.error, 'bad amount');
   check('себе — нельзя', (await post('/gifts', a.token, { toCode: aMe.code, amount: 400 })).body.error, 'self');
   const gift = await post('/gifts', a.token, { toCode: bMe.code, amount: 400 });
-  check('подарил 400', [gift.status, gift.body.balance, gift.body.to?.name], [200, 10_600, 'Ержан']);
-  check('получатель получил', (await request('GET', '/me', b.token)).body.balance, 10_400);
+  check('подарил 400', [gift.status, gift.body.balance, gift.body.to?.name], [200, 30_600, 'Ержан']);
+  check('получатель получил', (await request('GET', '/me', b.token)).body.balance, 30_400);
   check('второй подарок в тот же день — нельзя', (await post('/gifts', a.token, { toCode: bMe.code, amount: 100 })).body.error, 'already gifted today');
 
   const serikBefore = (await request('GET', `/rooms/${roomId}`, serik.token)).body.players.find((p: any) => p.id === serik.id);
@@ -244,7 +244,7 @@ async function main() {
   section('реакции и ссылки-приглашения (этап 9.7)');
   const stage = (await request('GET', `/rooms/${roomId}`, serik.token)).body.game.stage;
   if (stage !== 'round_done' && stage !== 'room_done') {
-    check('во время торгов смайлик не отправить', (await post(`/rooms/${roomId}/react`, serik.token, { emoji: '👍' })).status, 409);
+    check('смайлик — и во время торгов (с 25.09.2026)', (await post(`/rooms/${roomId}/react`, serik.token, { emoji: '👍' })).status, 200);
   }
   check('в комнате есть список реакций', Array.isArray((await request('GET', `/rooms/${roomId}`, serik.token)).body.reactions), true);
 
