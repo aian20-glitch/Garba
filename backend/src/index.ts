@@ -2912,6 +2912,8 @@ app.get('/rooms/open', (req, res) => {
       players: room.players.length,
       creatorName: room.players.find((p) => p.id === room.creatorId)?.name ?? '',
       settings: room.settings,
+      // Игра уже идёт, но освободилось место (24.09.2026).
+      started: room.status === 'started',
     };
   });
   return res.json({ rooms: list });

@@ -36,6 +36,8 @@ class _GameTableScreenState extends State<GameTableScreen> {
   int announcementSeq = 0;
   int seenBids = 0;
   String seenSpecial = '';
+  String seenLeave = '';
+  bool leaving = false;
   bool firstAnnounce = true;
   // Итог раздачи всплывает поверх стола; закрытый нажатием больше не показываем.
   String? dismissedResultKey;
@@ -313,6 +315,16 @@ class _GameTableScreenState extends State<GameTableScreen> {
     }
     seenSpecial = specialKey;
 
+    // Кто-то ушёл из игры — кон разделили между оставшимися (RULES.md §13b).
+    final leave = game['lastLeave'];
+    final leaveKey = leave is Map ? '${leave['playerId']}-${leave['kon']}-${(data['vacancies'] ?? '')}' : '';
+    if (leave is Map && leaveKey != seenLeave) {
+      final kon = (leave['kon'] as num?)?.toInt() ?? 0;
+      text = '${leave['name']} ${leave['reason'] == 'left' ? 'вышел' : 'не вернулся'}'
+          '${kon > 0 ? ' — кон ${fmtCoins(kon)} разделили, по ${fmtCoins((leave['perPlayer'] as num).toInt())}' : ''}';
+    }
+    seenLeave = leaveKey;
+
     if (firstAnnounce) {
       firstAnnounce = false;
       return;
@@ -541,6 +553,42 @@ class _GameTableScreenState extends State<GameTableScreen> {
     }
   }
 
+  // Выйти из игры между раздачами (RULES.md §13b): кон делят оставшиеся, рейтинг −1.0,
+  // место ждёт нового игрока. Сначала спрашиваем.
+  Future<void> leaveGame(int kon) async {
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Выйти из игры?'),
+        content: Text(
+          '${kon > 0 ? 'Кон ${fmtCoins(kon)} разделят между остальными игроками.\n' : ''}'
+          'Рейтинг −1.0. Ваше место займёт другой игрок.',
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('ОСТАТЬСЯ')),
+          TextButton(onPressed: () => Navigator.pop(context, true), child: const Text('ВЫЙТИ')),
+        ],
+      ),
+    );
+    if (ok != true || leaving) return;
+    setState(() => leaving = true);
+    try {
+      final response = await http.post(
+        Uri.parse('${roomUrl()}/leave'),
+        headers: authHeaders(),
+        body: jsonEncode({}),
+      );
+      expectStatus(response, const [200]);
+      if (!mounted) return;
+      Navigator.of(context).popUntil((r) => r.isFirst);
+    } catch (e) {
+      if (!mounted) return;
+      showGarbaError(context, e, prefix: 'Не удалось выйти');
+    } finally {
+      if (mounted) setState(() => leaving = false);
+    }
+  }
+
   // Главный сдаётся — признаёт поражение в раздаче (RULES.md §10.7). Сначала спрашиваем.
   // twoMains — главных двое: сдавшийся доигрывает как обычный противник.
   Future<void> confirmConcede(int loss, bool twoMains) async {
@@ -726,10 +774,47 @@ class _GameTableScreenState extends State<GameTableScreen> {
       );
     }
 
+    // Меня за столом больше нет: вышел или не вернулся за 5 минут (RULES.md §13, §13b).
+    final seated = ((data['players'] as List?) ?? const [])
+        .any((p) => (p as Map)['id'].toString() == widget.currentPlayerId);
+    if (!seated && data['status'] == 'started') {
+      return Scaffold(
+        appBar: backOnlyAppBar(),
+        body: Padding(
+          padding: const EdgeInsets.all(20),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              const Spacer(),
+              const Text(
+                'Вы вышли из этой игры',
+                textAlign: TextAlign.center,
+                style: TextStyle(fontSize: 22, fontWeight: FontWeight.w800),
+              ),
+              const SizedBox(height: 12),
+              const Text(
+                'Ваше место свободно — его займёт другой игрок.',
+                textAlign: TextAlign.center,
+                style: TextStyle(color: Colors.white70),
+              ),
+              const Spacer(),
+              GarbaButton(
+                label: 'В ГЛАВНОЕ МЕНЮ',
+                onTap: () => Navigator.of(context).popUntil((r) => r.isFirst),
+              ),
+            ],
+          ),
+        ),
+      );
+    }
+
     final game = Map<String, dynamic>.from(data['game'] as Map);
     final stage = game['stage'].toString();
     final dealerId = game['dealerId'].toString();
-    final dealerName = game['dealerName'].toString();
+    // Раздающий вышел — раздавать будет тот, кто сядет на его место (RULES.md §13b).
+    final dealerSeated = ((data['players'] as List?) ?? const [])
+        .any((p) => (p as Map)['id'].toString() == dealerId);
+    final dealerName = dealerSeated ? game['dealerName'].toString() : 'новый игрок';
     final isDealer = dealerId == widget.currentPlayerId;
 
     // Открытая карта и козырь — разные вещи: при 4 игроках козырь всегда
@@ -885,7 +970,13 @@ class _GameTableScreenState extends State<GameTableScreen> {
             .map((e) => Map<String, dynamic>.from(e as Map))
             .toList()
         : <Map<String, dynamic>>[];
-    final paused = pausedPlayers.isNotEmpty;
+    // Свободные места: кто-то вышел, ждём нового игрока (RULES.md §13b).
+    final vacancies = pauseRaw is Map
+        ? ((pauseRaw['vacancies'] as List?) ?? const [])
+            .map((e) => Map<String, dynamic>.from(e as Map))
+            .toList()
+        : <Map<String, dynamic>>[];
+    final paused = pausedPlayers.isNotEmpty || vacancies.isNotEmpty;
     final pauseElapsed = DateTime.now().difference(pauseReceivedAt).inSeconds;
     // Время на ход (RULES.md §13a): сколько секунд осталось тому, кого ждём.
     final turnLeftRaw = (game['turnSecondsLeft'] as num?)?.toInt();
@@ -1363,6 +1454,7 @@ class _GameTableScreenState extends State<GameTableScreen> {
         0,
         players.indexWhere((p) => p['id'].toString() == widget.currentPlayerId),
       );
+      final mySeat = (players[myIndex]['seat'] as num?)?.toInt() ?? myIndex;
       // Взятка только что закрылась — ещё показываем её, чтобы была видна последняя
       // карта и кто забрал.
       // После раздачи последняя взятка лежит на столе, пока не откроется итог.
@@ -1712,7 +1804,7 @@ class _GameTableScreenState extends State<GameTableScreen> {
           // другие всплывающие сообщения лежат поверх него и размер не меняют.
           // За столом на 6–7 человек нужно больше вертикального пространства:
           // так места по окружности не слипаются и боковые соседи не перекрывают центр.
-          final crowdedTable = n >= 6;
+          final crowdedTable = capacity >= 6;
           final preferredHeight = (width * (crowdedTable ? 1.65 : 1.52)).clamp(
             410.0,
             crowdedTable ? 640.0 : 580.0,
@@ -1751,8 +1843,8 @@ class _GameTableScreenState extends State<GameTableScreen> {
                     final y = -math.sin(angle);
                     final horizontalSpread = crowdedTable ? 0.94 : 0.9;
                     final verticalSpread = crowdedTable ? 0.73 : 0.8;
-                    final isNeighbour = crowdedTable && (k == 1 || k == n - 1);
-                    final isTopPair = n == 7 && (k == 3 || k == 4);
+                    final isNeighbour = crowdedTable && (k == 1 || k == capacity - 1);
+                    final isTopPair = capacity == 7 && (k == 3 || k == 4);
                     final target = Alignment(
                       (x * horizontalSpread +
                               (isTopPair ? (x.isNegative ? -0.10 : 0.10) : 0.0))
@@ -1777,10 +1869,41 @@ class _GameTableScreenState extends State<GameTableScreen> {
                       ),
                     ];
                   }(),
+                // Свободные места — пустой стул на своём месте (RULES.md §13b).
+                for (final v in vacancies) () {
+                  final k = ((v['seat'] as num).toInt() - mySeat + capacity) % capacity;
+                  final angle = -math.pi / 2 + 2 * math.pi * k / capacity;
+                  return Align(
+                    alignment: Alignment(
+                      (math.cos(angle) * (crowdedTable ? 0.94 : 0.9)).clamp(-1.0, 1.0),
+                      (-math.sin(angle) * (crowdedTable ? 0.73 : 0.8)).clamp(-1.0, 1.0),
+                    ),
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Container(
+                          width: 44,
+                          height: 44,
+                          decoration: BoxDecoration(
+                            shape: BoxShape.circle,
+                            color: const Color(0x66000000),
+                            border: Border.all(color: Colors.white38, width: 2),
+                          ),
+                          child: const Icon(Icons.event_seat, color: Colors.white54),
+                        ),
+                        const SizedBox(height: 3),
+                        const Text('ждём игрока',
+                            style: TextStyle(fontSize: 10, color: Colors.white70)),
+                      ],
+                    ),
+                  );
+                }(),
                 for (var i = 0; i < n; i++) ...() {
-                  // Смещение от меня по кругу: 0 — я (внизу), 1 — сосед справа, …
-                  final k = (i - myIndex + n) % n;
-                  final angle = -math.pi / 2 + 2 * math.pi * k / n;
+                  // Смещение от меня по кругу по номерам мест: 0 — я (внизу), 1 — сосед
+                  // справа, … Свободное место остаётся на своём месте.
+                  final seatNo = (players[i]['seat'] as num?)?.toInt() ?? i;
+                  final k = (seatNo - mySeat + capacity) % capacity;
+                  final angle = -math.pi / 2 + 2 * math.pi * k / capacity;
                   final x = math.cos(angle);
                   final y = -math.sin(angle);
                   final p = players[i];
@@ -1788,8 +1911,8 @@ class _GameTableScreenState extends State<GameTableScreen> {
                   final card = trickCardOf[pId];
                   final horizontalSpread = crowdedTable ? 0.94 : 0.9;
                   final verticalSpread = crowdedTable ? 0.73 : 0.8;
-                  final isNeighbour = crowdedTable && (k == 1 || k == n - 1);
-                  final isTopPair = n == 7 && (k == 3 || k == 4);
+                  final isNeighbour = crowdedTable && (k == 1 || k == capacity - 1);
+                  final isTopPair = capacity == 7 && (k == 3 || k == 4);
                   final seatX = (x * horizontalSpread +
                           (isTopPair ? (x.isNegative ? -0.10 : 0.10) : 0.0))
                       .clamp(-1.0, 1.0);
@@ -2035,10 +2158,12 @@ class _GameTableScreenState extends State<GameTableScreen> {
                           crossAxisAlignment: CrossAxisAlignment.stretch,
                           children: [
                             Text(
-                              pausedPlayers
-                                  .map((p) =>
-                                      '${p['name']} ${p['reason'] == 'away' ? 'отошёл' : 'отключился'} — ждём ${countdown(p)}')
-                                  .join('\n'),
+                              [
+                                for (final p in pausedPlayers)
+                                  '${p['name']} ${p['reason'] == 'away' ? 'отошёл' : 'отключился'} — ждём ${countdown(p)}',
+                                for (final v in vacancies)
+                                  'Место свободно — ждём нового игрока ${countdown(v)}',
+                              ].join('\n'),
                               textAlign: TextAlign.center,
                               style: const TextStyle(
                                 color: Color(0xFFFFC04D),
@@ -2047,14 +2172,30 @@ class _GameTableScreenState extends State<GameTableScreen> {
                               ),
                             ),
                             const SizedBox(height: 5),
-                            const Text(
-                              'Не вернётся — игра прекратится, кон разделят оставшиеся игроки.',
+                            Text(
+                              vacancies.isNotEmpty && pausedPlayers.isEmpty
+                                  ? 'Никто не сядет — игра закончится, кон разделят оставшиеся.'
+                                  : 'Не вернётся — его место освободится, кон разделят оставшиеся.',
                               textAlign: TextAlign.center,
-                              style: TextStyle(
+                              style: const TextStyle(
                                 color: Colors.white70,
                                 fontSize: 11,
                               ),
                             ),
+                            if (vacancies.isNotEmpty)
+                              Padding(
+                                padding: const EdgeInsets.only(top: 8),
+                                child: OutlinedButton.icon(
+                                  onPressed: () => SharePlus.instance.share(
+                                    ShareParams(
+                                      text: 'Освободилось место в ГАРБЕ! Заходи в комнату #${widget.roomCode}: '
+                                          '${roomLink(widget.roomCode)}',
+                                    ),
+                                  ),
+                                  icon: const Icon(Icons.share, size: 18),
+                                  label: const Text('ПОЗВАТЬ ИГРОКА'),
+                                ),
+                              ),
                             if (iAmAway)
                               Padding(
                                 padding: const EdgeInsets.only(top: 8),
@@ -2356,6 +2497,14 @@ class _GameTableScreenState extends State<GameTableScreen> {
                             : () => sendSpecial('end-game', {'choice': 'yes'}),
                         icon: const Icon(Icons.bedtime_outlined, size: 18),
                         label: const Text('ЗАКОНЧИТЬ ИГРУ'),
+                      ),
+                    // Выйти — только между раздачами (RULES.md §13b).
+                    if (endVote == null)
+                      TextButton.icon(
+                        onPressed: leaving ? null : () => leaveGame(kon),
+                        icon: const Icon(Icons.logout, size: 18),
+                        label: const Text('ВЫЙТИ ИЗ ИГРЫ'),
+                        style: TextButton.styleFrom(foregroundColor: Colors.white54),
                       ),
                   ],
                 )

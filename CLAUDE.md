@@ -284,11 +284,16 @@ POST /rooms/quick                {} → комната: сесть в самую
                                  открытую (5 игроков, взнос 100); 409 already in another room; 403
 POST /rooms/:id/visibility       { isPublic } — открыть для всех / только по коду; создатель, в лобби
 GET  /rooms/:id
-POST /rooms/:id/join             {}   403 { error: 'not enough coins to enter',
+POST /rooms/:id/seat             { seat }   пересесть на свободное место — только в лобби (24.09.2026);
+                                 409 seat taken | game already started; 400 bad seat
+POST /rooms/:id/join             { seat? }   место — выбранное или первое свободное; в начатую
+                                      игру — только на освободившееся место (§13b); 403 { error: 'not enough coins to enter',
                                            minBalance, balance }, если денег меньше минимума;
                                       409 already in another room
-POST /rooms/:id/leave            {}   выйти из лобби (только до старта); ушёл создатель —
-                                      комната закрывается для всех (status: finished)
+POST /rooms/:id/leave            {}   в лобби — выйти (ушёл создатель — комната закрывается);
+                                      в игре — только между раздачами (§13b, 24.09.2026): кон
+                                      делится между оставшимися, −1.0 рейтинга, место свободно
+                                      → { left: true }; 409 can leave only between deals
 POST /rooms/:id/start            {}   только создатель
 POST /rooms/:id/dealer/continue  {}   только раздающий (не создатель!);
                                  в стадиях dealer_found, awaiting_deal, round_done
@@ -419,6 +424,16 @@ pause: null | { players: [{ id, name, secondsLeft }] }   — на уровне �
 5 минут — **общий запас на всю игру** и на `offline`, и на `away` (`absenceStep` в `presence.ts`):
 потрачено — `game.absenceUsedMs` (в базе), текущий отрезок — в памяти; `pause.players[].secondsLeft`
 — остаток запаса.
+
+**Места и замена ушедшего (24.09.2026, `seats.ts`, RULES.md §2, §13, §13b).** У игрока
+`players[].seat` 0…capacity−1; `room.players` всегда отсортирован по месту (следующий — сосед
+справа), при старте не перемешивается. Ушёл (`vacateSeat`) — кон делится между оставшимися
+(`game.lastLeave`), место в `room.vacancies` и `pause.vacancies: [{ seat, secondsLeft }]`, ходы на
+паузе (закончить игру по согласию — можно). Сел новый — пустой кон, со следующей раздачи играет;
+был раздающим — раздаёт новый. 10 минут никто не сел — `closeReason: 'seat_empty'`
+(`GARBA_VACANCY_MS`). Пропал на 5 минут посреди раздачи — `game.goneIds`: главный сразу
+сдаётся, за него ходит таймер через 1,5 с, после раздачи место свободно. В `/rooms/open` —
+и начатые открытые игры со свободным местом (`started: true`).
 
 **Живые обновления — Socket.IO** (с этапа 8), тот же порт 3000:
 

@@ -128,6 +128,165 @@ class _LobbyScreenState extends State<LobbyScreen> {
     }
   }
 
+  // Пересесть на свободное место — до начала игры (RULES.md §2). Решает сервер.
+  Future<void> changeSeat(int seat) async {
+    try {
+      final response = await http.post(
+        Uri.parse('$apiBase/rooms/${widget.roomCode}/seat'),
+        headers: authHeaders(),
+        body: jsonEncode({'seat': seat}),
+      );
+      expectStatus(response, const [200]);
+      applyRoom(jsonDecode(response.body) as Map<String, dynamic>);
+    } catch (e) {
+      if (!mounted) return;
+      showGarbaError(context, e, prefix: 'Не удалось пересесть');
+    }
+  }
+
+  // Лобби — сразу стол (24.09.2026): я внизу, остальные по кругу против часовой, как за
+  // игрой; свободный стул можно нажать и пересесть.
+  Widget seatTable({
+    required List<Map<String, dynamic>> players,
+    required int capacity,
+    required String creatorId,
+    required Set<String>? readyIds,
+    required int readyLeft,
+  }) {
+    const gold = Color(0xFFD4A94F);
+    final me = players.where((p) => p['id'].toString() == widget.currentPlayerId).firstOrNull;
+    final mySeat = (me?['seat'] as num?)?.toInt() ?? 0;
+    Map<String, dynamic>? atSeat(int seat) => players
+        .where((p) => ((p['seat'] as num?)?.toInt() ?? players.indexOf(p)) == seat)
+        .firstOrNull;
+
+    Widget seatView(int seat) {
+      final p = atSeat(seat);
+      if (p == null) {
+        return GestureDetector(
+          onTap: me == null ? null : () => changeSeat(seat),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Container(
+                width: 48,
+                height: 48,
+                decoration: BoxDecoration(
+                  shape: BoxShape.circle,
+                  color: const Color(0x55000000),
+                  border: Border.all(color: Colors.white38, width: 2),
+                ),
+                child: const Icon(Icons.event_seat, color: Colors.white54, size: 24),
+              ),
+              const SizedBox(height: 4),
+              const Text('Свободно', style: TextStyle(fontSize: 11, color: Colors.white70)),
+              if (me != null)
+                const Text('нажмите — пересесть', style: TextStyle(fontSize: 9, color: Colors.white38)),
+            ],
+          ),
+        );
+      }
+      final id = p['id'].toString();
+      final ready = readyIds?.contains(id);
+      return GestureDetector(
+        onTap: () => openPlayerCard(context, p),
+        child: SizedBox(
+          width: 92,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Container(
+                padding: const EdgeInsets.all(2),
+                decoration: BoxDecoration(
+                  shape: BoxShape.circle,
+                  border: Border.all(
+                    color: ready == null
+                        ? (id == widget.currentPlayerId ? gold : const Color(0xFF3A4A55))
+                        : ready
+                            ? Colors.greenAccent
+                            : Colors.white38,
+                    width: 2.5,
+                  ),
+                ),
+                child: AvatarView(avatar: p['avatar']?.toString(), name: p['name'].toString(), radius: 21),
+              ),
+              const SizedBox(height: 3),
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                decoration: BoxDecoration(
+                  color: const Color(0xF0121A22),
+                  borderRadius: BorderRadius.circular(8),
+                  border: Border.all(color: const Color(0xFFB6812D)),
+                ),
+                child: Column(
+                  children: [
+                    Text(
+                      p['name'].toString(),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w900),
+                    ),
+                    Text(
+                      ready == null
+                          ? '${id == creatorId ? 'Создатель · ' : ''}⭐ ${fmtRating(p['rating'])}'
+                          : ready
+                              ? 'готов'
+                              : 'ждём «ГОТОВ»',
+                      style: TextStyle(
+                        fontSize: 10,
+                        color: ready == true ? Colors.greenAccent : gold,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ),
+      );
+    }
+
+    return LayoutBuilder(builder: (context, box) {
+      return SizedBox(
+        width: box.maxWidth,
+        height: box.maxHeight,
+        child: Stack(
+          children: [
+            const Positioned.fill(child: CustomPaint(painter: KazakhTablePainter())),
+            Align(
+              alignment: Alignment.center,
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text(
+                    '${players.length} / $capacity',
+                    style: const TextStyle(fontSize: 30, fontWeight: FontWeight.w900),
+                  ),
+                  Text(
+                    readyIds == null
+                        ? (players.length < capacity ? 'ждём игроков' : '')
+                        : '«ГОТОВ» · $readyLeft',
+                    style: const TextStyle(color: gold, fontWeight: FontWeight.w800),
+                  ),
+                ],
+              ),
+            ),
+            for (var seat = 0; seat < capacity; seat++)
+              () {
+                // 0 — я внизу; следующее место (сосед справа) — правее, дальше по кругу.
+                final k = (seat - mySeat + capacity) % capacity;
+                final angle = -math.pi / 2 + 2 * math.pi * k / capacity;
+                return Align(
+                  alignment: Alignment(math.cos(angle) * 0.82, -math.sin(angle) * 0.8),
+                  child: seatView(seat),
+                );
+              }(),
+          ],
+        ),
+      );
+    });
+  }
+
   // «ГОТОВ»: нажали все — игра начнётся сама (решает сервер).
   Future<void> sendReady() async {
     if (sendingReady) return;
@@ -285,14 +444,6 @@ class _LobbyScreenState extends State<LobbyScreen> {
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
             Text(
-              '${players.length} / $capacity игроков',
-              style: const TextStyle(
-                fontSize: 28,
-                fontWeight: FontWeight.w800,
-              ),
-            ),
-            const SizedBox(height: 10),
-            Text(
               'Код комнаты: ${widget.roomCode}',
               style: const TextStyle(
                 fontSize: 20,
@@ -337,33 +488,14 @@ class _LobbyScreenState extends State<LobbyScreen> {
                 ),
               ),
             const SizedBox(height: 20),
-            // Список прокручивается: при 6–7 игроках он не влезает, и кнопки
-            // «ГОТОВ» / «ЗАКРЫТЬ КОМНАТУ» уходили за край экрана.
+            // Лобби — стол: сразу видно, кто где сидит, свободный стул — пересесть.
             Expanded(
-              child: ListView(
-                children: [
-                  ...players.map((p) {
-                    final isOwner = p['id'].toString() == creatorId;
-                    final isReady =
-                        readyCheck == null || readyIds.contains(p['id'].toString());
-                    return PlayerTile(
-                      name: p['name'].toString(),
-                      subtitle: '${isOwner ? 'Создатель' : 'Игрок'} • ⭐ ${fmtRating(p['rating'])}'
-                          '${readyCheck == null ? '' : isReady ? ' • готов' : ' • ждём «ГОТОВ»'}',
-                      ready: isReady,
-                      avatar: p['avatar']?.toString(),
-                      onTap: () => openPlayerCard(context, p),
-                    );
-                  }),
-                  ...List.generate(
-                    capacity - players.length,
-                    (_) => const PlayerTile(
-                      name: 'Свободное место',
-                      subtitle: 'Ожидание игрока',
-                      ready: false,
-                    ),
-                  ),
-                ],
+              child: seatTable(
+                players: players,
+                capacity: capacity,
+                creatorId: creatorId,
+                readyIds: readyCheck == null ? null : readyIds,
+                readyLeft: readyLeft,
               ),
             ),
             const SizedBox(height: 12),

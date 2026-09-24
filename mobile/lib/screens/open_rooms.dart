@@ -164,7 +164,7 @@ class _OpenRoomsScreenState extends State<OpenRoomsScreen> {
                     ),
                     subtitle: Text(
                       'Взнос ${fmtCoins(v('ante'))} · вход от ${fmtCoins(v('minBalance'))}\n'
-                      '${free == 1 ? 'Ждут одного игрока' : 'Свободно мест: $free'}',
+                      '${r['started'] == true ? 'Идёт игра · освободилось место' : free == 1 ? 'Ждут одного игрока' : 'Свободно мест: $free'}',
                     ),
                     isThreeLine: true,
                     trailing: FilledButton(
