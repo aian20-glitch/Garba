@@ -905,7 +905,7 @@ class _GameTableScreenState extends State<GameTableScreen> {
         .toSet();
 
     // Деньги. Все суммы считает сервер, здесь только показываем.
-    final kon = (game['kon'] as num?)?.toInt() ?? 0;
+    final serverKon = (game['kon'] as num?)?.toInt() ?? 0;
     final baseKon = (game['baseKon'] as num?)?.toInt() ?? 0;
     final razStake = (game['razStake'] as num?)?.toInt() ?? 0;
     final dvaStake = (game['dvaStake'] as num?)?.toInt() ?? 0;
@@ -939,11 +939,20 @@ class _GameTableScreenState extends State<GameTableScreen> {
     final lastAnteRaw = game['lastAnte'];
     final lastAnte =
         lastAnteRaw is Map ? Map<String, dynamic>.from(lastAnteRaw) : null;
+    // Три ИЗЖОГИ: сервер уже взял доливку, но на экране сначала открываются все три
+    // ИЗЖОГИ, и только потом монеты уходят в кон (просьба владельца, 24.09.2026).
+    final holdAnte = threeIzzhogaLocked &&
+        lastAnte != null &&
+        lastAnte['reason'] == 'three_izzhoga' &&
+        lastAnte['skipped'] != true &&
+        lastAnte['noRaz'] != true;
+    final anteBack = holdAnte ? (lastAnte['perPlayer'] as num?)?.toInt() ?? 0 : 0;
+    final kon = holdAnte ? serverKon - ((lastAnte['total'] as num?)?.toInt() ?? 0) : serverKon;
 
     int balanceOf(String playerId) {
       final matches = players.where((p) => p['id'].toString() == playerId);
       if (matches.isEmpty) return 0;
-      return (matches.first['balance'] as num?)?.toInt() ?? 0;
+      return ((matches.first['balance'] as num?)?.toInt() ?? 0) + anteBack;
     }
 
 
@@ -1955,9 +1964,8 @@ class _GameTableScreenState extends State<GameTableScreen> {
     final String? resultKey = isRoundDone && result.isNotEmpty
         ? 'r-$konBefore-$kon-${playedTricks.length}-'
             '${result.map((r) => '${r['playerId']}${r['delta']}').join()}'
-        : stage == 'awaiting_deal' &&
-                redealText != null &&
-                game['lastRedeal'] != 'three_izzhoga'
+        // После трёх ИЗЖОГ окно «кто сколько долил» — когда ИЗЖОГИ показаны.
+        : stage == 'awaiting_deal' && redealText != null && !threeIzzhogaLocked
             ? 'a-$kon-${game['emptyStreak']}-${game['lastRedeal']}'
             : null;
     if (resultKey != null &&
