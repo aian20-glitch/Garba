@@ -31,3 +31,7 @@ flutter:
     - assets/sounds/ready.wav
     - assets/sounds/card.mp3
     - assets/sounds/garba.wav
+    - assets/sounds/move.wav
+    - assets/sounds/raz.wav
+    - assets/sounds/dva.wav
+    - assets/sounds/kon.wav

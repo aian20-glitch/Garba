@@ -114,6 +114,7 @@ class RoomLink {
 // игра идёт без него.
 class GarbaSounds {
   static AudioPool? _card;
+  static AudioPool? _move;
   static final _alert = AudioPlayer();
 
   static Future<void> init() async {
@@ -129,6 +130,7 @@ class GarbaSounds {
         ),
       ));
       _card = await AudioPool.createFromAsset(path: 'sounds/card.mp3', maxPlayers: 4);
+      _move = await AudioPool.createFromAsset(path: 'sounds/move.wav', maxPlayers: 3);
     } catch (e) {
       debugPrint('Звук недоступен: $e');
     }
@@ -145,6 +147,24 @@ class GarbaSounds {
   static void garba() {
     _garba.play(AssetSource('sounds/garba.wav')).catchError((Object e) {
       debugPrint('Звук ГАРБЫ не проигрался: $e');
+    });
+  }
+
+  // Ход картой — короткий стук (24.09.2026).
+  static void move() {
+    _move?.start(volume: 0.7).catchError((Object e) {
+      debugPrint('Звук хода не проигрался: $e');
+      return () async {};
+    });
+  }
+
+  // Заявка: РАЗ — одна нота, ДВА — две, КОН — три по нарастающей (24.09.2026).
+  static final _bid = AudioPlayer();
+  static void bid(String bid) {
+    final file = switch (bid) { 'РАЗ' => 'raz', 'ДВА' => 'dva', 'КОН' => 'kon', _ => null };
+    if (file == null) return;
+    _bid.play(AssetSource('sounds/$file.wav')).catchError((Object e) {
+      debugPrint('Звук заявки не проигрался: $e');
     });
   }
 

@@ -37,6 +37,9 @@ class _GameTableScreenState extends State<GameTableScreen> {
   int seenBids = 0;
   String seenSpecial = '';
   String seenLeave = '';
+  // Сколько карт уже сыграно в раздаче — новая карта на столе звучит (24.09.2026).
+  String playedKey = '';
+  int playedSeen = 0;
   bool leaving = false;
   bool firstAnnounce = true;
   // Итог раздачи всплывает поверх стола; закрытый нажатием больше не показываем.
@@ -298,13 +301,26 @@ class _GameTableScreenState extends State<GameTableScreen> {
     }
 
     String? text;
+    String? bidSound;
     final bids = (game['bids'] as List?) ?? const [];
     if (bids.length < seenBids) seenBids = 0; // новая раздача — заявки с нуля
     for (var i = seenBids; i < bids.length; i++) {
       final b = Map<String, dynamic>.from(bids[i] as Map);
-      if (b['bid'] != 'ПАС') text = '${nameOf(b['playerId'].toString())} — ${b['bid']}!';
+      if (b['bid'] != 'ПАС') {
+        text = '${nameOf(b['playerId'].toString())} — ${b['bid']}!';
+        bidSound = b['bid'].toString();
+      }
     }
     seenBids = bids.length;
+
+    // Карты на столе: взятки раздачи + текущая. Появилась новая — стук.
+    final dealKey = '${game['dealNumber']}';
+    final played = ((game['playedTricks'] as List?) ?? const [])
+            .fold<int>(0, (n, t) => n + (((t as Map)['cards'] as List?)?.length ?? 0)) +
+        ((game['currentTrick'] as List?)?.length ?? 0);
+    final newCard = dealKey == playedKey && played > playedSeen;
+    playedKey = dealKey;
+    playedSeen = played;
 
     final special = game['special'];
     final holder = special is Map ? special['holderId']?.toString() : null;
@@ -329,6 +345,8 @@ class _GameTableScreenState extends State<GameTableScreen> {
       firstAnnounce = false;
       return;
     }
+    if (newCard) GarbaSounds.move();
+    if (bidSound != null) GarbaSounds.bid(bidSound);
     if (text == null) return;
     final id = ++announcementSeq;
     setState(() => announcement = (id: id, text: text!));
