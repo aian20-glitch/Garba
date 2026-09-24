@@ -1696,14 +1696,14 @@ class _GameTableScreenState extends State<GameTableScreen> {
                   ),
                 ),
               ),
+            // Смайлик — прямо на аватарке, крупно.
             if (flyingEmoji[pId] != null)
               Positioned(
-                right: -22,
-                bottom: -4,
-                child: Text(
-                  flyingEmoji[pId]!,
-                  style: const TextStyle(fontSize: 22),
-                ),
+                left: -6,
+                top: -6,
+                right: -6,
+                bottom: -6,
+                child: AvatarEmoji(key: ValueKey('${pId}_${flyingEmoji[pId]}_$lastReactionId'), emoji: flyingEmoji[pId]!),
               ),
           ],
         );
@@ -1982,6 +1982,12 @@ class _GameTableScreenState extends State<GameTableScreen> {
                       ),
                   ];
                 }(),
+                // Смайлики — в любой момент (RULES.md §14, 25.09.2026).
+                Positioned(
+                  right: 8,
+                  bottom: 8,
+                  child: EmojiButton(onSend: sendReaction),
+                ),
               ],
             ),
           );
@@ -2151,22 +2157,6 @@ class _GameTableScreenState extends State<GameTableScreen> {
                                 const SizedBox(height: 16),
                                 footer,
                               ],
-                      // Смайлики — только когда раздача сыграна или комната закрыта
-                      // (RULES.md §14: чата во время игры нет).
-                      if (isRoundDone || isRoomDone) ...[
-                        const SizedBox(height: 12),
-                        const Divider(),
-                        Wrap(
-                          alignment: WrapAlignment.center,
-                          spacing: 4,
-                          children: tableReactions
-                              .map((emoji) => IconButton(
-                                    onPressed: sendingReaction ? null : () => sendReaction(emoji),
-                                    icon: Text(emoji, style: const TextStyle(fontSize: 24)),
-                                  ))
-                              .toList(),
-                        ),
-                      ],
                     ],
                     ),
                   ),

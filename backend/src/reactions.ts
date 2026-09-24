@@ -1,14 +1,12 @@
 // Реакции и смайлики (RULES.md §14, этап 9.7). Чистые функции.
 //
-// Текстового чата во время игры нет — только готовые смайлики, и только когда
-// игроки смотрят итог: после раздачи и после закрытия комнаты.
+// Текстового чата нет — только готовые смайлики. С 25.09.2026 (решение владельца) —
+// в любой момент: в лобби, в торгах, в розыгрыше, после раздачи и после игры.
 
 // Набор смайликов. Свои тексты слать нельзя — это был бы чат.
 export const REACTIONS = ['👍', '👏', '😂', '😎', '😮', '🤔', '😭', '😡', '🔥', '🤝', '🙈', '🎉'] as const;
 export type Reaction = (typeof REACTIONS)[number];
 
-// Когда можно: раздача сыграна или комната закрыта.
-export const REACTION_STAGES = ['round_done', 'room_done'];
 
 export const REACTION_COOLDOWN_MS = 2_000; // не чаще раза в 2 секунды от игрока
 export const REACTIONS_KEPT = 20; // сколько последних реакций помнит комната
@@ -30,7 +28,7 @@ export function addReaction(
   emoji: unknown,
   now: number,
 ): ReactionEntry[] | ReactionError {
-  if (!REACTION_STAGES.includes(stage)) return 'not now';
+  void stage; // когда угодно (25.09.2026); стадия остаётся в подписи для журнала
   if (!isReaction(emoji)) return 'unknown emoji';
 
   const last = [...list].reverse().find((r) => r.playerId === playerId);

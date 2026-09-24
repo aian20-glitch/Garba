@@ -27,6 +27,42 @@ class _LobbyScreenState extends State<LobbyScreen> {
   DateTime readyReceivedAt = DateTime.now();
   bool hadReadyCheck = false;
   Timer? readyTicker;
+  // Смайлики в лобби (RULES.md §14, 25.09.2026): кто что отправил — на его аватарке 3 секунды.
+  final flyingEmoji = <String, String>{};
+  int lastReactionId = 0;
+  bool firstReactions = true;
+
+  void applyReactions(List reactions) {
+    for (final raw in reactions) {
+      final r = Map<String, dynamic>.from(raw as Map);
+      final id = (r['id'] as num).toInt();
+      if (id <= lastReactionId) continue;
+      lastReactionId = id;
+      if (firstReactions) continue;
+      final playerId = r['playerId'].toString();
+      final emoji = r['emoji'].toString();
+      flyingEmoji[playerId] = emoji;
+      Timer(const Duration(seconds: 3), () {
+        if (!mounted) return;
+        setState(() {
+          if (flyingEmoji[playerId] == emoji) flyingEmoji.remove(playerId);
+        });
+      });
+    }
+    firstReactions = false;
+  }
+
+  Future<void> sendReaction(String emoji) async {
+    try {
+      await http.post(
+        Uri.parse('$apiBase/rooms/${widget.roomCode}/react'),
+        headers: authHeaders(),
+        body: jsonEncode({'emoji': emoji}),
+      );
+    } catch (_) {
+      // Не дошло — не беда, это просто смайлик.
+    }
+  }
 
   @override
   void initState() {
@@ -83,6 +119,7 @@ class _LobbyScreenState extends State<LobbyScreen> {
   void applyRoom(Map<String, dynamic> data) {
     if (!mounted) return;
 
+    applyReactions((data['reactions'] as List?) ?? const []);
     final hasReadyCheck = data['readyCheck'] is Map;
     setState(() {
       room = data;
@@ -208,7 +245,20 @@ class _LobbyScreenState extends State<LobbyScreen> {
                     width: 2.5,
                   ),
                 ),
-                child: AvatarView(avatar: p['avatar']?.toString(), name: p['name'].toString(), radius: 21),
+                child: Stack(
+                  clipBehavior: Clip.none,
+                  children: [
+                    AvatarView(avatar: p['avatar']?.toString(), name: p['name'].toString(), radius: 21),
+                    if (flyingEmoji[id] != null)
+                      Positioned(
+                        left: -5,
+                        top: -5,
+                        right: -5,
+                        bottom: -5,
+                        child: AvatarEmoji(key: ValueKey('${id}_${flyingEmoji[id]}_$lastReactionId'), emoji: flyingEmoji[id]!),
+                      ),
+                  ],
+                ),
               ),
               const SizedBox(height: 3),
               Container(
@@ -271,6 +321,7 @@ class _LobbyScreenState extends State<LobbyScreen> {
                 ],
               ),
             ),
+            Positioned(right: 10, bottom: 10, child: EmojiButton(onSend: sendReaction)),
             for (var seat = 0; seat < capacity; seat++)
               () {
                 // 0 — я внизу; следующее место (сосед справа) — правее, дальше по кругу.

@@ -4,8 +4,8 @@ import { check, section } from './check.js';
 import { addReaction, isPlayerCode, isRoomCode, REACTIONS_KEPT, type ReactionEntry } from '../src/reactions.js';
 
 section('реакции и смайлики (§14)');
-check('во время торгов — нельзя', addReaction([], 'bidding', 'a', '👍', 0), 'not now');
-check('во время розыгрыша — нельзя', addReaction([], 'playing', 'a', '👍', 0), 'not now');
+check('в любой момент — и в торгах, и в розыгрыше, и в лобби (25.09.2026)',
+  ['bidding', 'playing', 'lobby'].map((st) => Array.isArray(addReaction([], st, 'a', '👍', 0))), [true, true, true]);
 check('свой текст — нельзя, это был бы чат', addReaction([], 'round_done', 'a', 'привет', 0), 'unknown emoji');
 
 let list = addReaction([], 'round_done', 'a', '👍', 1_000) as ReactionEntry[];

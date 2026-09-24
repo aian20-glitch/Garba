@@ -1473,7 +1473,7 @@ setInterval(() => {
 
 // Запрос игрока к своей комнате — тоже знак, что он на месте (приложение без сокета
 // опрашивает сервер). На паузе ходы не принимаются: ждём отключившегося.
-const LOBBY_ACTIONS = ['/join', '/leave', '/ready', '/back'];
+const LOBBY_ACTIONS = ['/join', '/leave', '/ready', '/back', '/react'];
 app.use('/rooms/:id', (req, res, next) => {
   const room = rooms.get(req.params.id);
   if (!room || !tracksPresence(room)) return next();
@@ -3611,8 +3611,8 @@ app.post('/rooms/:id/kon-trump', (req, res) => {
 app.post('/rooms/:id/react', (req, res) => {
   const room = rooms.get(req.params.id);
 
-  if (!room || !room.game) {
-    return res.status(404).json({ error: 'room/game not found' });
+  if (!room) {
+    return res.status(404).json({ error: 'room not found' });
   }
 
   const playerId = me(res).id;
@@ -3620,7 +3620,8 @@ app.post('/rooms/:id/react', (req, res) => {
     return res.status(403).json({ error: 'player is not in this room' });
   }
 
-  const result = addReaction(room.reactions ?? [], room.game.stage, playerId, req.body?.emoji, Date.now());
+  // Смайлики — в любой момент, и в лобби (решение владельца, 25.09.2026).
+  const result = addReaction(room.reactions ?? [], room.game?.stage ?? 'lobby', playerId, req.body?.emoji, Date.now());
   if (result === 'not now') {
     return res.status(409).json({ error: 'reactions only after a deal' });
   }

@@ -312,8 +312,8 @@ POST /rooms/:id/end-game         { choice }   yes | no — закончить и
                                               между раздачами — предложение, дальше — голоса; все yes —
                                               кон поровну, room_done, closeReason 'agreed_end';
                                               30 с без ответа — «нет»; пока идёт — раздавать нельзя (409)
-POST /rooms/:id/react            { emoji }    смайлик (этап 9.7): только в round_done и room_done;
-                                 409 не сейчас, 400 не из набора, 429 чаще раза в 2 секунды
+POST /rooms/:id/react            { emoji }    смайлик — в любой момент, и в лобби, и на паузе (25.09.2026);
+                                 400 не из набора, 429 чаще раза в 2 секунды
 
 — служебное, только с этого компьютера (23.09.2026) —
 POST /admin/coins                { code | id, amount }  → { name, amount, balance }; через moveCoins;
