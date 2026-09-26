@@ -186,41 +186,12 @@ class _ProfileScreenState extends State<ProfileScreen> {
           : ListView(
               padding: const EdgeInsets.all(20),
               children: [
-                if (avatarsEnabled) ...[
-                  Center(
-                    child: GestureDetector(
-                      onTap: () async {
-                        final avatar = await pickAndUploadAvatar(context);
-                        if (avatar != null && mounted)
-                          setState(() => p['avatar'] = avatar);
-                      },
-                      child: Stack(
-                        children: [
-                          AvatarView(
-                              avatar: p['avatar']?.toString(),
-                              name: p['name'].toString(),
-                              radius: 56),
-                          const Positioned(
-                            right: 0,
-                            bottom: 0,
-                            child: CircleAvatar(
-                                radius: 16,
-                                child: Icon(Icons.photo_camera, size: 18)),
-                          ),
-                        ],
-                      ),
-                    ),
-                  ),
-                  const SizedBox(height: 4),
-                  const Center(
-                    child: Text('Нажмите на фото, чтобы сменить',
-                        style: TextStyle(color: Colors.white54)),
-                  ),
-                ] else
-                  Center(
-                    child: AvatarView(
-                        avatar: null, name: p['name'].toString(), radius: 56),
-                  ),
+                // Фото выключены (26.09.2026) — вместо аватара первая буква имени.
+                // Выбор фото из галереи — в истории git (коммит до «Убрать выбор фото»).
+                Center(
+                  child: AvatarView(
+                      avatar: null, name: p['name'].toString(), radius: 56),
+                ),
                 const SizedBox(height: 12),
                 Text(
                   p['name'].toString(),
@@ -758,44 +729,5 @@ class AvatarView extends StatelessWidget {
           style:
               TextStyle(fontSize: radius * 0.9, fontWeight: FontWeight.w800)),
     );
-  }
-}
-
-// Выбрать фото в галерее и загрузить как аватар. Телефон сам уменьшает фото
-// до 256 точек — сервер принимает не больше 300 КБ. Возвращает новый адрес или null.
-Future<String?> pickAndUploadAvatar(BuildContext context) async {
-  final messenger = ScaffoldMessenger.of(context);
-  try {
-    final picked = await ImagePicker().pickImage(
-      source: ImageSource.gallery,
-      maxWidth: 256,
-      maxHeight: 256,
-      imageQuality: 85,
-    );
-    if (picked == null) return null; // передумал
-    final bytes = await picked.readAsBytes();
-    final response = await http.put(
-      Uri.parse('$apiBase/me/avatar'),
-      headers: {
-        'Content-Type': 'application/octet-stream',
-        'Authorization': 'Bearer ${Session.token}',
-      },
-      body: bytes,
-    );
-    if (response.statusCode == 413) {
-      messenger
-          .showSnackBar(const SnackBar(content: Text('Фото слишком большое')));
-      return null;
-    }
-    if (response.statusCode == 400) {
-      messenger
-          .showSnackBar(const SnackBar(content: Text('Это не похоже на фото')));
-      return null;
-    }
-    expectStatus(response, const [200]);
-    return (jsonDecode(response.body) as Map)['avatar']?.toString();
-  } catch (e) {
-    showGarbaError(context, e, prefix: 'Не удалось загрузить фото');
-    return null;
   }
 }

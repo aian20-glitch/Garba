@@ -5,10 +5,6 @@ part of 'main.dart';
 const _apiBaseOverride = String.fromEnvironment('API_BASE');
 // Без API_BASE — сервер на этом компьютере: Android-эмулятор видит его как 10.0.2.2,
 // симулятор iPhone — как localhost.
-// Фото-аватары выключены (26.09.2026): пока без юриста не храним фото игроков.
-// Включать вместе с GARBA_AVATARS=1 на сервере.
-const avatarsEnabled = false;
-
 final apiBase = _apiBaseOverride.isNotEmpty
     ? _apiBaseOverride
     : Platform.isIOS
