@@ -632,7 +632,7 @@ app.get('/me', (req, res) => {
 
   return res.json({
     ...account,
-    avatar: avatarPath(db, account.id),
+    avatar: avatarOf(account.id),
     rating: shownRating(accountRating(account.id)),
     roomId: activeRoomOf(account.id)?.id ?? null,
     daily: {
@@ -767,6 +767,13 @@ app.get('/i/:code', (req, res) => {
 });
 
 // --- Аватар (ТЗ §2, этап 9.5) ---
+// Фото выключены (26.09.2026, решение владельца): пока без юриста не храним фото игроков.
+// Включить — GARBA_AVATARS=1 (и avatarsEnabled в lib/core.dart). Выключены — у всех null.
+const AVATARS_ON = process.env.GARBA_AVATARS === '1';
+function avatarOf(accountId: string): string | null {
+  return AVATARS_ON ? avatarPath(db, accountId) : null;
+}
+
 // Телефон присылает уже уменьшенную картинку как есть (не JSON). Тип картинки сервер
 // определяет сам по её байтам — присланному Content-Type не верим.
 app.put(
@@ -776,6 +783,9 @@ app.put(
     const account = accountOf(req);
     if (!account) {
       return res.status(401).json({ error: 'unauthorized' });
+    }
+    if (!AVATARS_ON) {
+      return res.status(403).json({ error: 'avatars disabled' });
     }
     const bytes = Buffer.isBuffer(req.body) ? new Uint8Array(req.body) : new Uint8Array();
     const mime = detectImageType(bytes);
@@ -789,14 +799,14 @@ app.put(
     const room = activeRoomOf(account.id);
     if (room) broadcastRoom(room.id).catch((e) => console.error(`[ROOM ${room.id}] broadcast failed:`, e));
 
-    return res.json({ avatar: avatarPath(db, account.id) });
+    return res.json({ avatar: avatarOf(account.id) });
   },
 );
 
 // Картинка аватара. Без токена: её грузит виджет картинки, а адрес знают только
 // те, кому сервер его отдал (id аккаунта угадать нельзя).
 app.get('/avatars/:id', (req, res) => {
-  const avatar = loadAvatar(db, req.params.id);
+  const avatar = AVATARS_ON ? loadAvatar(db, req.params.id) : null;
   if (!avatar) {
     return res.status(404).json({ error: 'no avatar' });
   }
@@ -826,7 +836,7 @@ app.get('/me/profile', (req, res) => {
     code: account.code,
     balance: account.balance,
     createdAt: account.createdAt,
-    avatar: avatarPath(db, account.id),
+    avatar: avatarOf(account.id),
     rating: shownRating(accountRating(account.id)),
     stats: profileStats(db, account.id),
     friendsCount: listFriends(db, account.id).length,
@@ -848,7 +858,7 @@ app.get('/players/:code', (req, res) => {
   return res.json({
     code: player.code,
     name: player.name,
-    avatar: avatarPath(db, player.id),
+    avatar: avatarOf(player.id),
     rating: shownRating(accountRating(player.id)),
     stats: profileStats(db, player.id),
     isFriend: areFriends(db, me.id, player.id),
@@ -873,7 +883,7 @@ app.get('/rating', (req, res) => {
     place: i + 1,
     code: p.code,
     name: p.name,
-    avatar: avatarPath(db, p.id),
+    avatar: avatarOf(p.id),
     rating: shownRating(p.rating),
     me: p.id === me.id,
   }));
@@ -895,7 +905,7 @@ app.get('/friends', (req, res) => {
     friends: listFriends(db, me.id).map((f) => ({
       code: f.code,
       name: f.name,
-      avatar: avatarPath(db, f.id),
+      avatar: avatarOf(f.id),
       rating: shownRating(accountRating(f.id)),
       stats: profileStats(db, f.id),
       // В какой комнате сейчас сидит — чтобы можно было зайти к другу.
@@ -941,7 +951,7 @@ app.get('/friends/requests', (req, res) => {
   const card = (a: Account) => ({
     code: a.code,
     name: a.name,
-    avatar: avatarPath(db, a.id),
+    avatar: avatarOf(a.id),
     rating: shownRating(accountRating(a.id)),
   });
   return res.json({ incoming: incoming.map(card), outgoing: outgoing.map(card) });
@@ -2574,7 +2584,7 @@ function publicRoom(room: Room, viewerId?: string) {
         ...p,
         // Код игрока — нажать на него за столом и открыть карточку (в друзья, подарок).
         code: codeOf(p.id),
-        avatar: avatarPath(db, p.id),
+        avatar: avatarOf(p.id),
         rating: shownRating(atTable ? liveRating(room, p.id) : accountRating(p.id)),
         ratingStart: shownRating(
           atTable ? ratingOf(atTable.startSkill, atTable.startDeals) : accountRating(p.id),

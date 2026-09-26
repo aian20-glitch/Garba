@@ -186,35 +186,41 @@ class _ProfileScreenState extends State<ProfileScreen> {
           : ListView(
               padding: const EdgeInsets.all(20),
               children: [
-                Center(
-                  child: GestureDetector(
-                    onTap: () async {
-                      final avatar = await pickAndUploadAvatar(context);
-                      if (avatar != null && mounted)
-                        setState(() => p['avatar'] = avatar);
-                    },
-                    child: Stack(
-                      children: [
-                        AvatarView(
-                            avatar: p['avatar']?.toString(),
-                            name: p['name'].toString(),
-                            radius: 56),
-                        const Positioned(
-                          right: 0,
-                          bottom: 0,
-                          child: CircleAvatar(
-                              radius: 16,
-                              child: Icon(Icons.photo_camera, size: 18)),
-                        ),
-                      ],
+                if (avatarsEnabled) ...[
+                  Center(
+                    child: GestureDetector(
+                      onTap: () async {
+                        final avatar = await pickAndUploadAvatar(context);
+                        if (avatar != null && mounted)
+                          setState(() => p['avatar'] = avatar);
+                      },
+                      child: Stack(
+                        children: [
+                          AvatarView(
+                              avatar: p['avatar']?.toString(),
+                              name: p['name'].toString(),
+                              radius: 56),
+                          const Positioned(
+                            right: 0,
+                            bottom: 0,
+                            child: CircleAvatar(
+                                radius: 16,
+                                child: Icon(Icons.photo_camera, size: 18)),
+                          ),
+                        ],
+                      ),
                     ),
                   ),
-                ),
-                const SizedBox(height: 4),
-                const Center(
-                  child: Text('Нажмите на фото, чтобы сменить',
-                      style: TextStyle(color: Colors.white54)),
-                ),
+                  const SizedBox(height: 4),
+                  const Center(
+                    child: Text('Нажмите на фото, чтобы сменить',
+                        style: TextStyle(color: Colors.white54)),
+                  ),
+                ] else
+                  Center(
+                    child: AvatarView(
+                        avatar: null, name: p['name'].toString(), radius: 56),
+                  ),
                 const SizedBox(height: 12),
                 Text(
                   p['name'].toString(),

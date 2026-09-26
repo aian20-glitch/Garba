@@ -11,7 +11,7 @@ const PORT = 3099;
 const BASE = `http://127.0.0.1:${PORT}`;
 
 const server = spawn(process.execPath, ['--import', 'tsx', 'src/index.ts'], {
-  env: { ...process.env, PORT: String(PORT), GARBA_DB: ':memory:' },
+  env: { ...process.env, PORT: String(PORT), GARBA_DB: ':memory:', GARBA_AVATARS: '1' },
   stdio: 'ignore',
 });
 
