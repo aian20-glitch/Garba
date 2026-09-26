@@ -22,3 +22,4 @@ tools/.bots.json
 # Фоновое соединение ботов из tools/garba (Mac/Linux)
 tools/.bots-online.pid
 tools/.bots-online.log
+store/android/*.aab
