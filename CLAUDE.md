@@ -101,7 +101,12 @@ cd ~/Garba/mobile && flutter analyze
 `flutter analyze` должен показывать **No issues found!** (набор `flutter_lints` не подключён,
 шаблонный тест удалён).
 
-### Сервер в интернете (готовится, 19.09.2026)
+### Сервер в интернете (работает с 26.09.2026)
+
+**https://garbagame.kz** — hoster.kz, Cloud 1-2-50 (1 ядро, 2 ГБ, 48 ГБ), Ubuntu 24.04, IP `89.126.200.50`,
+Node 26.10. SSH: `ssh garba-vps` (в `~/.ssh/config`, ключ `garba_vps`). DNS — в кабинете hoster.kz
+(A-записи `@` и `www`). Обновить сервер: `./deploy/deploy.sh garba-vps`. APK:
+`flutter build apk --release --dart-define=API_BASE=https://garbagame.kz`.
 
 Владелец выбрал **VPS в Казахстане** (данные граждан РК — в РК; уточнить у юриста перед
 публикацией). Всё для запуска — в `deploy/` (см. `deploy/README.md`): systemd-сервис,
@@ -114,7 +119,6 @@ Caddy (https сам), ежедневная копия базы, `setup-server.sh
 Приложение: `flutter build apk --release --dart-define=API_BASE=https://<домен>`; без
 `API_BASE` — `http://10.0.2.2:3000`. Обычный http разрешён только в отладке
 (`android/app/src/debug/AndroidManifest.xml`). Релиз подписан постоянным ключом.
-**Ждём от владельца:** IP сервера и домен.
 
 ### iPhone (готовится, 19.09.2026)
 
