@@ -395,6 +395,27 @@ app.use(cors());
 app.set('trust proxy', 'loopback');
 app.use(express.json());
 
+// Общий лимит запросов с одного адреса (26.09.2026) — от атаки скриптом. Обычному игроку
+// нужно в десятки раз меньше; порог с запасом — у мобильных операторов много игроков за
+// одним адресом. Свой компьютер (боты, проверки, ходы по таймеру) — без лимита.
+const REQUEST_LIMIT = [{ max: Number(process.env.GARBA_REQS_PER_10S ?? 200), windowMs: 10_000 }];
+const requestsByIp = new Map<string, number[]>();
+app.use((req, res, next) => {
+  const ip = req.ip ?? 'unknown';
+  if (['127.0.0.1', '::1', '::ffff:127.0.0.1'].includes(ip)) return next();
+  const check = rateCheck(requestsByIp.get(ip) ?? [], Date.now(), REQUEST_LIMIT);
+  requestsByIp.set(ip, check.times);
+  if (!check.allowed) return res.status(429).json({ error: 'too many requests, slow down' });
+  next();
+});
+// Старые адреса забываем — иначе карта росла бы вечно.
+setInterval(() => {
+  const now = Date.now();
+  for (const [ip, times] of requestsByIp) {
+    if (!times.length || now - times[times.length - 1] > 10_000) requestsByIp.delete(ip);
+  }
+}, 60_000);
+
 // --- Аккаунты (этап 9.1) и сохранение комнат (этап 9.2) ---
 //
 // Файл базы — backend/data/garba.db, путь можно сменить переменной GARBA_DB

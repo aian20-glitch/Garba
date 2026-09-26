@@ -9,7 +9,7 @@ const BASE = `http://127.0.0.1:${PORT}`;
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 const server = spawn(process.execPath, ['--import', 'tsx', 'src/index.ts'], {
-  env: { ...process.env, PORT: String(PORT), GARBA_DB: ':memory:' },
+  env: { ...process.env, PORT: String(PORT), GARBA_DB: ':memory:', GARBA_REQS_PER_10S: '20' },
   stdio: 'ignore',
 });
 
@@ -46,6 +46,15 @@ async function main() {
   check('друг вошёл — приглашение пропало', (await request('GET', '/me', pal.token)).body.roomInvites, []);
   await request('POST', `/rooms/${room.id}/invite`, host.token, { code: strangerCode });
   check('чужой в комнате не сидит и приглашений не получил', (await request('GET', '/me', stranger.token)).body.roomInvites, []);
+
+  section('общий лимит запросов с одного адреса (26.09.2026)');
+  const from = (ip: string) => fetch(BASE + '/health', { headers: { 'X-Forwarded-For': ip } }).then((r) => r.status);
+  const statuses: number[] = [];
+  for (let i = 0; i < 22; i++) statuses.push(await from('5.5.5.5'));
+  check('20 запросов с одного адреса — можно, дальше — 429',
+    [statuses.slice(0, 20).every((st) => st === 200), statuses.slice(20)], [true, [429, 429]]);
+  check('другой адрес при этом не задет', await from('6.6.6.6'), 200);
+  check('свой компьютер (боты, таймер) — без лимита', (await fetch(BASE + '/health')).status, 200);
 }
 
 main()
