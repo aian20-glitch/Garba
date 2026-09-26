@@ -37,6 +37,8 @@
 	<string>$(FLUTTER_BUILD_NUMBER)</string>
 	<key>FlutterDeepLinkingEnabled</key>
 	<false/>
+	<key>ITSAppUsesNonExemptEncryption</key>
+	<false/>
 	<key>LSRequiresIPhoneOS</key>
 	<true/>
 	<key>NSAppTransportSecurity</key>
@@ -44,10 +46,10 @@
 		<key>NSAllowsLocalNetworking</key>
 		<true/>
 	</dict>
-	<key>NSPhotoLibraryUsageDescription</key>
-	<string>ГАРБА открывает галерею, только чтобы вы выбрали фото для аватара.</string>
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>ГАРБА использует локальную сеть, чтобы подключаться к игровому серверу и играть с людьми на других устройствах.</string>
+	<key>NSPhotoLibraryUsageDescription</key>
+	<string>ГАРБА открывает галерею, только чтобы вы выбрали фото для аватара.</string>
 	<key>UIApplicationSceneManifest</key>
 	<dict>
 		<key>UIApplicationSupportsMultipleScenes</key>

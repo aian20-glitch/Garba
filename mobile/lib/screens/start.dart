@@ -316,6 +316,15 @@ class _StartScreenState extends State<StartScreen> {
                                 ? 'СОЗДАТЬ НОВЫЙ АККАУНТ'
                                 : 'ВОССТАНОВИТЬ АККАУНТ'),
                           ),
+                          // Требование App Store и Google Play — видно до создания аккаунта.
+                          TextButton(
+                            onPressed: () => Navigator.push(
+                              context,
+                              MaterialPageRoute(builder: (_) => const PrivacyScreen()),
+                            ),
+                            child: const Text('Политика конфиденциальности',
+                                style: TextStyle(color: Colors.white54, fontSize: 12)),
+                          ),
                         ],
                       )
                     else if (!checking && error != null)

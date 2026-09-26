@@ -13,6 +13,8 @@ Environment=PORT=3000
 # Снаружи — только через Caddy по https.
 Environment=HOST=127.0.0.1
 Environment=GARBA_DB=/var/lib/garba/garba.db
+# Почта для связи в политике конфиденциальности (/privacy). Без неё — «через профиль в игре».
+#Environment=GARBA_CONTACT_EMAIL=
 ExecStart=/usr/bin/node dist/index.js
 Restart=always
 RestartSec=3

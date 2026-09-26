@@ -286,6 +286,14 @@ class _ProfileScreenState extends State<ProfileScreen> {
                   icon: const Icon(Icons.delete_forever),
                   label: const Text('Удалить аккаунт'),
                 ),
+                TextButton(
+                  onPressed: () => Navigator.push(
+                    context,
+                    MaterialPageRoute(builder: (_) => const PrivacyScreen()),
+                  ),
+                  child: const Text('Политика конфиденциальности',
+                      style: TextStyle(color: Colors.white54)),
+                ),
               ],
             ),
     );

@@ -316,6 +316,9 @@ POST /admin/coins                { code | id, amount }  → { name, amount, bala
                                  с X-Forwarded-For (из интернета через Caddy) — 403 local only
 
 — без токена, для людей (этап 9.7) —
+GET  /privacy                    политика конфиденциальности (26.09.2026) — ссылка для App Store и
+                                 Google Play; ?format=json — для экрана в приложении (PrivacyScreen).
+                                 Текст — src/privacy.ts, почта для связи — GARBA_CONTACT_EMAIL
 GET  /r/:roomId                  страница-приглашение в комнату: кнопка garba://room/<номер>
 GET  /i/:code                    страница-приглашение друга: кнопка garba://invite/<код>
 ```

@@ -21,6 +21,7 @@ part 'screens/home.dart';
 part 'screens/gift_invite.dart';
 part 'screens/profile.dart';
 part 'screens/rules.dart';
+part 'screens/privacy.dart';
 part 'screens/rating.dart';
 part 'screens/create_join.dart';
 part 'screens/open_rooms.dart';

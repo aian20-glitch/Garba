@@ -114,6 +114,7 @@ import {
   type SpecialKind,
 } from './special.js';
 import { betweenDeals, seatFor, vacancyExpired, vacancySecondsLeft, type Vacancy } from './seats.js';
+import { privacyHtml, privacySections, PRIVACY_UPDATED } from './privacy.js';
 import { canProposeEnd, endVoteOutcome, END_VOTE_MS, type EndVote } from './endVote.js';
 import {
   markReady,
@@ -713,6 +714,16 @@ app.get('/r/:roomId', (req, res) => {
       'Если приложение не открылось — нажмите «Войти по коду» и введите номер комнаты:',
     ),
   );
+});
+
+// Политика конфиденциальности (26.09.2026): страница для App Store и Google Play,
+// ?format=json — для экрана в приложении. Без токена. Почта — GARBA_CONTACT_EMAIL.
+const CONTACT_EMAIL = process.env.GARBA_CONTACT_EMAIL?.trim() || null;
+app.get('/privacy', (req, res) => {
+  if (req.query.format === 'json') {
+    return res.json({ updated: PRIVACY_UPDATED, sections: privacySections(CONTACT_EMAIL) });
+  }
+  res.type('html').send(privacyHtml(CONTACT_EMAIL));
 });
 
 app.get('/i/:code', (req, res) => {
