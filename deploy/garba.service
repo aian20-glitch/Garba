@@ -14,7 +14,7 @@ Environment=PORT=3000
 Environment=HOST=127.0.0.1
 Environment=GARBA_DB=/var/lib/garba/garba.db
 # Почта для связи в политике конфиденциальности (/privacy). Без неё — «через профиль в игре».
-#Environment=GARBA_CONTACT_EMAIL=
+Environment=GARBA_CONTACT_EMAIL=bot20aian@gmail.com
 ExecStart=/usr/bin/node dist/index.js
 Restart=always
 RestartSec=3
