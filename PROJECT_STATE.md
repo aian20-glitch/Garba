@@ -18,18 +18,17 @@
   Android проверен на эмуляторе нажатиями (лобби, пересадка, смайлик, ГОТОВ).
 
 ## Сейчас
-- Владелец покупает VPS и домен. garba.kz занят; предложены garbagame.kz / garba-online.kz.
-  PS.kz — заказ VPS временно недоступен; выбран Hoster.kz Cloud 1-2-50 (2 ГБ, Алматы,
-  Ubuntu 24.04). Застряли на «пользователь с таким ИИН уже существует» — войти в старый
-  кабинет или через поддержку.
+- Сервер работает: https://garbagame.kz (hoster.kz Cloud 1-2-50, IP 89.126.200.50, `ssh garba-vps`),
+  26.09.2026. Режим «проверка спроса»: фото-аватары выключены, IP нигде не пишутся.
+  APK: build/app/outputs/flutter-apk/app-release.apk с API_BASE=https://garbagame.kz.
 - SSH-ключ для VPS: ~/.ssh/garba_vps (.pub — отдать при заказе).
 - Телефоны владельца ходят на Mac: API_BASE=http://172.20.10.2:3000 (точка доступа iPhone).
   iPhone Ayan 00008140-000C54A10EFA801C, iPhone Сико 00008140-00111DD202F3001C:
   `flutter build ios --release --dart-define=API_BASE=...` → `xcrun devicectl device install app`.
 
 ## Следующий шаг
-1. Получить IP VPS и домен → запустить по deploy/README.md (setup-server.sh, deploy.sh), DNS A.
-2. Собрать приложения с API_BASE=https://<домен>.
+1. Проверить на телефонах с API_BASE=https://garbagame.kz (Android APK, iPhone через devicectl).
+2. Убрать image_picker и NSPhotoLibraryUsageDescription, пока фото выключены.
 3. Apple Developer ($99) → TestFlight; Google Play ($25) → закрытый тест (12 человек, 14 дней).
 4. Карточки магазинов: скриншоты, описание, анкеты (симуляция азартных — «да, часто»,
    реальных денег и покупок нет, общение — только смайлики, аудитория 18+).
