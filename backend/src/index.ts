@@ -114,7 +114,7 @@ import {
   type SpecialKind,
 } from './special.js';
 import { betweenDeals, seatFor, vacancyExpired, vacancySecondsLeft, type Vacancy } from './seats.js';
-import { privacyHtml, privacySections, PRIVACY_UPDATED } from './privacy.js';
+import { privacyHtml, supportHtml, privacySections, PRIVACY_UPDATED } from './privacy.js';
 import { canProposeEnd, endVoteOutcome, END_VOTE_MS, type EndVote } from './endVote.js';
 import {
   markReady,
@@ -745,6 +745,10 @@ app.get('/privacy', (req, res) => {
     return res.json({ updated: PRIVACY_UPDATED, sections: privacySections(CONTACT_EMAIL) });
   }
   res.type('html').send(privacyHtml(CONTACT_EMAIL));
+});
+// Поддержка и удаление аккаунта — адрес для карточек App Store и Google Play.
+app.get(['/', '/support'], (_req, res) => {
+  res.type('html').send(supportHtml(CONTACT_EMAIL));
 });
 
 app.get('/i/:code', (req, res) => {

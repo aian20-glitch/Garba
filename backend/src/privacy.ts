@@ -79,13 +79,56 @@ const escape = (s: string) =>
   s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 
 export function privacyHtml(contactEmail: string | null): string {
-  const sections = privacySections(contactEmail)
-    .map((s) => `<h2>${escape(s.title)}</h2>${s.body.map((p) => `<p>${escape(p)}</p>`).join('')}`)
+  return pageHtml('ГАРБА — политика конфиденциальности', privacySections(contactEmail));
+}
+
+// Страница поддержки (26.09.2026): её адрес просит App Store (Support URL), а Google Play —
+// адрес, где написано, как удалить аккаунт. Одна страница на оба случая, GET / и GET /support.
+export function supportSections(contactEmail: string | null): { title: string; body: string[] }[] {
+  const write = contactEmail ? `напишите на ${contactEmail}` : 'напишите нам через профиль в игре';
+  return [
+    {
+      title: 'Об игре',
+      body: [
+        'ГАРБА — казахская карточная игра для 4–7 игроков. Главный берёт 3 взятки из 5 — и забирает кон. ' +
+          'Играйте с друзьями или со случайными соперниками.',
+        'Монеты в игре — только игровые: их нельзя купить, продать или обменять на деньги. 18+.',
+      ],
+    },
+    {
+      title: 'Поддержка',
+      body: [
+        `Вопрос, ошибка или предложение — ${write}. Укажите код игрока (он есть в профиле).`,
+      ],
+    },
+    {
+      title: 'Как удалить аккаунт',
+      body: [
+        'В приложении: Профиль → «Удалить аккаунт» → подтвердить. Если вы сидите в незаконченной ' +
+          'игре, сначала доиграйте или выйдите из неё.',
+        'Удаляются аккаунт, монеты, друзья, статистика и рейтинг — сразу и навсегда. В истории уже ' +
+          'сыгранных комнат вместо имени остаётся «Удалённый игрок».',
+        `Нет доступа к приложению — ${write} и укажите код игрока, удалим вручную.`,
+      ],
+    },
+    { title: 'Политика конфиденциальности', body: ['https://garbagame.kz/privacy'] },
+  ];
+}
+
+export function supportHtml(contactEmail: string | null): string {
+  return pageHtml('ГАРБА — поддержка', supportSections(contactEmail));
+}
+
+function pageHtml(title: string, sections: { title: string; body: string[] }[]): string {
+  const body = sections
+    .map((s) => `<h2>${escape(s.title)}</h2>${s.body.map((p) => `<p>${linkify(escape(p))}</p>`).join('')}`)
     .join('');
   return `<!doctype html><html lang="ru"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>ГАРБА — политика конфиденциальности</title>
+<title>${escape(title)}</title>
 <style>body{font-family:-apple-system,system-ui,sans-serif;background:#07121a;color:#eee;max-width:720px;
 margin:0 auto;padding:24px 16px;line-height:1.5}h1{color:#d4a94f}h2{color:#d4a94f;font-size:18px;margin-top:24px}
-p{color:#ccc}</style></head><body><h1>ГАРБА — политика конфиденциальности</h1>${sections}</body></html>`;
+p{color:#ccc}a{color:#d4a94f}</style></head><body><h1>${escape(title)}</h1>${body}</body></html>`;
 }
+
+const linkify = (s: string) => s.replace(/https:\/\/[^\s<]+/g, (u) => `<a href="${u}">${u}</a>`);
