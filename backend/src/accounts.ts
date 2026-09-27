@@ -187,7 +187,7 @@ function toAccount(row: Record<string, unknown> | undefined): Account | null {
 export function cleanName(raw: unknown): string | null {
   if (typeof raw !== 'string') return null;
   const name = raw
-    .replace(/(?!‍)[\p{Cc}\p{Cf}]/gu, '')
+    .replace(/(?![\u200d\s])[\p{Cc}\p{Cf}]/gu, '')
     .trim()
     .replace(/\s+/g, ' ');
   if (name.length === 0 || name.length > NAME_MAX_LENGTH) return null;
