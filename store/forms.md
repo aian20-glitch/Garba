@@ -39,12 +39,16 @@
 - Заметка для проверяющего:
   ```
   Enter any name on the first screen — an account is created instantly, no login.
-  To see a game: tap "БЫСТРАЯ ИГРА" (Quick game). A table needs 4+ players; if nobody
-  is online please contact us at bot20aian@gmail.com and we will add bot players
-  to your room. In-game coins are virtual only: they cannot be bought, sold or
-  exchanged for money. No in-app purchases, no ads.
+  To play right away with computer players:
+  1. Tap "СОЗДАТЬ КОМНАТУ" (Create room), keep the default settings and tap
+     "СОЗДАТЬ КОМНАТУ" at the bottom.
+  2. In the room, tap "ДОБАВИТЬ БОТОВ · ТРЕНИРОВКА" (Add bots · Practice) — the free
+     seats are filled with bots at once.
+  3. Tap "ГОТОВ" (Ready). The game starts; the bots play by themselves.
+  The rules are in "ПРАВИЛА" on the main screen. In-game coins are virtual only: they
+  cannot be bought, sold or exchanged for money. No in-app purchases, no ads.
   ```
-  Перед отправкой на проверку — держать ботов наготове (проверяющему нужен полный стол).
+  Боты сервера — кнопка в лобби (27.09.2026): проверяющему никого ждать и писать не нужно.
 
 ### Прочее
 - Content Rights: приложение не использует чужой контент — **No**.

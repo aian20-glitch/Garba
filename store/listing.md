@@ -16,7 +16,7 @@
 | Политика конфиденциальности | https://garbagame.kz/privacy |
 | Удаление аккаунта (Google) | https://garbagame.kz/support |
 | Почта для связи | bot20aian@gmail.com |
-| Bundle id / package | `kz.garba.app` |
+| Bundle id / package | iOS — `kz.garbagame.app`, Android — `kz.garba.app` |
 
 ## App Store
 
