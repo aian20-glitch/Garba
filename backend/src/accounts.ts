@@ -181,10 +181,17 @@ function toAccount(row: Record<string, unknown> | undefined): Account | null {
 }
 
 // Имя: без пробелов по краям, от 1 до 20 символов. null — имя не подходит.
+// Управляющие и невидимые символы (нулевой ширины, смена направления текста) убираем —
+// ими можно подделать чужое имя (28.09.2026). Соединитель U+200D оставляем: из него
+// собраны составные эмодзи. «Удалённый игрок» занято — так подписаны удалённые аккаунты.
 export function cleanName(raw: unknown): string | null {
   if (typeof raw !== 'string') return null;
-  const name = raw.trim().replace(/\s+/g, ' ');
+  const name = raw
+    .replace(/(?!‍)[\p{Cc}\p{Cf}]/gu, '')
+    .trim()
+    .replace(/\s+/g, ' ');
   if (name.length === 0 || name.length > NAME_MAX_LENGTH) return null;
+  if (name.toLowerCase() === DELETED_NAME.toLowerCase()) return null;
   return name;
 }
 
@@ -312,6 +319,10 @@ export function getAccount(db: DatabaseSync, id: string): Account | null {
 
 export function setBalance(db: DatabaseSync, id: string, balance: number) {
   db.prepare('UPDATE accounts SET balance = ? WHERE id = ?').run(balance, id);
+}
+
+export function setSkill(db: DatabaseSync, id: string, skill: number) {
+  db.prepare('UPDATE accounts SET skill = ? WHERE id = ?').run(skill, id);
 }
 
 export function setDaily(db: DatabaseSync, id: string, day: string, streak: number) {
@@ -466,7 +477,7 @@ export function deleteAccountData(db: DatabaseSync, id: string) {
 }
 
 // Имя игрока — везде, где рядом его id: players[].name, playerName, dealerName, winnerName.
-function anonymize(value: unknown, id: string): unknown {
+export function anonymize(value: unknown, id: string): unknown {
   if (Array.isArray(value)) return value.map((v) => anonymize(v, id));
   if (value === null || typeof value !== 'object') return value;
   const obj = { ...(value as Record<string, unknown>) };

@@ -1,6 +1,6 @@
 import express from 'express';
 import cors from 'cors';
-import { createServer } from 'node:http';
+import { createServer, type IncomingMessage } from 'node:http';
 import { mkdirSync } from 'node:fs';
 import { randomBytes } from 'node:crypto';
 import { dirname } from 'node:path';
@@ -35,6 +35,8 @@ import {
   replaceRecoveryCode,
   setBalance,
   setDaily,
+  setSkill,
+  anonymize,
   tokenFromHeader,
   transaction,
   type Account,
@@ -137,6 +139,7 @@ import {
   dealShowStep,
   pickRandom,
   revealShowMs,
+  threeIzzhogaShowMs,
   type DealShow,
   TURN_SECONDS_OPTIONS,
   turnMsFor,
@@ -387,6 +390,8 @@ type Room = {
   practice?: boolean;
   // Номер состояния — растёт с каждым сохранением (persistRoom).
   version?: number;
+  // Итог закрытой комнаты уже записан в аккаунты — больше не пишем (writeRoom).
+  accountsClosed?: boolean;
   game?: GameState;
   // Статистика игроков за эту комнату (ТЗ §35, этап 9.4). Заводится при старте игры.
   stats?: Record<string, PlayerStats>;
@@ -405,6 +410,18 @@ const app = express();
 // чтобы поднять отдельный сервер и не мешать тому, что работает на 3000.
 const PORT = Number(process.env.PORT ?? 3000);
 const rooms = new Map<string, Room>();
+
+// Ошибка внутри таймера (например, база занята дольше 5 секунд) не должна ронять весь
+// сервер: пишем в журнал, следующий тик попробует снова (28.09.2026).
+function guarded(name: string, fn: () => void): () => void {
+  return () => {
+    try {
+      fn();
+    } catch (e) {
+      console.error(`[TIMER ${name}] failed:`, e);
+    }
+  };
+}
 
 app.use(cors());
 // За Caddy (https) все запросы приходят с 127.0.0.1 — настоящий адрес игрока Caddy кладёт
@@ -472,6 +489,9 @@ function persistRoom(room: Room) {
   room.version = (room.version ?? 0) + 1;
   try {
     saveRoom(db, room);
+    // Итог закрытой комнаты записан — дальше её старые цифры в аккаунты не идут
+    // (смайлик на экране итогов затёр бы бонус, подарок или игру в новой комнате).
+    if (room.status === 'finished') room.accountsClosed = true;
     if (room.status === 'finished') payReferrals(room);
   } catch (e) {
     console.error(`[ROOM ${room.id}] save to database failed:`, e);
@@ -613,6 +633,7 @@ app.post('/accounts/recover', (req, res) => {
     return res.status(401).json({ error: 'invalid recovery credentials' });
   }
   console.log(`[ACCOUNT] recovered ${recovered.account.name} (${recovered.account.id})`);
+  dropSocketsOf(recovered.account.id);
   return res.json({ ...recovered.account, token: recovered.token, recoveryCode: recovered.recoveryCode });
 });
 
@@ -637,7 +658,17 @@ app.delete('/me', (req, res) => {
     return res.status(409).json({ error: 'finish your game first', roomId: room.id });
   }
   transaction(db, () => deleteAccountData(db, account.id));
+  // Закрытые комнаты ещё полчаса в памяти и сохраняются заново (смайлики) — имя и там
+  // заменяем, иначе оно вернулось бы в базу.
+  for (const r of rooms.values()) {
+    if (r.players.some((p) => p.id === account.id) || r.rating?.[account.id] || r.stats?.[account.id]) {
+      Object.assign(r, anonymize(r, account.id));
+      delete r.rating?.[account.id];
+      delete r.stats?.[account.id];
+    }
+  }
   console.log(`[ACCOUNT] deleted ${account.name} (${account.id})`);
+  dropSocketsOf(account.id);
   return res.json({ ok: true });
 });
 
@@ -1132,10 +1163,54 @@ function me(res: express.Response): Account {
 //
 // Кто смотрит — сервер узнаёт по токену (этап 9.1), а не по присланному playerId.
 const httpServer = createServer(app);
-const io = new SocketServer(httpServer, { cors: { origin: '*' } });
+
+// Адрес игрока для сокета — как у Express с 'trust proxy loopback': Caddy дописывает
+// настоящий адрес в конец X-Forwarded-For, верим только ему (28.09.2026).
+function socketIp(req: IncomingMessage): string {
+  const chain = [req.socket.remoteAddress ?? 'unknown'];
+  const forwarded = req.headers['x-forwarded-for'];
+  if (typeof forwarded === 'string') chain.push(...forwarded.split(',').map((a) => a.trim()).reverse());
+  return chain.find((a) => !LOOPBACK.includes(a)) ?? chain[0];
+}
+
+// Сокет не проходит через Express — общий лимит с адреса проверяем и здесь, при
+// подключении, плюс не больше MAX_SOCKETS_PER_IP открытых сокетов с одного адреса
+// (у мобильных операторов много игроков за одним адресом — запас большой).
+const MAX_SOCKETS_PER_IP = 200;
+const socketsByIp = new Map<string, number>();
+function socketAllowed(req: IncomingMessage): boolean {
+  const ip = socketIp(req);
+  if (LOOPBACK.includes(ip)) return true;
+  if ((socketsByIp.get(ip) ?? 0) >= MAX_SOCKETS_PER_IP) return false;
+  const check = rateCheck(requestsByIp.get(ip) ?? [], Date.now(), REQUEST_LIMIT);
+  requestsByIp.set(ip, check.times);
+  return check.allowed;
+}
+
+const io = new SocketServer(httpServer, {
+  cors: { origin: '*' },
+  allowRequest: (req, callback) => callback(null, socketAllowed(req)),
+  // От приложения приходит только 'watch' в пару строк — большие сообщения не нужны.
+  maxHttpBufferSize: 16_000,
+});
+
+// Частые 'watch' с одного сокета: каждый — поиск токена в базе и состояние комнаты.
+const WATCH_LIMIT = [{ max: 10, windowMs: 10_000 }];
 
 io.on('connection', (socket) => {
+  const ip = socketIp(socket.request);
+  socketsByIp.set(ip, (socketsByIp.get(ip) ?? 0) + 1);
+  socket.on('disconnect', () => {
+    const left = (socketsByIp.get(ip) ?? 1) - 1;
+    if (left > 0) socketsByIp.set(ip, left);
+    else socketsByIp.delete(ip);
+  });
+
   socket.on('watch', (payload: { roomId?: unknown; token?: unknown }) => {
+    const watchCheck = rateCheck((socket.data.watchTimes as number[] | undefined) ?? [], Date.now(), WATCH_LIMIT);
+    socket.data.watchTimes = watchCheck.times;
+    if (!watchCheck.allowed) return;
+
     const roomId = String(payload?.roomId ?? '');
     const account = findAccountByToken(db, String(payload?.token ?? ''));
     const room = rooms.get(roomId);
@@ -1171,6 +1246,16 @@ io.on('connection', (socket) => {
 });
 
 // Разослать состояние комнаты всем, кто за ней следит, — каждому со своей рукой.
+// Токен сменился (восстановление по коду) или аккаунт удалён — уже открытые сокеты
+// с этим аккаунтом больше не получают его руку (28.09.2026).
+function dropSocketsOf(accountId: string) {
+  io.fetchSockets()
+    .then((list) => {
+      for (const s of list) if (s.data.playerId === accountId) s.disconnect(true);
+    })
+    .catch((e) => console.error('drop sockets failed:', e));
+}
+
 async function broadcastRoom(roomId: string) {
   const room = rooms.get(roomId);
   if (!room) return;
@@ -1291,9 +1376,14 @@ function vacateSeat(room: Room, playerId: string, reason: 'left' | 'gone') {
   const r = ratingState(room, playerId);
   r.skill = Math.max(0, r.skill + LEFT_GAME);
 
-  // Его баланс уходит с ним: пишем в аккаунт сейчас — комната его больше не сохраняет.
-  // На тренировке с ботами монеты не настоящие — аккаунт не трогаем.
-  if (!room.practice) setBalance(db, playerId, player.balance);
+  // Его баланс и рейтинг уходят с ним: пишем в аккаунт сейчас — комната его больше
+  // не сохраняет. На тренировке с ботами всё не настоящее — аккаунт не трогаем.
+  if (!room.practice) {
+    setBalance(db, playerId, player.balance);
+    setSkill(db, playerId, r.skill);
+  }
+  // Вернётся за этот стол — рейтинг возьмём из аккаунта заново: он мог сыграть где-то ещё.
+  delete room.rating?.[playerId];
   room.departedIds = [...(room.departedIds ?? []).filter((id) => id !== playerId), playerId];
   room.vacancies = [
     ...(room.vacancies ?? []),
@@ -1342,7 +1432,7 @@ function markGone(room: Room, playerId: string) {
 // его разделили при уходе) делится между оставшимися. Для проверок — GARBA_VACANCY_MS.
 const vacancyMs = Number(process.env.GARBA_VACANCY_MS ?? 10 * 60_000);
 
-setInterval(() => {
+setInterval(guarded('vacancies', () => {
   const now = Date.now();
   for (const room of rooms.values()) {
     if (room.status !== 'started' || !room.game || !room.vacancies?.length) continue;
@@ -1353,7 +1443,7 @@ setInterval(() => {
     persistRoom(room);
     broadcastRoom(room.id).catch((e) => console.error(`[ROOM ${room.id}] broadcast failed:`, e));
   }
-}, 1000);
+}), 1000);
 
 function sweepPresence() {
   const now = Date.now();
@@ -1404,11 +1494,11 @@ function sweepPresence() {
   }
 }
 
-setInterval(sweepPresence, 1000);
+setInterval(guarded('presence', sweepPresence), 1000);
 
 // Голосование «закончить игру» без ответа 30 секунд — считается «нет» (§12.3).
 // Проверяем раз в секунду, иначе при раздающем-боте оно висело бы, пока кто-то не нажмёт.
-setInterval(() => {
+setInterval(guarded('end vote', () => {
   for (const room of rooms.values()) {
     if (!room.game?.endVote) continue;
     settleEndVote(room);
@@ -1417,13 +1507,22 @@ setInterval(() => {
       broadcastRoom(room.id).catch((e) => console.error(`[ROOM ${room.id}] broadcast failed:`, e));
     }
   }
-}, 1000);
+}), 1000);
 
 // Запрос игрока к своей комнате — тоже знак, что он на месте (приложение без сокета
 // опрашивает сервер). На паузе ходы не принимаются: ждём отключившегося.
 const LOBBY_ACTIONS = ['/join', '/leave', '/ready', '/back', '/react', '/invite'];
 app.use('/rooms/:id', (req, res, next) => {
   const room = rooms.get(req.params.id);
+  // Ход по таймеру выбран для решения, которого сервер ждал тогда. Ждём уже другого —
+  // игрок успел сам, устаревший ход не делаем (28.09.2026).
+  const moveKey = req.headers['x-garba-move-key'];
+  if (res.locals.internal && typeof moveKey === 'string') {
+    const awaitedKey = room ? awaitedMoves(room)?.key : undefined;
+    if (awaitedKey === undefined || encodeURIComponent(awaitedKey) !== moveKey) {
+      return res.status(409).json({ error: 'stale timed move' });
+    }
+  }
   if (!room || !tracksPresence(room)) return next();
 
   const playerId = me(res).id;
@@ -1491,6 +1590,15 @@ function dealShownAt(room: Room): number {
     if (prev?.key === 'reveal') return prev.shownAt;
     const shownAt = Date.now() + revealShowMs(g.revealLog?.length ?? 0);
     dealShows.set(room.id, { key: 'reveal', dealt: 0, shownAt });
+    return shownAt;
+  }
+  // Пересдача после трёх ИЗЖОГ: раздающий ждёт, пока у всех покажутся эти ИЗЖОГИ.
+  if (g.stage === 'awaiting_deal' && g.lastRedeal === 'three_izzhoga') {
+    const izzhogaKey = `izzhoga:${g.dealNumber ?? 0}`;
+    const prev = dealShows.get(room.id);
+    if (prev?.key === izzhogaKey) return prev.shownAt;
+    const shownAt = Date.now() + threeIzzhogaShowMs(g.izzhoga?.length ?? 0);
+    dealShows.set(room.id, { key: izzhogaKey, dealt: 0, shownAt });
     return shownAt;
   }
   if (!g.openCard) return 0;
@@ -1608,13 +1716,17 @@ function markBack(room: Room, playerId: string) {
   }
 }
 
-async function internalMove(roomId: string, move: TimedMove) {
+// awaitedKey — какое решение ждал таймер, когда выбирал ход. Пока запрос шёл, игрок
+// мог успеть сам (нажал на последней секунде) — тогда сервер отклонит устаревший ход,
+// а не сыграет за него случайной картой уже в новой взятке (28.09.2026).
+async function internalMove(roomId: string, move: TimedMove, awaitedKey?: string): Promise<boolean> {
   const res = await fetch(`http://127.0.0.1:${PORT}/rooms/${roomId}/${move.path}`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
       'x-garba-internal': INTERNAL_SECRET,
       'x-garba-player': move.playerId,
+      ...(awaitedKey !== undefined ? { 'x-garba-move-key': encodeURIComponent(awaitedKey) } : {}),
     },
     body: JSON.stringify(move.body),
   });
@@ -1622,6 +1734,7 @@ async function internalMove(roomId: string, move: TimedMove) {
   if (!res.ok) {
     console.error(`[ROOM ${roomId}] ход ${move.path} за ${move.playerId} отклонён: ${res.status} ${await res.text()}`);
   }
+  return res.ok;
 }
 
 // Раз в секунду: у кого вышли 20 секунд — ходим за него; второй пропуск подряд — «ушёл».
@@ -1642,10 +1755,12 @@ async function sweepTurns() {
     turnClocks.delete(room.id);
     try {
       for (const move of awaited.moves) {
-        await internalMove(room.id, move);
+        const ok = await internalMove(room.id, move, awaited.key);
+        if (!room.game || room.status !== 'started') break;
+        // Ход не прошёл (игрок успел сам) — это не пропуск.
+        if (!ok) continue;
         const name = room.players.find((p) => p.id === move.playerId)?.name;
         console.log(`[ROOM ${room.id}] время вышло — за ${name}: ${move.path} ${JSON.stringify(move.body)}`);
-        if (!room.game || room.status !== 'started') break;
         // Боту пропуски не считаем: «Я ЗДЕСЬ» он не нажмёт, и стол встал бы на паузу.
         if (gone.includes(move.playerId) || room.botIds?.includes(move.playerId)) continue;
         const miss = addMiss(room.game.missedTurns ?? {}, move.playerId);
@@ -2188,7 +2303,24 @@ function startPlay(room: Room) {
   Object.assign(game, emptyPlayState());
   game.tricksWon = Object.fromEntries(seatIds.map((id) => [id, 0]));
 
-  const instantIndex = instantWinIndex(game.mains, game.hands, game.trumpSuit!);
+  // Главный пропал на 5 минут ещё до розыгрыша — сказал заявку и отключился, держал
+  // спецкарту, выиграл КОН — сразу проигрыш, как если бы сдался (RULES.md §13, §10.7).
+  // Отметка «пропал» ставится один раз, а главным он мог стать уже после неё.
+  const gone = game.goneIds ?? [];
+  game.concededIds = game.mains.map((m) => m.playerId).filter((id) => gone.includes(id));
+  if (game.concededIds.length > 0) {
+    for (const id of game.concededIds) {
+      const name = game.mains.find((m) => m.playerId === id)!.playerName;
+      console.log(`[ROOM ${room.id}] ${name} пропал и стал главным — сразу проигрыш`);
+    }
+    const statuses = mainStatuses(game.mains, game.tricksWon, 0, game.concededIds);
+    if (statuses.every((st) => st !== 'open')) {
+      finishRound(room, statuses.map((st) => st === 'won'));
+      return;
+    }
+  }
+
+  const instantIndex = instantWinIndex(game.mains, game.hands, game.trumpSuit!, game.concededIds);
   if (instantIndex >= 0) {
     // Ни одной взятки не сыграно — trickNumber остаётся 0.
     finishRound(
@@ -2979,6 +3111,21 @@ app.post('/rooms/:id/join', (req, res) => {
 const INVITE_TTL_MS = 10 * 60_000;
 const roomInvites = new Map<string, { roomId: string; fromId: string; fromName: string; at: number }[]>();
 
+// Раз в час забываем старые адреса и просроченные приглашения — иначе карты росли бы вечно.
+setInterval(guarded('cleanup', () => {
+  const now = Date.now();
+  for (const map of [accountsByIp, recoveriesByIp]) {
+    for (const [ip, times] of map) {
+      if (!times.length || now - times[times.length - 1] > 86_400_000) map.delete(ip);
+    }
+  }
+  for (const [id, list] of roomInvites) {
+    const alive = list.filter((inv) => now - inv.at < INVITE_TTL_MS);
+    if (alive.length) roomInvites.set(id, alive);
+    else roomInvites.delete(id);
+  }
+}), 3_600_000);
+
 function roomHasSeat(room: Room): boolean {
   return (room.status === 'lobby' && room.players.length < room.capacity) ||
     (room.status === 'started' && (room.vacancies?.length ?? 0) > 0);
@@ -3189,7 +3336,7 @@ setInterval(() => {
 // выгружаем вместе со всем, что о них помнят таймеры. Итоги остаются в базе.
 const UNLOAD_FINISHED_MS = 30 * 60_000;
 const finishedAt = new Map<string, number>();
-setInterval(() => {
+setInterval(guarded('unload rooms', () => {
   const now = Date.now();
   for (const room of rooms.values()) {
     if (room.status !== 'finished') continue;
@@ -3202,7 +3349,7 @@ setInterval(() => {
     referralsChecked.delete(room.id);
     for (const key of botPlans.keys()) if (key.startsWith(`${room.id}:`)) botPlans.delete(key);
   }
-}, 60_000);
+}), 60_000);
 
 app.post('/rooms/:id/ready', (req, res) => {
   const room = rooms.get(req.params.id);
@@ -3304,7 +3451,7 @@ const lobbyMs = Number(process.env.GARBA_LOBBY_MS ?? LOBBY_MS);
 
 // Раз в секунду: набравшееся лобби без проверки (например, после перезапуска) — начинаем
 // её; у кого вышли 30 секунд — выходят. Игра не началась за 10 минут — лобби закрывается.
-setInterval(() => {
+setInterval(guarded('lobby', () => {
   for (const room of rooms.values()) {
     if (room.status !== 'lobby') continue;
     let changed = false;
@@ -3324,7 +3471,7 @@ setInterval(() => {
       broadcastRoom(room.id).catch((e) => console.error(`[ROOM ${room.id}] broadcast failed:`, e));
     }
   }
-}, 1000);
+}), 1000);
 
 app.post('/rooms/:id/dealer/continue', (req, res) => {
   const room = rooms.get(req.params.id);
@@ -3645,6 +3792,12 @@ app.post('/rooms/:id/end-game', (req, res) => {
   const game = room.game;
   const { playerId, choice } = req.body ?? {};
   const id = String(playerId);
+
+  // Предлагать и голосовать — только тем, кто за столом (посторонний или ушедший
+  // иначе держал бы раздачу по 30 секунд или срывал голосование своим «нет»).
+  if (!room.players.some((p) => p.id === id)) {
+    return res.status(403).json({ error: 'player is not in this room' });
+  }
 
   if (choice !== 'yes' && choice !== 'no') {
     return res.status(400).json({ error: 'choice must be yes or no' });

@@ -108,6 +108,15 @@ check('КОН с ГАРБОЙ — тоже ГАРБА',
 check('ДВА с Q K A своей масти — тоже побеждает сразу, без розыгрыша',
   instantWinIndex([{ playerId: 'A', declaration: 'ДВА' }], { A: garbaHand }, 'hearts'), 0);
 check('но у ДВА это НЕ ГАРБА: без анимации и не в статистику', countsAsGarba('ДВА'), false);
+check('главный пропал до розыгрыша (§13) — ГАРБА ему не помогает',
+  instantWinIndex([{ playerId: 'A', declaration: 'РАЗ' }], { A: garbaHand }, 'hearts', ['A']), -1);
+check('двое РАЗ, пропал второй с ГАРБОЙ — сразу не выигрывает никто',
+  instantWinIndex(
+    [{ playerId: 'A', declaration: 'РАЗ' }, { playerId: 'B', declaration: 'РАЗ' }],
+    { A: plainHand, B: garbaHand },
+    'hearts',
+    ['B'],
+  ), -1);
 check('РАЗ и КОН с Q K A — это ГАРБА', [countsAsGarba('РАЗ'), countsAsGarba('КОН')], [true, true]);
 
 section('деньги ГАРБЫ (§8)');

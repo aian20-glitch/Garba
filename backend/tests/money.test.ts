@@ -124,6 +124,7 @@ check('кон 16000 на четверых — по 4000, без остатка',
   { shares: { A: 4000, B: 4000, C: 4000, D: 4000 }, perPlayer: 4000, remainder: 0, remainderTo: null });
 check('кон 16000 на семерых — по 2285, остаток 5 тому, кто больше проиграл',
   splitKon(16000, ['A','B','C','D','E','F','G'].map((id, i) => ({ id, lost: i === 3 ? 9000 : 100 }))).remainderTo, 'D');
+check('ушёл последний — делить не между кем, без NaN', splitKon(5000, []), { shares: {}, perPlayer: 0, remainder: 0, remainderTo: null });
 let splitLeaks = 0;
 for (let i = 0; i < 1000; i++) {
   const n = 4 + (i % 4);

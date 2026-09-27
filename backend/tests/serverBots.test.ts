@@ -10,6 +10,11 @@ check('лобби набралось — жмёт «ГОТОВ»',
   botAction(bot, { status: 'lobby', readyCheck: { readyIds: [] } })?.path, 'ready');
 check('уже нажал — ничего', botAction(bot, { status: 'lobby', readyCheck: { readyIds: [bot] } }), null);
 check('на паузе не ходит', botAction(bot, { status: 'started', pause: { players: [] }, game: { stage: 'bidding' } }), null);
+check('ждём замену ушедшему — «закончить игру» поддерживает',
+  botAction(bot, { status: 'started', pause: { players: [], vacancies: [{ seat: 2 }] }, game: { stage: 'round_done', endVote: {} } })?.body,
+  { choice: 'yes' });
+check('кто-то за столом отключился — бот и не голосует',
+  botAction(bot, { status: 'started', pause: { players: [{ id: 'x' }] }, game: { stage: 'round_done', endVote: {} } }), null);
 check('раздаёт, только если раздающий он',
   [botAction(bot, { status: 'started', game: { stage: 'round_done', dealerId: bot } })?.path,
     botAction(bot, { status: 'started', game: { stage: 'round_done', dealerId: 'x' } })],

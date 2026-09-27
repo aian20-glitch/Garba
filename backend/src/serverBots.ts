@@ -36,13 +36,17 @@ export function botAction(botId: string, room: any): BotAction | null {
     return { path: 'ready', body: {}, delay: BOT_STEP_MS };
   }
   const g = room.game;
-  if (!g || room.status === 'finished' || room.pause) return null;
+  if (!g || room.status === 'finished') return null;
 
   // Кто-то предложил закончить игру (§12.3): боты согласны — решают живые игроки.
-  if (g.endVote) {
+  // Стол стоит только из-за свободного места (все за столом на связи) — голосовать
+  // можно, как и людям (§13b); иначе на паузе бот ничего не делает.
+  const onlyVacancy = !room.pause || (room.pause.players ?? []).length === 0;
+  if (g.endVote && onlyVacancy) {
     if (g.myEndVote) return null;
     return { path: 'end-game', body: { choice: 'yes' }, delay: BOT_STEP_MS };
   }
+  if (room.pause) return null;
 
   switch (g.stage) {
     case 'dealer_found':

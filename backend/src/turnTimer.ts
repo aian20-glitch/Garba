@@ -49,6 +49,14 @@ export function revealShowMs(cards: number): number {
   return cards * REVEAL_CARD_MS + REVEAL_RETURN_MS;
 }
 
+// Три ИЗЖОГИ подряд — пересдача (§5.2): приложение сначала показывает эти ИЗЖОГИ, и только
+// потом у раздающего появляется «РАЗДАТЬ» (threeIzzhogaLocked в game_table.dart). Менять вместе.
+export const THREE_IZZHOGA_TAIL_MS = 900;
+
+export function threeIzzhogaShowMs(izzhoga: number): number {
+  return izzhoga * DEAL_IZZHOGA_MS + THREE_IZZHOGA_TAIL_MS;
+}
+
 // Раздача, которую сейчас показывают игрокам: key — номер раздачи, dealt — сколько карт
 // роздано каждому, shownAt — когда анимация закончится.
 export type DealShow = { key: string; dealt: number; shownAt: number };

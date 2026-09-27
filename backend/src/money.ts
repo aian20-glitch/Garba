@@ -163,6 +163,8 @@ export function splitKon(
   kon: number,
   players: { id: string; lost: number }[],
 ): { shares: Record<string, number>; perPlayer: number; remainder: number; remainderTo: string | null } {
+  // Делить не между кем (ушёл последний) — кон никому не уходит.
+  if (players.length === 0) return { shares: {}, perPlayer: 0, remainder: 0, remainderTo: null };
   const perPlayer = Math.floor(kon / players.length);
   const remainder = kon - perPlayer * players.length;
 

@@ -64,12 +64,17 @@ export function countsAsGarba(declaration: string): boolean {
 
 // Индекс главного, который выигрывает сразу, без розыгрыша, или -1.
 // Двух таких быть не может: дама, король и туз козыря в колоде по одной.
+// concededIds — главные, которые уже проиграли (пропали до розыгрыша, RULES.md §13):
+// им дама, король и туз не помогают.
 export function instantWinIndex(
   mains: { playerId: string; declaration: string }[],
   hands: Record<string, Card[]>,
   trumpSuit: Suit,
+  concededIds: string[] = [],
 ): number {
-  return mains.findIndex((m) => isGarba(hands[m.playerId] ?? [], trumpSuit));
+  return mains.findIndex(
+    (m) => !concededIds.includes(m.playerId) && isGarba(hands[m.playerId] ?? [], trumpSuit),
+  );
 }
 
 export type MainStatus = 'won' | 'lost' | 'open';

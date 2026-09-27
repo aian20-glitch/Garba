@@ -15,6 +15,10 @@ export type StoredRoom = {
   players: { id: string; balance: number }[];
   // Тренировка с ботами — в аккаунты ничего не пишется.
   practice?: boolean;
+  // Закрытая комната уже записала итог в аккаунты (28.09.2026). Дальше её старые
+  // цифры в аккаунты не пишутся: игроки успели взять бонус, получить подарок или
+  // сыграть в другой комнате — смайлик на экране итогов затёр бы это.
+  accountsClosed?: boolean;
   // Статистика игроков за эту комнату (этап 9.4). Нет — игра ещё не начиналась.
   stats?: Record<string, PlayerStats>;
   // Мастерство игроков, пока они за столом (этап 9.6) — как баланс.
@@ -73,14 +77,20 @@ export function writeRoom(db: DatabaseSync, room: StoredRoom) {
 
   // Тренировка с ботами (решение владельца, 27.09.2026): монеты, рейтинг и статистика
   // игроков не меняются — в аккаунты из такой комнаты ничего не пишем.
-  if (room.practice) return;
+  // Закрытая комната свой итог уже записала — больше в аккаунты не пишет.
+  if (room.practice || room.accountsClosed) return;
 
   const setBalance = db.prepare('UPDATE accounts SET balance = ? WHERE id = ?');
   for (const p of room.players) setBalance.run(p.balance, p.id);
 
+  // Мастерство — только тем, кто за столом. Ушедшему оно записано при уходе
+  // (vacateSeat): иначе старая комната затирала бы рейтинг, набранный в новой.
   if (room.rating) {
     const setSkill = db.prepare('UPDATE accounts SET skill = ? WHERE id = ?');
-    for (const [playerId, r] of Object.entries(room.rating)) setSkill.run(r.skill, playerId);
+    for (const p of room.players) {
+      const r = room.rating[p.id];
+      if (r) setSkill.run(r.skill, p.id);
+    }
   }
 
   if (room.stats) {
