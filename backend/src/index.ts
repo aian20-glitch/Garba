@@ -124,6 +124,7 @@ import {
   startReadyCheck,
   type ReadyCheck,
 } from './readyCheck.js';
+import { LOBBY_MS, lobbyExpired, lobbySecondsLeft } from './lobbyTimer.js';
 import { rateCheck } from './rateLimit.js';
 import { openRoomsFor, QUICK_ROOM } from './openRooms.js';
 import {
@@ -370,6 +371,8 @@ type Room = {
   readyCheck?: ReadyCheck | null;
   // Кто вышел, не нажав «ГОТОВ» в прошлый раз, — чтобы его телефон сказал почему.
   readyDroppedIds?: string[];
+  // Игра не началась за 10 минут — лобби закрылось само (27.09.2026).
+  lobbyTimedOut?: boolean;
   game?: GameState;
   // Статистика игроков за эту комнату (ТЗ §35, этап 9.4). Заводится при старте игры.
   stats?: Record<string, PlayerStats>;
@@ -2580,6 +2583,9 @@ function publicRoom(room: Room, viewerId?: string) {
         }
       : null,
     readyDroppedIds: room.readyDroppedIds ?? [],
+    // Лобби: через сколько секунд закроется, если игра не начнётся; закрылось ли по времени.
+    lobbySecondsLeft: room.status === 'lobby' ? lobbySecondsLeft(room.createdAt, Date.now(), lobbyMs) : null,
+    lobbyTimedOut: !!room.lobbyTimedOut,
     // У каждого игрока — адрес его фото (этап 9.5) или null.
     // И рейтинг (этап 9.6): сейчас и с каким сел за стол — для итогов «4.0 → 4.9».
     players: room.players.map((p) => {
@@ -3118,9 +3124,11 @@ function startGame(room: Room) {
 
 // Для проверок время на «ГОТОВ» можно укоротить.
 const readyMs = Number(process.env.GARBA_READY_MS ?? READY_MS);
+// Сколько лобби ждёт начала игры — для проверок можно укоротить.
+const lobbyMs = Number(process.env.GARBA_LOBBY_MS ?? LOBBY_MS);
 
 // Раз в секунду: набравшееся лобби без проверки (например, после перезапуска) — начинаем
-// её; у кого вышли 30 секунд — выходят.
+// её; у кого вышли 30 секунд — выходят. Игра не началась за 10 минут — лобби закрывается.
 setInterval(() => {
   for (const room of rooms.values()) {
     if (room.status !== 'lobby') continue;
@@ -3130,6 +3138,12 @@ setInterval(() => {
       changed = true;
     }
     if (settleReadyCheck(room)) changed = true;
+    if (room.status === 'lobby' && lobbyExpired(room.createdAt, Date.now(), !!room.readyCheck, lobbyMs)) {
+      room.status = 'finished';
+      room.lobbyTimedOut = true;
+      changed = true;
+      console.log(`[ROOM ${room.id}] игра не началась за ${Math.round(lobbyMs / 1000)} с — комната закрыта`);
+    }
     if (changed) {
       persistRoom(room);
       broadcastRoom(room.id).catch((e) => console.error(`[ROOM ${room.id}] broadcast failed:`, e));

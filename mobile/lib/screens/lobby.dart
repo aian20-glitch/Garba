@@ -135,7 +135,8 @@ class _LobbyScreenState extends State<LobbyScreen> {
       HapticFeedback.heavyImpact();
     }
     hadReadyCheck = hasReadyCheck;
-    if (hasReadyCheck) {
+    // Секундный отсчёт — и для «ГОТОВ», и для закрытия лобби через 10 минут.
+    if (hasReadyCheck || data['lobbySecondsLeft'] is num) {
       readyTicker ??= Timer.periodic(const Duration(seconds: 1), (_) {
         if (mounted) setState(() {});
       });
@@ -411,9 +412,11 @@ class _LobbyScreenState extends State<LobbyScreen> {
             children: [
               const Spacer(),
               Text(
-                ((room!['readyDroppedIds'] as List?) ?? const []).isNotEmpty
-                    ? 'Никто не нажал «ГОТОВ» — комната закрыта'
-                    : 'Создатель закрыл комнату',
+                room!['lobbyTimedOut'] == true
+                    ? 'Игра не началась за 10 минут — комната закрыта'
+                    : ((room!['readyDroppedIds'] as List?) ?? const []).isNotEmpty
+                        ? 'Никто не нажал «ГОТОВ» — комната закрыта'
+                        : 'Создатель закрыл комнату',
                 textAlign: TextAlign.center,
                 style: const TextStyle(fontSize: 22, fontWeight: FontWeight.w800),
               ),
@@ -485,6 +488,15 @@ class _LobbyScreenState extends State<LobbyScreen> {
                 DateTime.now().difference(readyReceivedAt).inSeconds,
           );
 
+    // Игра не началась за 10 минут — сервер закроет лобби сам.
+    final lobbyLeft = room!['lobbySecondsLeft'] is num
+        ? math.max(
+            0,
+            (room!['lobbySecondsLeft'] as num).toInt() -
+                DateTime.now().difference(readyReceivedAt).inSeconds,
+          )
+        : null;
+
     final isCreator = creatorId == widget.currentPlayerId;
 
     return Scaffold(
@@ -536,6 +548,17 @@ class _LobbyScreenState extends State<LobbyScreen> {
                 child: Text(
                   'Открытая комната — может зайти любой',
                   style: TextStyle(color: Colors.white60),
+                ),
+              ),
+            if (lobbyLeft != null && readyCheck == null)
+              Padding(
+                padding: const EdgeInsets.only(top: 8),
+                child: Text(
+                  'Комната закроется через ${lobbyLeft ~/ 60}:${(lobbyLeft % 60).toString().padLeft(2, '0')}, '
+                  'если игра не начнётся',
+                  style: TextStyle(
+                    color: lobbyLeft <= 60 ? Colors.redAccent : Colors.white60,
+                  ),
                 ),
               ),
             const SizedBox(height: 20),
