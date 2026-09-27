@@ -15,9 +15,11 @@ apt-get install -y curl ca-certificates rsync sqlite3 ufw caddy fail2ban unatten
 # сутки и поставили майнер). Пароль выключаем, только если ключ уже лежит — иначе сами
 # останемся за дверью. fail2ban банит адреса, подбирающие пароль; обновления безопасности
 # Ubuntu ставятся сами.
-if grep -q '^ssh-' /root/.ssh/authorized_keys 2>/dev/null; then
+if grep -qE '(^|[[:space:]])(ssh-(ed25519|rsa)|ecdsa-sha2-|sk-)' /root/.ssh/authorized_keys 2>/dev/null; then
   printf 'PasswordAuthentication no\nKbdInteractiveAuthentication no\nPermitRootLogin prohibit-password\n' \
     > /etc/ssh/sshd_config.d/00-garba.conf
+  # Ошибка в настройке sshd после reload закрыла бы вход совсем — сначала проверяем.
+  sshd -t
   systemctl reload ssh
 else
   echo "ВНИМАНИЕ: в /root/.ssh/authorized_keys нет ключа — вход по паролю оставлен включённым"
@@ -34,7 +36,10 @@ fi
 # Отдельный пользователь без входа; код — /opt/garba, база — /var/lib/garba.
 id garba >/dev/null 2>&1 || useradd --system --home /opt/garba --shell /usr/sbin/nologin garba
 mkdir -p /opt/garba/backend /var/lib/garba /var/backups/garba
-chown -R garba:garba /opt/garba /var/lib/garba
+# Код — root (процесс игры не может его переписать), писать garba может только базу.
+chown -R root:root /opt/garba
+chown -R garba:garba /var/lib/garba
+chmod 700 /var/lib/garba /var/backups/garba
 
 # Сервис, копия базы, Caddy с доменом.
 install -m 644 "$SRC/garba.service" /etc/systemd/system/garba.service

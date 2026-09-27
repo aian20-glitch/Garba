@@ -18,6 +18,19 @@ Environment=GARBA_CONTACT_EMAIL=bot20aian@gmail.com
 ExecStart=/usr/bin/node dist/index.js
 Restart=always
 RestartSec=3
+# Песочница (28.09.2026, после взлома 27.09): писать можно только в папку базы,
+# код в /opt/garba — только для чтения (владелец root), новых прав не получить.
+NoNewPrivileges=yes
+ProtectSystem=strict
+ReadWritePaths=/var/lib/garba
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+MemoryMax=1200M
 
 [Install]
 WantedBy=multi-user.target
