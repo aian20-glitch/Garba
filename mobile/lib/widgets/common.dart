@@ -374,3 +374,45 @@ class _FriendInviteSheetState extends State<FriendInviteSheet> {
     );
   }
 }
+
+// Тренировка с ботами (решение владельца, 28.09.2026): за столом боты сервера, монеты,
+// рейтинг и статистика не меняются. В лобби — плашка с пояснением, за столом — метка.
+class PracticeBanner extends StatelessWidget {
+  const PracticeBanner({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      margin: const EdgeInsets.only(top: 8),
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+      decoration: BoxDecoration(
+        color: const Color(0x3342A5F5),
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: const Color(0x8842A5F5)),
+      ),
+      child: const Text(
+        'ТРЕНИРОВКА С БОТАМИ — монеты, рейтинг и статистика не меняются',
+        style: TextStyle(fontWeight: FontWeight.w700),
+      ),
+    );
+  }
+}
+
+class PracticeChip extends StatelessWidget {
+  const PracticeChip({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+      decoration: BoxDecoration(
+        color: const Color(0x3342A5F5),
+        borderRadius: BorderRadius.circular(6),
+      ),
+      child: const Text(
+        'ТРЕНИРОВКА',
+        style: TextStyle(fontSize: 11, fontWeight: FontWeight.w800, color: Color(0xFF90CAF9)),
+      ),
+    );
+  }
+}

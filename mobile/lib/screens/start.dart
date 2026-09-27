@@ -27,11 +27,10 @@ class _StartScreenState extends State<StartScreen> {
   void initState() {
     super.initState();
     DeepLinks.start();
-    // На новом устройстве аккаунта ещё нет, поэтому checkAccount() не делает
-    // сетевой запрос. Короткая проверка сервера сразу вызывает системный запрос
-    // iOS на доступ к локальной сети, а пользователь не ждёт тайм-аута при
-    // первой попытке создать аккаунт.
-    unawaited(_warmUpServerConnection());
+    // Отладка с сервером на Mac: короткая проверка сервера сразу вызывает системный
+    // запрос iOS на доступ к локальной сети, и первая попытка создать аккаунт не ждёт
+    // тайм-аута. В релизе сервер в интернете по https — это не нужно.
+    if (kDebugMode) unawaited(_warmUpServerConnection());
     checkAccount();
   }
 
@@ -76,11 +75,14 @@ class _StartScreenState extends State<StartScreen> {
       final response = await apiRequest(
           http.get(Uri.parse('$apiBase/me'), headers: authHeaders()));
       if (response.statusCode == 401) {
-        // Сервер не знает этот аккаунт — заводим новый.
+        // Сервер не знает этот аккаунт — заводим новый или восстанавливаем по коду.
+        // Говорим прямо, что случилось, — иначе игрок молча теряет аккаунт.
         await Session.clear();
         setState(() {
           checking = false;
           needName = true;
+          error = 'Аккаунт на сервере не найден. Если сохраняли код восстановления — '
+              'восстановите аккаунт ниже, иначе создайте новый.';
         });
         return;
       }

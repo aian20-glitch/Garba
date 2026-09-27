@@ -35,11 +35,11 @@ void openLobby(BuildContext context, String roomId, {bool replace = false}) {
 // монет, а если таких нет — создаёт открытую (5 игроков, взнос 100) и ждёт людей.
 Future<void> quickGame(BuildContext context) async {
   try {
-    final response = await http.post(
+    final response = await apiRequest(http.post(
       Uri.parse('$apiBase/rooms/quick'),
       headers: authHeaders(),
       body: jsonEncode({}),
-    );
+    ));
     final error = roomEntryError(response);
     if (error != null) throw Exception(error);
     final room = jsonDecode(response.body) as Map<String, dynamic>;
@@ -80,7 +80,7 @@ class _OpenRoomsScreenState extends State<OpenRoomsScreen> {
 
   Future<void> load() async {
     try {
-      final response = await http.get(Uri.parse('$apiBase/rooms/open'), headers: authHeaders());
+      final response = await apiRequest(http.get(Uri.parse('$apiBase/rooms/open'), headers: authHeaders()));
       expectStatus(response, const [200]);
       final list = ((jsonDecode(response.body) as Map)['rooms'] as List)
           .map((e) => Map<String, dynamic>.from(e as Map))
@@ -98,11 +98,11 @@ class _OpenRoomsScreenState extends State<OpenRoomsScreen> {
     if (joining) return;
     setState(() => joining = true);
     try {
-      final response = await http.post(
+      final response = await apiRequest(http.post(
         Uri.parse('$apiBase/rooms/$roomId/join'),
         headers: authHeaders(),
         body: jsonEncode({}),
-      );
+      ));
       final problem = roomEntryError(response);
       if (problem != null) throw Exception(problem);
       if (!mounted) return;
@@ -185,6 +185,7 @@ class _OpenRoomsScreenState extends State<OpenRoomsScreen> {
 // Себя не открываем; у игрока без кода (старое состояние) — тоже ничего.
 void openPlayerCard(BuildContext context, Map<String, dynamic> player) {
   final code = player['code']?.toString();
-  if (code == null || player['id']?.toString() == Session.id) return;
+  // У бота сервера карточки нет: ни в друзья, ни подарок (28.09.2026).
+  if (code == null || player['id']?.toString() == Session.id || player['bot'] == true) return;
   Navigator.push(context, MaterialPageRoute(builder: (_) => PlayerScreen(code: code)));
 }

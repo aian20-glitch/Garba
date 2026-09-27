@@ -45,7 +45,7 @@ class _DealerSelectionScreenState extends State<DealerSelectionScreen> {
   Future<void> refreshRoom() async {
     try {
       final response =
-          await http.get(Uri.parse(roomUrl()), headers: authHeaders());
+          await apiRequest(http.get(Uri.parse(roomUrl()), headers: authHeaders()));
       if (response.statusCode != 200) return;
       applyRoom(jsonDecode(response.body) as Map<String, dynamic>);
     } catch (_) {}
@@ -61,6 +61,23 @@ class _DealerSelectionScreenState extends State<DealerSelectionScreen> {
       final game = data['game'];
       if (game is Map) {
         final revealLog = (game['revealLog'] as List?) ?? const [];
+
+        // Открыл экран посреди вскрытия — догоняем по серверу, а не начинаем сначала:
+        // у раздающего уже идёт время (28.09.2026). 0,9 с на карту и 1,6 с на возврат.
+        final leftMs = (game['dealShowLeftMs'] as num?)?.toInt();
+        if (visibleCount == 0 && revealTimer == null && leftMs != null && revealLog.isNotEmpty) {
+          final notShown = ((leftMs - 1600).clamp(0, 1 << 30) / 900).ceil();
+          visibleCount = (revealLog.length - notShown).clamp(0, revealLog.length);
+          if (leftMs <= 0) {
+            cardsReturned = true;
+          } else if (visibleCount >= revealLog.length) {
+            // Все вскрыты, идёт возврат в колоду — досматриваем остаток.
+            returnTimer?.cancel();
+            returnTimer = Timer(Duration(milliseconds: leftMs), () {
+              if (mounted) setState(() => cardsReturned = true);
+            });
+          }
+        }
 
         if (revealTimer == null && visibleCount < revealLog.length) {
           revealTimer = Timer.periodic(
@@ -121,13 +138,13 @@ class _DealerSelectionScreenState extends State<DealerSelectionScreen> {
     setState(() => continuing = true);
 
     try {
-      final response = await http.post(
+      final response = await apiRequest(http.post(
         Uri.parse(
           '$apiBase/rooms/${widget.roomCode}/dealer/continue',
         ),
         headers: authHeaders(),
         body: jsonEncode({}),
-      );
+      ));
 
       if (response.statusCode < 200 || response.statusCode >= 300) {
         throw ApiFailure.fromResponse(response);

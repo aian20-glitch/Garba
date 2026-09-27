@@ -21,6 +21,8 @@ class _LobbyScreenState extends State<LobbyScreen> {
   Map<String, dynamic>? room;
   bool sendingReady = false;
   bool addingBots = false;
+  // Сервер ответил «комнаты нет» — показываем это вместо вечной загрузки.
+  bool notFound = false;
   bool firstLoad = true;
   bool moved = false;
   // «ГОТОВ» (23.09.2026): когда пришёл отсчёт и была ли проверка в прошлый раз —
@@ -55,11 +57,11 @@ class _LobbyScreenState extends State<LobbyScreen> {
 
   Future<void> sendReaction(String emoji) async {
     try {
-      await http.post(
+      await apiRequest(http.post(
         Uri.parse('$apiBase/rooms/${widget.roomCode}/react'),
         headers: authHeaders(),
         body: jsonEncode({'emoji': emoji}),
-      );
+      ));
     } catch (_) {
       // Не дошло — не беда, это просто смайлик.
     }
@@ -72,6 +74,9 @@ class _LobbyScreenState extends State<LobbyScreen> {
     link = RoomLink(
       roomCode: widget.roomCode,
       onRoom: applyRoom,
+      onError: (error) {
+        if (error == 'room not found' && mounted) setState(() => notFound = true);
+      },
     );
     refreshRoom();
     timer = Timer.periodic(fallbackPollInterval, (_) {
@@ -88,11 +93,11 @@ class _LobbyScreenState extends State<LobbyScreen> {
   Future<void> setPublic(bool value) async {
     setState(() => changingVisibility = true);
     try {
-      final response = await http.post(
+      final response = await apiRequest(http.post(
         Uri.parse('$apiBase/rooms/${widget.roomCode}/visibility'),
         headers: authHeaders(),
         body: jsonEncode({'isPublic': value}),
-      );
+      ));
       expectStatus(response, const [200]);
       applyRoom(jsonDecode(response.body) as Map<String, dynamic>);
     } catch (e) {
@@ -105,9 +110,11 @@ class _LobbyScreenState extends State<LobbyScreen> {
 
   Future<void> refreshRoom() async {
     try {
-      final response = await http.get(Uri.parse(roomUrl()), headers: authHeaders());
+      final response = await apiRequest(http.get(Uri.parse(roomUrl()), headers: authHeaders()));
       if (response.statusCode == 200) {
         applyRoom(jsonDecode(response.body) as Map<String, dynamic>);
+      } else if (response.statusCode == 404 && mounted) {
+        setState(() => notFound = true);
       }
     } catch (_) {
       if (mounted && firstLoad) {
@@ -119,6 +126,7 @@ class _LobbyScreenState extends State<LobbyScreen> {
   // Свежее состояние комнаты — по сокету или по HTTP.
   void applyRoom(Map<String, dynamic> data) {
     if (!mounted) return;
+    if (isStaleRoom(room, data)) return;
 
     applyReactions((data['reactions'] as List?) ?? const []);
     final hasReadyCheck = data['readyCheck'] is Map;
@@ -170,11 +178,11 @@ class _LobbyScreenState extends State<LobbyScreen> {
   // Пересесть на свободное место — до начала игры (RULES.md §2). Решает сервер.
   Future<void> changeSeat(int seat) async {
     try {
-      final response = await http.post(
+      final response = await apiRequest(http.post(
         Uri.parse('$apiBase/rooms/${widget.roomCode}/seat'),
         headers: authHeaders(),
         body: jsonEncode({'seat': seat}),
-      );
+      ));
       expectStatus(response, const [200]);
       applyRoom(jsonDecode(response.body) as Map<String, dynamic>);
     } catch (e) {
@@ -346,11 +354,11 @@ class _LobbyScreenState extends State<LobbyScreen> {
     setState(() => sendingReady = true);
 
     try {
-      final response = await http.post(
+      final response = await apiRequest(http.post(
         Uri.parse('$apiBase/rooms/${widget.roomCode}/ready'),
         headers: authHeaders(),
         body: jsonEncode({}),
-      );
+      ));
       expectStatus(response, const [200]);
       applyRoom(jsonDecode(response.body) as Map<String, dynamic>);
     } catch (e) {
@@ -367,11 +375,11 @@ class _LobbyScreenState extends State<LobbyScreen> {
     if (addingBots) return;
     setState(() => addingBots = true);
     try {
-      final response = await http.post(
+      final response = await apiRequest(http.post(
         Uri.parse('$apiBase/rooms/${widget.roomCode}/bots'),
         headers: authHeaders(),
         body: jsonEncode({}),
-      );
+      ));
       expectStatus(response, const [200]);
       applyRoom(jsonDecode(response.body) as Map<String, dynamic>);
     } catch (e) {
@@ -386,11 +394,11 @@ class _LobbyScreenState extends State<LobbyScreen> {
   // сервер закрывает комнату для всех.
   Future<void> leaveRoom() async {
     try {
-      final response = await http.post(
+      final response = await apiRequest(http.post(
         Uri.parse('$apiBase/rooms/${widget.roomCode}/leave'),
         headers: authHeaders(),
         body: jsonEncode({}),
-      );
+      ));
       if (response.statusCode < 200 || response.statusCode >= 300) {
         throw ApiFailure.fromResponse(response);
       }
@@ -416,9 +424,11 @@ class _LobbyScreenState extends State<LobbyScreen> {
       return Scaffold(
         appBar: backOnlyAppBar(),
         body: Center(
-          child: firstLoad
-              ? const CircularProgressIndicator()
-              : const Text('Нет связи с сервером'),
+          child: notFound
+              ? const Text('Комната не найдена — возможно, она уже закрыта')
+              : firstLoad
+                  ? const CircularProgressIndicator()
+                  : const Text('Нет связи с сервером'),
         ),
       );
     }
@@ -536,6 +546,7 @@ class _LobbyScreenState extends State<LobbyScreen> {
                 fontWeight: FontWeight.w700,
               ),
             ),
+            if (room!['practice'] == true) const PracticeBanner(),
             // Условия комнаты — их выбрал создатель.
             if (room!['settings'] is Map)
               Builder(builder: (_) {
@@ -618,7 +629,7 @@ class _LobbyScreenState extends State<LobbyScreen> {
               OutlinedButton.icon(
                 onPressed: addingBots ? null : addBots,
                 icon: const Icon(Icons.smart_toy_outlined),
-                label: Text('ДОБАВИТЬ БОТОВ (${capacity - players.length})'),
+                label: Text('ДОБАВИТЬ БОТОВ (${capacity - players.length}) · ТРЕНИРОВКА'),
               ),
             ],
             const SizedBox(height: 12),

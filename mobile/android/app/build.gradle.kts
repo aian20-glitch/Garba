@@ -33,7 +33,7 @@ android {
 
     // Постоянный ключ подписи: android/key.properties (в git не попадает) указывает на
     // ~/garba-keys/garba-upload.jks. Потерять ключ — нельзя выпускать обновления.
-    // Нет файла (другой компьютер) — релиз подписывается отладочным ключом.
+    // Нет файла (другой компьютер) — релиз не собирается, отладка подписывается отладочным.
     val keyProps = Properties().apply {
         val f = rootProject.file("key.properties")
         if (f.exists()) f.inputStream().use { load(it) }
@@ -51,7 +51,14 @@ android {
 
     buildTypes {
         release {
-            signingConfig = signingConfigs.findByName("release") ?: signingConfigs.getByName("debug")
+            // Без ключа релиз не собираем (28.09.2026): подписанный отладочным ключом
+            // файл Google Play не примет, а игроки не смогут обновиться.
+            signingConfig = signingConfigs.findByName("release") ?: run {
+                if (gradle.startParameter.taskNames.any { it.contains("Release", ignoreCase = true) }) {
+                    throw GradleException("Нет android/key.properties — релиз без постоянного ключа подписи не собираем")
+                }
+                signingConfigs.getByName("debug")
+            }
         }
     }
 }

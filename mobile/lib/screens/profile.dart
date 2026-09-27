@@ -576,11 +576,11 @@ class _PlayerScreenState extends State<PlayerScreen> {
             body: jsonEncode({'code': widget.code}),
           );
         case 'remove':
-          response = await http.delete(Uri.parse('$apiBase/friends/$code'),
+          response = await http.delete(Uri.parse('$apiBase/friends/${Uri.encodeComponent(code)}'),
               headers: authHeaders());
         default: // accept | decline | cancel
           response = await http.post(
-            Uri.parse('$apiBase/friends/requests/$code/$action'),
+            Uri.parse('$apiBase/friends/requests/${Uri.encodeComponent(code)}/$action'),
             headers: authHeaders(),
           );
       }

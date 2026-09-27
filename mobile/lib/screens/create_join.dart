@@ -304,7 +304,7 @@ class _JoinRoomScreenState extends State<JoinRoomScreen> {
     try {
       // Кто входит — сервер знает по токену, имя берётся из аккаунта.
       final response = await http.post(
-        Uri.parse('$apiBase/rooms/$roomId/join'),
+        Uri.parse('$apiBase/rooms/${Uri.encodeComponent(roomId)}/join'),
         headers: authHeaders(),
         body: jsonEncode({}),
       );

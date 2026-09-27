@@ -1,15 +1,18 @@
 // Общее: адрес сервера, аккаунт, связь с сервером (RoomLink), ссылки-приглашения, форматирование.
 part of 'main.dart';
 
-// Адрес сервера задаётся при сборке: flutter build apk --dart-define=API_BASE=https://garba.kz
+// Адрес сервера задаётся при сборке: flutter build apk --dart-define=API_BASE=https://garbagame.kz
 const _apiBaseOverride = String.fromEnvironment('API_BASE');
-// Без API_BASE — сервер на этом компьютере: Android-эмулятор видит его как 10.0.2.2,
-// симулятор iPhone — как localhost.
+// Без API_BASE: релиз — сервер в интернете (забыли флаг — всё равно рабочая сборка,
+// 28.09.2026); отладка — сервер на этом компьютере: Android-эмулятор видит его как
+// 10.0.2.2, симулятор iPhone — как localhost.
 final apiBase = _apiBaseOverride.isNotEmpty
     ? _apiBaseOverride
-    : Platform.isIOS
-        ? 'http://localhost:3000'
-        : 'http://10.0.2.2:3000';
+    : kReleaseMode
+        ? 'https://garbagame.kz'
+        : Platform.isIOS
+            ? 'http://localhost:3000'
+            : 'http://10.0.2.2:3000';
 
 // Backend присылает масть именем ('hearts'), а не символом.
 // Символы живут только здесь, в слое отображения.
@@ -75,6 +78,7 @@ class RoomLink {
   RoomLink({
     required this.roomCode,
     required this.onRoom,
+    this.onError,
   }) {
     _socket = io.io(
       apiBase,
@@ -95,11 +99,17 @@ class RoomLink {
     _socket.on('room', (data) {
       if (data is Map) onRoom(Map<String, dynamic>.from(data));
     });
+    // Комнаты нет или токен не подошёл — экран должен это показать, а не крутить загрузку.
+    _socket.on('room_error', (data) {
+      final error = data is Map ? data['error']?.toString() : null;
+      if (error != null) onError?.call(error);
+    });
     _socket.connect();
   }
 
   final String roomCode;
   final void Function(Map<String, dynamic> room) onRoom;
+  final void Function(String error)? onError;
   late final io.Socket _socket;
 
   bool get connected => _socket.connected;
@@ -371,6 +381,14 @@ final routeObserver = RouteObserver<ModalRoute<void>>();
 // garba://invite/КОД — её и ловит этот код.
 final navigatorKey = GlobalKey<NavigatorState>();
 
+// Состояние комнаты старее уже показанного? Сервер нумерует состояния (version растёт
+// с каждым сохранением); у старого сервера номера нет — тогда принимаем всё.
+bool isStaleRoom(Map<String, dynamic>? current, Map<String, dynamic> next) {
+  final have = (current?['version'] as num?)?.toInt();
+  final got = (next['version'] as num?)?.toInt();
+  return have != null && got != null && got < have;
+}
+
 String roomLink(String roomId) => '$apiBase/r/$roomId';
 
 String inviteLink(String code) => '$apiBase/i/$code';
@@ -385,12 +403,19 @@ class DeepLinks {
     _sub ??= AppLinks().uriLinkStream.listen(handle);
   }
 
+  // Что может прийти в ссылке: номер комнаты — цифры, код игрока — 6 знаков.
+  // Всё прочее не пускаем: pathSegments раскодирует %2F и %3F, и чужая ссылка
+  // подменила бы адрес запроса — например, вывела бы игрока из игры (28.09.2026).
+  static bool validValue(String kind, String value) => kind == 'room'
+      ? RegExp(r'^\d{1,10}$').hasMatch(value)
+      : RegExp(r'^[A-Za-z0-9]{6}$').hasMatch(value);
+
   static void handle(Uri uri) {
     final kind = uri.host; // room или invite
     final value = uri.pathSegments.isEmpty ? '' : uri.pathSegments.first;
     final navigator = navigatorKey.currentState;
 
-    if (value.isEmpty) return;
+    if (value.isEmpty || !validValue(kind, value)) return;
     // Аккаунта ещё нет или приложение не готово — запомним ссылку.
     if (Session.token.isEmpty || navigator == null) {
       pending = uri;
@@ -411,7 +436,8 @@ class DeepLinks {
     final uri = pending;
     if (uri == null || uri.host != 'invite' || uri.pathSegments.isEmpty) return '';
     pending = null;
-    return uri.pathSegments.first;
+    final code = uri.pathSegments.first;
+    return validValue('invite', code) ? code : '';
   }
 
   // Игрок вошёл в аккаунт — открываем отложенную ссылку.

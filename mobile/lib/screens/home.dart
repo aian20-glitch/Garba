@@ -31,8 +31,17 @@ class _HomeScreenState extends State<HomeScreen> with RouteAware {
     super.initState();
     refreshMe();
     // Приглашения приходят, пока главный экран открыт (push-уведомлений нет).
-    invitesTimer = Timer.periodic(const Duration(seconds: 5), (_) => refreshMe());
+    invitesTimer = Timer.periodic(const Duration(seconds: 5), (_) {
+      if (!covered) refreshMe();
+    });
   }
+
+  // Поверх главного открыт другой экран (стол, лобби) — не опрашиваем сервер и не
+  // показываем окно бонуса: оно всплыло бы посреди хода (28.09.2026).
+  bool covered = false;
+
+  @override
+  void didPushNext() => covered = true;
 
   @override
   void didChangeDependencies() {
@@ -50,7 +59,10 @@ class _HomeScreenState extends State<HomeScreen> with RouteAware {
 
   // Вернулись на главный экран — баланс мог измениться.
   @override
-  void didPopNext() => refreshMe();
+  void didPopNext() {
+    covered = false;
+    refreshMe();
+  }
 
   Future<void> refreshMe() async {
     try {
@@ -79,7 +91,7 @@ class _HomeScreenState extends State<HomeScreen> with RouteAware {
       }
       seenInvites = ids;
       // Первый вход за день — бонус забирается сам (ТЗ §3: «за ежедневный вход»).
-      if (daily['claimedToday'] != true) await claimDailyBonus();
+      if (daily['claimedToday'] != true && !covered) await claimDailyBonus();
     } catch (_) {
       // Нет связи — оставляем то, что уже показано.
     }

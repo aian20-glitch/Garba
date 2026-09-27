@@ -89,7 +89,7 @@ class _GameTableScreenState extends State<GameTableScreen> {
 
   Future<void> refreshRoom() async {
     try {
-      final response = await http.get(Uri.parse(roomUrl()), headers: authHeaders());
+      final response = await apiRequest(http.get(Uri.parse(roomUrl()), headers: authHeaders()));
       if (response.statusCode == 200) {
         applyRoom(jsonDecode(response.body) as Map<String, dynamic>);
       }
@@ -160,6 +160,10 @@ class _GameTableScreenState extends State<GameTableScreen> {
   // Свежее состояние комнаты — по сокету или по HTTP.
   void applyRoom(Map<String, dynamic> data) {
     if (!mounted) return;
+    // Опоздавший ответ (GET пришёл позже рассылки по сокету) — старое состояние
+    // не показываем: иначе повторяются объявления и всплывает итог (28.09.2026).
+    if (isStaleRoom(room, data)) return;
+    closeStaleDvaSheet(data);
     updateDealPresentation(data);
     holdRoundResult(data);
     setState(() {
@@ -244,8 +248,28 @@ class _GameTableScreenState extends State<GameTableScreen> {
       presentedTarget = target;
       dealAnimationActive = true;
       // Сначала на столе открываются ИЗЖОГИ и карта РАЗ, затем начинается сдача.
-      final openingDelay = Duration(milliseconds: 1000 + izzhogaCount * 3000);
-      dealStartTimer = Timer(openingDelay, startDealSteps);
+      var openingMs = 1000 + izzhogaCount * 3000;
+      // Стол открыли посреди раздачи (вернулся, перезапустил приложение): сервер говорит,
+      // сколько анимации осталось, — догоняем, а не показываем с начала: время на ход
+      // уже идёт (28.09.2026). У старого сервера поля нет — показываем целиком.
+      final leftMs = (game['dealShowLeftMs'] as num?)?.toInt();
+      if (leftMs != null) {
+        final cardsMs = target * 430;
+        if (leftMs <= 0) {
+          presentedCards = target;
+          dealAnimationActive = false;
+          return;
+        }
+        if (leftMs < openingMs + cardsMs) {
+          if (leftMs > cardsMs) {
+            openingMs = leftMs - cardsMs;
+          } else {
+            presentedCards = (target - (leftMs / 430).ceil()).clamp(0, target);
+            openingMs = 0;
+          }
+        }
+      }
+      dealStartTimer = Timer(Duration(milliseconds: openingMs), startDealSteps);
     } else if (target > presentedTarget) {
       // После решения по спецкарте дораздаём оставшиеся четыре круга.
       presentedTarget = target;
@@ -398,11 +422,11 @@ class _GameTableScreenState extends State<GameTableScreen> {
     if (sendingReaction) return;
     setState(() => sendingReaction = true);
     try {
-      await http.post(
+      await apiRequest(http.post(
         Uri.parse('$apiBase/rooms/${widget.roomCode}/react'),
         headers: authHeaders(),
         body: jsonEncode({'emoji': emoji}),
-      );
+      ));
     } catch (_) {
       // Не дошло — не беда, это просто смайлик.
     } finally {
@@ -420,14 +444,14 @@ class _GameTableScreenState extends State<GameTableScreen> {
     setState(() => sendingBid = true);
 
     try {
-      final response = await http.post(
+      final response = await apiRequest(http.post(
         Uri.parse('$apiBase/rooms/${widget.roomCode}/bid'),
         headers: authHeaders(),
         body: jsonEncode({
           'bid': bid,
           if (suit != null) 'suit': suit,
         }),
-      );
+      ));
 
       if (response.statusCode < 200 || response.statusCode >= 300) {
         throw ApiFailure.fromResponse(response);
@@ -461,11 +485,11 @@ class _GameTableScreenState extends State<GameTableScreen> {
     setState(() => dealing = true);
 
     try {
-      final response = await http.post(
+      final response = await apiRequest(http.post(
         Uri.parse('$apiBase/rooms/${widget.roomCode}/dealer/continue'),
         headers: authHeaders(),
         body: jsonEncode({}),
-      );
+      ));
 
       if (response.statusCode < 200 || response.statusCode >= 300) {
         throw ApiFailure.fromResponse(response);
@@ -488,13 +512,13 @@ class _GameTableScreenState extends State<GameTableScreen> {
     setState(() => sendingCard = true);
 
     try {
-      final response = await http.post(
+      final response = await apiRequest(http.post(
         Uri.parse('$apiBase/rooms/${widget.roomCode}/play'),
         headers: authHeaders(),
         body: jsonEncode({
           'cardId': cardId,
         }),
-      );
+      ));
 
       if (response.statusCode < 200 || response.statusCode >= 300) {
         throw ApiFailure.fromResponse(response);
@@ -519,7 +543,9 @@ class _GameTableScreenState extends State<GameTableScreen> {
 
     final suit = await showModalBottomSheet<String>(
       context: context,
-      builder: (sheetContext) => SafeArea(
+      builder: (sheetContext) {
+        dvaSheetContext = sheetContext;
+        return SafeArea(
         child: Padding(
           padding: const EdgeInsets.all(20),
           child: Column(
@@ -554,10 +580,27 @@ class _GameTableScreenState extends State<GameTableScreen> {
             ],
           ),
         ),
-      ),
+        );
+      },
     );
+    dvaSheetContext = null;
 
     if (suit != null) await sendBid('ДВА', suit: suit);
+  }
+
+  // Открытая шторка выбора масти ДВА. Время вышло и за игрока спасовал таймер —
+  // ДВА больше не разрешён, шторку закрываем сами (28.09.2026).
+  BuildContext? dvaSheetContext;
+
+  void closeStaleDvaSheet(Map<String, dynamic> data) {
+    final sheet = dvaSheetContext;
+    if (sheet == null || !sheet.mounted) return;
+    final game = data['game'];
+    final allowed = game is Map ? (game['myAllowedBids'] as List?) ?? const [] : const [];
+    if (!allowed.contains('ДВА')) {
+      dvaSheetContext = null;
+      Navigator.of(sheet).pop();
+    }
   }
 
   // Спецкарта (RULES.md §7): взять за множитель, пасовать, или сбросить карту.
@@ -567,11 +610,11 @@ class _GameTableScreenState extends State<GameTableScreen> {
     setState(() => sendingSpecial = true);
 
     try {
-      final response = await http.post(
+      final response = await apiRequest(http.post(
         Uri.parse('$apiBase/rooms/${widget.roomCode}/$path'),
         headers: authHeaders(),
         body: jsonEncode(body),
-      );
+      ));
 
       if (response.statusCode < 200 || response.statusCode >= 300) {
         throw ApiFailure.fromResponse(response);
@@ -606,11 +649,11 @@ class _GameTableScreenState extends State<GameTableScreen> {
     if (ok != true || leaving) return;
     setState(() => leaving = true);
     try {
-      final response = await http.post(
+      final response = await apiRequest(http.post(
         Uri.parse('${roomUrl()}/leave'),
         headers: authHeaders(),
         body: jsonEncode({}),
-      );
+      ));
       expectStatus(response, const [200]);
       if (!mounted) return;
       Navigator.of(context).popUntil((r) => r.isFirst);
@@ -656,11 +699,11 @@ class _GameTableScreenState extends State<GameTableScreen> {
     setState(() => choosingKonTrump = true);
 
     try {
-      final response = await http.post(
+      final response = await apiRequest(http.post(
         Uri.parse('$apiBase/rooms/${widget.roomCode}/kon-trump'),
         headers: authHeaders(),
         body: jsonEncode({'suit': suit}),
-      );
+      ));
 
       if (response.statusCode < 200 || response.statusCode >= 300) {
         throw ApiFailure.fromResponse(response);
@@ -693,13 +736,13 @@ class _GameTableScreenState extends State<GameTableScreen> {
     setState(() => voting = true);
 
     try {
-      final response = await http.post(
+      final response = await apiRequest(http.post(
         Uri.parse('$apiBase/rooms/${widget.roomCode}/vote'),
         headers: authHeaders(),
         body: jsonEncode({
           'choice': choice,
         }),
-      );
+      ));
 
       if (response.statusCode < 200 || response.statusCode >= 300) {
         throw ApiFailure.fromResponse(response);
@@ -2100,6 +2143,11 @@ class _GameTableScreenState extends State<GameTableScreen> {
                     icon: const Icon(Icons.arrow_back_ios_new),
                   ),
                   const SizedBox(width: 4),
+                  // Тренировка с ботами: монеты и рейтинг не меняются (28.09.2026).
+                  if (room!['practice'] == true) ...[
+                    const PracticeChip(),
+                    const SizedBox(width: 6),
+                  ],
                   Expanded(
                     child: Text(
                       'Сдаёт: $dealerName',
