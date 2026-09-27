@@ -42,6 +42,7 @@
 | `rateLimit.ts` | **Новый** (19.09.2026). Ограничение частоты — новые аккаунты с одного адреса. Чистые функции. |
 | `openRooms.ts` | **Новый** (19.09.2026). Открытые комнаты и «Быстрая игра»: какие показываем, куда сажаем. Чистые функции. |
 | `readyCheck.ts` | **Новый** (23.09.2026). «ГОТОВ» перед стартом: 30 с, не нажал — вышел, создатель — следующему. Чистые функции. |
+| `lobbyTimer.ts` | **Новый** (27.09.2026). Лобби ждёт начала игры 10 минут, потом закрывается само (не во время «ГОТОВ»). Чистые функции. |
 | `special.ts` | **Новый** (этап 7). Спецкарты: какая карта, очередь, множители, итог борьбы, первый ход. |
 | `rules.ts` | **Используются** `canPlayCard`, `trickWinner` (этап 3) и `isGarba` (этап 6) — сверены с RULES.md. `specialKind`, `canDeclareMain` — ещё не проверены. |
 
@@ -122,7 +123,7 @@ Caddy (https сам), ежедневная копия базы, `setup-server.sh
 
 ### iPhone (готовится, 19.09.2026)
 
-Код под iPhone готов: bundle id `kz.garba.app`, иконки всех размеров, доступ к фото, схема
+Код под iPhone готов: bundle id `kz.garbagame.app` (27.09.2026: `kz.garba.app` занят личной командой Аяна, Android остался `kz.garba.app`), иконки всех размеров, доступ к фото, схема
 `garba://`, только iPhone (`TARGETED_DEVICE_FAMILY = 1`) и только вертикально (Info.plist +
 `SystemChrome` в `main.dart` — и для Android), `NSAllowsLocalNetworking` для разработки.
 `apiBase` без `API_BASE`: симулятор iPhone — `http://localhost:3000`, Android-эмулятор — `10.0.2.2`.
@@ -137,6 +138,26 @@ Caddy (https сам), ежедневная копия базы, `setup-server.sh
 пароль) или Xcode → Settings → Components → iOS Simulator → Get. Для TestFlight и App Store нужен аккаунт
 Apple Developer ($99/год) и команда подписи в Xcode.
 
+### Выгрузка в App Store Connect / TestFlight (с 27.09.2026)
+
+Команда Apple Developer Серика `F8T5C6JBBK`, bundle id `kz.garbagame.app`, карточка «ГАРБА» (SKU `garba`).
+Первая сборка 1.0.0 (1) выгружена 27.09.2026. В Xcode должен быть вход под аккаунтом Серика.
+`flutter build ipa` не подписывает: в команде нет зарегистрированных iPhone, а автоподпись при
+архиве просит профиль разработчика. Поэтому архив — без подписи, подпись App Store — при экспорте:
+
+```bash
+cd ~/Garba/mobile
+flutter build ios --release --no-codesign --dart-define=API_BASE=https://garbagame.kz
+xcodebuild -workspace ios/Runner.xcworkspace -scheme Runner -configuration Release \
+  -destination generic/platform=iOS -archivePath build/ios/archive/Runner.xcarchive \
+  archive CODE_SIGNING_ALLOWED=NO
+xcodebuild -exportArchive -archivePath build/ios/archive/Runner.xcarchive \
+  -exportOptionsPlist ios/ExportOptions.plist -exportPath build/ios/ipa -allowProvisioningUpdates
+```
+
+**Каждая новая сборка — новый номер** после `+` в `version:` в `pubspec.yaml` (1.0.0+2, +3…),
+иначе App Store Connect её не примет.
+
 ### Проверка на симуляторе iPhone (20.09.2026)
 
 Xcode 27 **не содержит Simulator.app** — окна симулятора из командной строки не открыть,
@@ -144,7 +165,7 @@ Xcode 27 **не содержит Simulator.app** — окна симулятор
 не удалось — GitHub периодически недоступен). Поэтому:
 - аккаунт кладётся прямо в настройки приложения:
   `PlistBuddy -c "Add :flutter.account.token string <токен>" "$(xcrun simctl get_app_container
-  booted kz.garba.app data)/Library/Preferences/kz.garba.app.plist"` (и `.id`, `.name`);
+  booted kz.garbagame.app data)/Library/Preferences/kz.garbagame.app.plist"` (и `.id`, `.name`);
 - **отладочный ключ `flutter.debug.room`** в тех же настройках — приложение при старте сразу
   открывает эту комнату (`openDebugRoom()` в `screens/start.dart`, только `kDebugMode`);
 - снимок экрана: `xcrun simctl io booted screenshot файл.png`;
@@ -158,7 +179,7 @@ Xcode 27 **не содержит Simulator.app** — окна симулятор
 ### Эмулятор на Mac
 
 - `adb exec-out screencap -p > файл.png` работает (на Windows-ПК отдавал чёрный кадр).
-- Приложение: `kz.garba.app` (постоянное имя с 19.09.2026, iOS — тот же bundle id), запуск —
+- Приложение: `kz.garba.app` (постоянное имя с 19.09.2026, iOS — `kz.garbagame.app`), запуск —
   `adb shell am start -n kz.garba.app/.MainActivity`.
 - Первая сборка APK — около 7 минут (Gradle докачивает NDK, CMake, Platform 35), дальше быстрее.
 - Нажатия: `adb shell input tap X Y` в пикселях экрана 1080×2400.
@@ -278,7 +299,10 @@ GET  /rooms/open                 → { rooms: [{ id, capacity, players, creatorN
 POST /rooms/quick                {} → комната: сесть в самую заполненную открытую, нет — создать
                                  открытую (5 игроков, взнос 100); 409 already in another room; 403
 POST /rooms/:id/visibility       { isPublic } — открыть для всех / только по коду; создатель, в лобби
-GET  /rooms/:id
+GET  /rooms/:id                  в лобби — lobbySecondsLeft: через сколько секунд лобби закроется, если
+                                 игра не начнётся (10 минут от создания, 27.09.2026; пока идёт «ГОТОВ» —
+                                 ждём её итога); закрылось по времени — status finished, lobbyTimedOut: true.
+                                 Для проверок — GARBA_LOBBY_MS
 POST /rooms/:id/invite           { code }   позвать друга (25.09.2026): только друга, только когда есть
                                  свободное место (лобби или освободилось в игре); 403 not a friend;
                                  приглашение 10 мин в /me → roomInvites: [{ roomId, fromName, at }]
