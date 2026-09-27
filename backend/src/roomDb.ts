@@ -139,7 +139,8 @@ export type RatedPlayer = { id: string; name: string; code: string; rating: numb
 // ids — только эти игроки (друзья); без ids — все. По убыванию рейтинга.
 export function ratedPlayers(db: DatabaseSync, ids?: string[]): RatedPlayer[] {
   if (ids && ids.length === 0) return [];
-  const where = ids ? `WHERE a.id IN (${ids.map(() => '?').join(', ')})` : '';
+  // Боты сервера в рейтинге не участвуют.
+  const where = ids ? `WHERE a.is_bot = 0 AND a.id IN (${ids.map(() => '?').join(', ')})` : 'WHERE a.is_bot = 0';
   const rows = db
     .prepare(
       `SELECT a.id, a.name, a.code, a.skill, COALESCE(SUM(rs.deals), 0) AS deals

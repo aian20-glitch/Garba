@@ -1022,9 +1022,16 @@ class _GameTableScreenState extends State<GameTableScreen> {
     final pauseElapsed = DateTime.now().difference(pauseReceivedAt).inSeconds;
     // Время на ход (RULES.md §13a): сколько секунд осталось тому, кого ждём.
     final turnLeftRaw = (game['turnSecondsLeft'] as num?)?.toInt();
+    // Пока идёт анимация раздачи, сервер часы не пускает и шлёт больше, чем время на ход:
+    // на экране стоит полное время, отсчёт начнётся, когда карты долетят (27.09.2026).
+    final turnSeconds =
+        ((data['settings'] as Map?)?['turnSeconds'] as num?)?.toInt() ?? 20;
     final turnLeft = turnLeftRaw == null
         ? null
-        : math.max(0, turnLeftRaw - DateTime.now().difference(pauseReceivedAt).inSeconds);
+        : math.min(
+            turnSeconds,
+            math.max(0, turnLeftRaw - DateTime.now().difference(pauseReceivedAt).inSeconds),
+          );
     final awaitedIds = ((game['awaitedIds'] as List?) ?? const [])
         .map((e) => e.toString())
         .toSet();

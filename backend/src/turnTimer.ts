@@ -20,10 +20,56 @@ export type TurnClock = { key: string; since: number };
 
 // Часы хода: пока ждём того же решения (ключ тот же) — время идёт с прежнего момента;
 // ждём нового — отсчёт заново. Ключ null — сейчас никого не ждём.
-export function clockFor(prev: TurnClock | undefined, key: string | null, now: number): TurnClock | null {
+// startAt — не раньше этого момента (конец анимации раздачи, 27.09.2026): пока карты
+// летят по столу, игрок их ещё не видит, и время на ход не идёт.
+export function clockFor(
+  prev: TurnClock | undefined,
+  key: string | null,
+  now: number,
+  startAt: number = now,
+): TurnClock | null {
   if (key === null) return null;
   if (prev && prev.key === key) return prev;
-  return { key, since: now };
+  return { key, since: Math.max(now, startAt) };
+}
+
+// Анимация раздачи в приложении (updateDealPresentation в game_table.dart): сначала
+// ИЗЖОГИ и открытая карта, потом карты по одной каждому. Числа — те же, что в приложении.
+export const DEAL_OPENING_MS = 1_000;
+export const DEAL_IZZHOGA_MS = 3_000;
+export const DEAL_CARD_MS = 430;
+export const DEAL_MORE_MS = 500; // дораздача после борьбы за спецкарту
+
+// Раздача, которую сейчас показывают игрокам: key — номер раздачи, dealt — сколько карт
+// роздано каждому, shownAt — когда анимация закончится.
+export type DealShow = { key: string; dealt: number; shownAt: number };
+
+// Новая раздача — анимация с начала; карт стало больше (дораздали после спецкарты) —
+// досдача после текущей. key null — открытой карты нет, раздачи на столе нет.
+export function dealShowStep(
+  prev: DealShow | undefined,
+  key: string | null,
+  cards: number,
+  players: number,
+  izzhoga: number,
+  now: number,
+): DealShow | undefined {
+  if (key === null) return prev;
+  if (!prev || prev.key !== key) {
+    return {
+      key,
+      dealt: cards,
+      shownAt: now + DEAL_OPENING_MS + izzhoga * DEAL_IZZHOGA_MS + players * cards * DEAL_CARD_MS,
+    };
+  }
+  if (cards > prev.dealt) {
+    return {
+      key,
+      dealt: cards,
+      shownAt: Math.max(prev.shownAt, now) + DEAL_MORE_MS + players * (cards - prev.dealt) * DEAL_CARD_MS,
+    };
+  }
+  return prev;
 }
 
 // Сколько секунд осталось на ход (для отсчёта на экране).

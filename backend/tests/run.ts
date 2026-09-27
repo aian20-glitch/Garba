@@ -22,6 +22,7 @@ import './turnTimer.test.js';
 import './rateLimit.test.js';
 import './openRooms.test.js';
 import './lobbyTimer.test.js';
+import './serverBots.test.js';
 import { summary } from './check.js';
 
 process.exit(summary() === 0 ? 0 : 1);

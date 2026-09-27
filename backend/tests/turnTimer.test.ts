@@ -1,7 +1,7 @@
 // Проверки turnTimer.ts: время на ход (RULES.md §13a). Запуск: npm test
 
 import { check, section } from './check.js';
-import { addMiss, clockFor, pickRandom, TURN_MS, turnMsFor, turnSecondsLeft } from '../src/turnTimer.js';
+import { addMiss, clockFor, dealShowStep, pickRandom, TURN_MS, turnMsFor, turnSecondsLeft } from '../src/turnTimer.js';
 
 section('время на ход — 20 секунд (§13a, решение владельца правил)');
 const t0 = 1_000_000;
@@ -31,4 +31,24 @@ check('комната до выбора времени — 20 секунд', tur
 {
   const clock = clockFor(undefined, 'bid:1', 0);
   check('при 40 секундах через 25 с ещё 15 осталось', turnSecondsLeft(clock, 25_000, turnMsFor(40)), 15);
+}
+
+section('отсчёт хода — после анимации раздачи (решение владельца, 27.09.2026)');
+{
+  // 7 игроков по 5 карт: 1 с на открытую карту + 35 карт по 0,43 с = 16,05 с.
+  const show = dealShowStep(undefined, '3', 5, 7, 0, t0);
+  check('7 игроков, 5 карт — анимация 16,05 с', show!.shownAt - t0, 16_050);
+  const clock = clockFor(undefined, 'bid:0:Серик', t0 + 200, show!.shownAt);
+  check('первая заявка: часы стоят, пока карты летят', clock!.since, t0 + 16_050);
+  check('через 10 с после раздачи — 20 с хода и ещё 6 с анимации', turnSecondsLeft(clock, t0 + 10_000, TURN_MS), 27);
+  check('анимация кончилась — ровно 20 секунд', turnSecondsLeft(clock, t0 + 16_050, TURN_MS), 20);
+  check('следующее решение после анимации — отсчёт сразу',
+    clockFor(clock!, 'bid:1:Дана', t0 + 30_000, show!.shownAt)!.since, t0 + 30_000);
+  check('ИЗЖОГА добавляет 3 с', dealShowStep(undefined, '4', 5, 5, 1, t0)!.shownAt - t0, 1_000 + 3_000 + 25 * 430);
+  check('та же раздача — анимация не начинается заново', dealShowStep(show, '3', 5, 7, 0, t0 + 20_000), show);
+  const blind = dealShowStep(undefined, '5', 0, 5, 0, t0);
+  check('слепой круг туза: карт нет — только открытая карта', blind!.shownAt - t0, 1_000);
+  const more = dealShowStep(blind, '5', 5, 5, 0, t0 + 30_000);
+  check('дораздали после спецкарты — 0,5 с + карты', more!.shownAt - t0, 30_000 + 500 + 25 * 430);
+  check('раздачи на столе нет — ничего не меняем', dealShowStep(show, null, 0, 7, 0, t0), show);
 }

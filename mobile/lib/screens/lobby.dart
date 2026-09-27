@@ -20,6 +20,7 @@ class _LobbyScreenState extends State<LobbyScreen> {
   late final RoomLink link;
   Map<String, dynamic>? room;
   bool sendingReady = false;
+  bool addingBots = false;
   bool firstLoad = true;
   bool moved = false;
   // «ГОТОВ» (23.09.2026): когда пришёл отсчёт и была ли проверка в прошлый раз —
@@ -360,6 +361,27 @@ class _LobbyScreenState extends State<LobbyScreen> {
     }
   }
 
+  // «ДОБАВИТЬ БОТОВ» (27.09.2026): сервер сажает ботов на все свободные места и сам
+  // играет за них. Только создатель, только в лобби.
+  Future<void> addBots() async {
+    if (addingBots) return;
+    setState(() => addingBots = true);
+    try {
+      final response = await http.post(
+        Uri.parse('$apiBase/rooms/${widget.roomCode}/bots'),
+        headers: authHeaders(),
+        body: jsonEncode({}),
+      );
+      expectStatus(response, const [200]);
+      applyRoom(jsonDecode(response.body) as Map<String, dynamic>);
+    } catch (e) {
+      if (!mounted) return;
+      showGarbaError(context, e, prefix: 'Не удалось добавить ботов');
+    } finally {
+      if (mounted) setState(() => addingBots = false);
+    }
+  }
+
   // Выйти из комнаты, пока игра не началась. Если выходит создатель —
   // сервер закрывает комнату для всех.
   Future<void> leaveRoom() async {
@@ -590,6 +612,15 @@ class _LobbyScreenState extends State<LobbyScreen> {
               icon: const Icon(Icons.group_add),
               label: const Text('ПОЗВАТЬ ДРУЗЕЙ'),
             ),
+            // Людей мало — создатель сажает ботов на свободные места, играют они сами.
+            if (isCreator && readyCheck == null && players.length < capacity) ...[
+              const SizedBox(height: 8),
+              OutlinedButton.icon(
+                onPressed: addingBots ? null : addBots,
+                icon: const Icon(Icons.smart_toy_outlined),
+                label: Text('ДОБАВИТЬ БОТОВ (${capacity - players.length})'),
+              ),
+            ],
             const SizedBox(height: 12),
             // Комната набралась — у всех «ГОТОВ» с отсчётом; нажали все — игра начнётся сама.
             if (readyCheck == null)

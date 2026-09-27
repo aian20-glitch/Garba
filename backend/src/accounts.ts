@@ -98,6 +98,8 @@ function migrateAccounts(db: DatabaseSync) {
   add('invited_by', 'TEXT');
   add('skill', `REAL NOT NULL DEFAULT ${START_SKILL}`); // рейтинг — этап 9.6
   add('recovery_hash', 'TEXT');
+  // Бот сервера (кнопка «ДОБАВИТЬ БОТОВ», 27.09.2026) — в рейтинге не показывается.
+  add('is_bot', 'INTEGER NOT NULL DEFAULT 0');
   // Бонус за приглашение платится после 3 комнат друга (19.09.2026). Кого пригласили
   // раньше, тем уже заплатили сразу при регистрации — помечаем оплаченными.
   if (!columns.has('referral_paid')) {
@@ -223,6 +225,16 @@ export function createAccount(
     token,
     recoveryCode,
   };
+}
+
+// Боты сервера — обычные аккаунты с пометкой: играют через те же проверки, что и люди.
+export function markBot(db: DatabaseSync, id: string) {
+  db.prepare('UPDATE accounts SET is_bot = 1 WHERE id = ?').run(id);
+}
+
+export function botAccounts(db: DatabaseSync): Account[] {
+  return (db.prepare(`SELECT ${ACCOUNT_FIELDS} FROM accounts WHERE is_bot = 1`).all() as Record<string, unknown>[])
+    .map((row) => toAccount(row)!);
 }
 
 export function hasRecoveryCode(db: DatabaseSync, id: string): boolean {
