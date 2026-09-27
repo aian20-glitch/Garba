@@ -307,6 +307,25 @@ const _apiErrorMessages = <String, String>{
   'image too large': 'Фото слишком большое.',
   'not an image': 'Выбранный файл не похож на фотографию.',
   'finish your game first': 'Сначала завершите текущую игру.',
+  'game paused': 'Игра на паузе — ждём игрока.',
+  'end vote in progress': 'Идёт голосование «закончить игру» — дождитесь его итога.',
+  'cannot propose ending now': 'Закончить игру можно предложить только между раздачами.',
+  'can leave only between deals': 'Выйти можно только между раздачами.',
+  'cannot concede now': 'Сдаться сейчас нельзя.',
+  'too many requests, slow down': 'Слишком много запросов. Подождите немного.',
+  'player not found': 'Игрок с таким кодом не найден.',
+  'self': 'Это ваш собственный код.',
+  'bad amount': 'Сумма — от 100 до 10 000, кратно 100.',
+  'not enough coins': 'Недостаточно монет.',
+  'already gifted today': 'Сегодня вы уже дарили монеты. Попробуйте завтра.',
+  'already friends': 'Вы уже друзья.',
+  'request already sent': 'Заявка уже отправлена — ждём ответа.',
+  'not a friend': 'Этот игрок не в списке друзей.',
+  'seat taken': 'Это место уже заняли.',
+  'no free seat': 'Свободных мест нет.',
+  'room finished': 'Игра в этой комнате уже закончилась.',
+  'not enough coins for this risk': 'Не хватает монет на такой риск.',
+  'already claimed today': 'Бонус сегодня уже получен.',
 };
 
 String userErrorMessage(Object error, {String fallback = 'Не удалось выполнить действие'}) {
@@ -419,6 +438,8 @@ class DeepLinks {
     // Аккаунта ещё нет или приложение не готово — запомним ссылку.
     if (Session.token.isEmpty || navigator == null) {
       pending = uri;
+      // Экран имени уже открыт — код приглашения подставляется сразу (28.09.2026).
+      if (kind == 'invite') onInviteCode?.call(value);
       return;
     }
 
@@ -430,6 +451,9 @@ class DeepLinks {
       navigator.push(MaterialPageRoute(builder: (_) => PlayerScreen(code: value)));
     }
   }
+
+  // Экран первого входа слушает приглашения, пришедшие, пока он открыт.
+  static void Function(String code)? onInviteCode;
 
   // Код приглашения из ссылки — подставляется на экране первого входа.
   static String takeInviteCode() {

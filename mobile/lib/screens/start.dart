@@ -26,6 +26,11 @@ class _StartScreenState extends State<StartScreen> {
   @override
   void initState() {
     super.initState();
+    // Ссылка-приглашение пришла, пока открыт этот экран (игрок вернулся на страницу
+    // /i/<код> и нажал «ОТКРЫТЬ В ГАРБЕ») — код в поле, иначе пригласивший без награды.
+    DeepLinks.onInviteCode = (code) {
+      if (mounted && inviteController.text.trim().isEmpty) inviteController.text = code;
+    };
     DeepLinks.start();
     // Отладка с сервером на Mac: короткая проверка сервера сразу вызывает системный
     // запрос iOS на доступ к локальной сети, и первая попытка создать аккаунт не ждёт
@@ -46,6 +51,7 @@ class _StartScreenState extends State<StartScreen> {
 
   @override
   void dispose() {
+    DeepLinks.onInviteCode = null;
     nameController.dispose();
     inviteController.dispose();
     playerCodeController.dispose();

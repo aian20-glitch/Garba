@@ -25,6 +25,8 @@ class _DealerSelectionScreenState extends State<DealerSelectionScreen> {
   bool cardsReturned = false;
   bool continuing = false;
   bool moved = false;
+  // Комнаты нет на сервере: закрылась и выгружена, пока приложение было свёрнуто.
+  bool notFound = false;
 
   @override
   void initState() {
@@ -33,6 +35,9 @@ class _DealerSelectionScreenState extends State<DealerSelectionScreen> {
     link = RoomLink(
       roomCode: widget.roomCode,
       onRoom: applyRoom,
+      onError: (error) {
+        if (error == 'room not found' && mounted) setState(() => notFound = true);
+      },
     );
     refreshRoom();
     pollTimer = Timer.periodic(fallbackPollInterval, (_) {
@@ -46,6 +51,7 @@ class _DealerSelectionScreenState extends State<DealerSelectionScreen> {
     try {
       final response =
           await apiRequest(http.get(Uri.parse(roomUrl()), headers: authHeaders()));
+      if (response.statusCode == 404 && mounted) setState(() => notFound = true);
       if (response.statusCode != 200) return;
       applyRoom(jsonDecode(response.body) as Map<String, dynamic>);
     } catch (_) {}
@@ -171,7 +177,8 @@ class _DealerSelectionScreenState extends State<DealerSelectionScreen> {
   @override
   Widget build(BuildContext context) {
     final data = room;
-    if (data == null) {
+    if (notFound) return const RoomClosedScreen();
+    if (data == null || data['game'] is! Map) {
       return Scaffold(
         appBar: backOnlyAppBar(),
         body: const Center(child: CircularProgressIndicator()),

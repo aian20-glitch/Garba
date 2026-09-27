@@ -16,7 +16,9 @@ String? roomEntryError(http.Response response) {
   if (response.statusCode == 409 && response.body.contains('room is full')) {
     return 'Пока вы выбирали, комнату заняли. Выберите другую.';
   }
-  if (response.statusCode < 200 || response.statusCode >= 300) return response.body;
+  if (response.statusCode < 200 || response.statusCode >= 300) {
+    return userErrorMessage(ApiFailure.fromResponse(response));
+  }
   return null;
 }
 
@@ -33,7 +35,13 @@ void openLobby(BuildContext context, String roomId, {bool replace = false}) {
 
 // «Быстрая игра»: сервер сажает в самую заполненную открытую комнату, куда хватает
 // монет, а если таких нет — создаёт открытую (5 игроков, взнос 100) и ждёт людей.
+// Двойное нажатие не отправляет второй запрос: иначе второй ответ «вы уже в комнате»
+// всплывал бы поверх только что открытого лобби.
+bool _quickGameBusy = false;
+
 Future<void> quickGame(BuildContext context) async {
+  if (_quickGameBusy) return;
+  _quickGameBusy = true;
   try {
     final response = await apiRequest(http.post(
       Uri.parse('$apiBase/rooms/quick'),
@@ -48,6 +56,8 @@ Future<void> quickGame(BuildContext context) async {
   } catch (e) {
     if (!context.mounted) return;
     showGarbaError(context, e);
+  } finally {
+    _quickGameBusy = false;
   }
 }
 

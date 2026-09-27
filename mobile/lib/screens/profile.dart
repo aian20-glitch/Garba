@@ -132,7 +132,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
       builder: (ctx) => AlertDialog(
         title: const Text('Удалить аккаунт?'),
         content: const Text(
-          'Аккаунт удалится навсегда: монеты, рейтинг, друзья, фото и статистика. '
+          'Аккаунт удалится навсегда: монеты, рейтинг, друзья и статистика. '
           'Восстановить его будет нельзя.',
         ),
         actions: [
@@ -353,10 +353,10 @@ class _FriendsScreenState extends State<FriendsScreen> {
         body: jsonEncode({'code': code}),
       );
       if (response.statusCode != 201 && response.statusCode != 202) {
-        final body = jsonDecode(response.body);
-        final key = body is Map ? body['error']?.toString() : null;
-        if (mounted)
-          setState(() => error = _errors[key] ?? 'Ошибка: ${response.body}');
+        final failure = ApiFailure.fromResponse(response);
+        if (mounted) {
+          setState(() => error = _errors[failure.code] ?? userErrorMessage(failure));
+        }
         return;
       }
       final body = jsonDecode(response.body) as Map;

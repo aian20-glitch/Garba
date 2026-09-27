@@ -37,11 +37,15 @@ class _HomeScreenState extends State<HomeScreen> with RouteAware {
   }
 
   // Поверх главного открыт другой экран (стол, лобби) — не опрашиваем сервер и не
-  // показываем окно бонуса: оно всплыло бы посреди хода (28.09.2026).
-  bool covered = false;
+  // показываем окно бонуса: оно всплыло бы посреди хода (28.09.2026). Кроме флага
+  // смотрим, верхний ли это экран: при запуске по ссылке стол открывается раньше,
+  // чем главный экран успевает подписаться на переходы.
+  bool coveredFlag = false;
+  bool get covered =>
+      coveredFlag || !mounted || !(ModalRoute.of(context)?.isCurrent ?? true);
 
   @override
-  void didPushNext() => covered = true;
+  void didPushNext() => coveredFlag = true;
 
   @override
   void didChangeDependencies() {
@@ -60,13 +64,22 @@ class _HomeScreenState extends State<HomeScreen> with RouteAware {
   // Вернулись на главный экран — баланс мог измениться.
   @override
   void didPopNext() {
-    covered = false;
+    coveredFlag = false;
     refreshMe();
   }
 
   Future<void> refreshMe() async {
     try {
       final response = await http.get(Uri.parse('$apiBase/me'), headers: authHeaders());
+      // Аккаунт больше не работает (восстановлен на другом телефоне, удалён) — на экран
+      // входа: там объяснение и восстановление по коду, а не молчаливый старый баланс.
+      if (response.statusCode == 401 && mounted && !covered) {
+        Navigator.of(context).pushAndRemoveUntil(
+          MaterialPageRoute(builder: (_) => const StartScreen()),
+          (_) => false,
+        );
+        return;
+      }
       if (response.statusCode != 200) return;
       final me = jsonDecode(response.body) as Map<String, dynamic>;
       if (!mounted) return;
@@ -283,7 +296,11 @@ class _HomeScreenState extends State<HomeScreen> with RouteAware {
                         HomeTile(
                           icon: Icons.person_add_alt_1,
                           label: 'ПРИГЛАСИТЬ ДРУГА',
-                          onTap: () => go(InviteScreen(code: code, invitedCount: invitedCount)),
+                          // Код ещё не загрузился — ссылка ушла бы пустой.
+                          onTap: () {
+                            if (code.isEmpty) return;
+                            go(InviteScreen(code: code, invitedCount: invitedCount));
+                          },
                         ),
                       ),
                       tileRow(

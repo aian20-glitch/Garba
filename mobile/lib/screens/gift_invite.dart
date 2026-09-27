@@ -105,13 +105,12 @@ class _GiftScreenState extends State<GiftScreen> {
         headers: authHeaders(),
         body: jsonEncode({'toCode': codeController.text.trim(), 'amount': amount}),
       );
-      final body = jsonDecode(response.body);
+      if (!mounted) return;
       if (response.statusCode != 200) {
-        final code = body is Map ? body['error']?.toString() : null;
-        setState(() => error = _errors[code] ?? 'Ошибка: ${response.body}');
+        final failure = ApiFailure.fromResponse(response);
+        setState(() => error = _errors[failure.code] ?? userErrorMessage(failure));
         return;
       }
-      if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('Подарок отправлен: $recipientName +${fmtCoins(amount)}')),
       );

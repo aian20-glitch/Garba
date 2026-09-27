@@ -154,8 +154,11 @@ class _LobbyScreenState extends State<LobbyScreen> {
       readyTicker = null;
     }
 
+    // Игра началась — за стол, только если я за ним сижу: выбывшего за «ГОТОВ» не
+    // перебрасываем во вскрытие чужой игры (28.09.2026).
     if (data['status']?.toString() == 'started' &&
         data['game'] is Map &&
+        imIn &&
         !moved) {
       moved = true;
       timer?.cancel();
@@ -502,6 +505,16 @@ class _LobbyScreenState extends State<LobbyScreen> {
             ],
           ),
         ),
+      );
+    }
+
+    // Игра началась, а меня за столом нет (выбыл за «ГОТОВ» или ушёл) — чужая игра.
+    if (room!['status']?.toString() == 'started' &&
+        !players.any((p) => p['id'].toString() == widget.currentPlayerId)) {
+      return const RoomClosedScreen(
+        title: 'Игра началась без вас',
+        text: 'За этим столом уже играют. Если освободится место — комната появится '
+            'в «Открытых комнатах», или друг позовёт вас снова.',
       );
     }
 

@@ -59,6 +59,12 @@ class GarbaApp extends StatelessWidget {
       ),
       navigatorKey: navigatorKey,
       navigatorObservers: [routeObserver],
+      // Крупный системный шрифт — не больше ×1,2: дальше масть вылезает за карту, а на
+      // маленьком iPhone кнопки под столом уходят за край экрана (28.09.2026).
+      builder: (context, child) => MediaQuery.withClampedTextScaling(
+        maxScaleFactor: 1.2,
+        child: child!,
+      ),
       home: const StartScreen(),
     );
   }

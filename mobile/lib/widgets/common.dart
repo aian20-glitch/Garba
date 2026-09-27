@@ -416,3 +416,44 @@ class PracticeChip extends StatelessWidget {
     );
   }
 }
+
+// Комнаты больше нет: закрылась, пока приложение было свёрнуто, и сервер её уже
+// выгрузил (404 / room_error), или за столом не осталось никого (28.09.2026).
+class RoomClosedScreen extends StatelessWidget {
+  const RoomClosedScreen({super.key, this.title = 'Игра закончилась', this.text});
+
+  final String title;
+  final String? text;
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: backOnlyAppBar(),
+      body: Padding(
+        padding: const EdgeInsets.all(20),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            const Spacer(),
+            Text(
+              title,
+              textAlign: TextAlign.center,
+              style: const TextStyle(fontSize: 22, fontWeight: FontWeight.w800),
+            ),
+            const SizedBox(height: 12),
+            Text(
+              text ?? 'Комната уже закрыта. Итог игры — в профиле, в статистике.',
+              textAlign: TextAlign.center,
+              style: const TextStyle(color: Colors.white70),
+            ),
+            const Spacer(),
+            GarbaButton(
+              label: 'В ГЛАВНОЕ МЕНЮ',
+              onTap: () => Navigator.of(context).popUntil((r) => r.isFirst),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}

@@ -69,6 +69,8 @@ class _GameTableScreenState extends State<GameTableScreen> {
   bool threeIzzhogaLocked = false;
 
   late final RoomLink link;
+  // Комнаты нет на сервере: закрылась и выгружена, пока приложение было свёрнуто.
+  bool notFound = false;
 
   @override
   void initState() {
@@ -77,6 +79,9 @@ class _GameTableScreenState extends State<GameTableScreen> {
     link = RoomLink(
       roomCode: widget.roomCode,
       onRoom: applyRoom,
+      onError: (error) {
+        if (error == 'room not found' && mounted) setState(() => notFound = true);
+      },
     );
     refreshRoom();
     timer = Timer.periodic(fallbackPollInterval, (_) {
@@ -92,6 +97,8 @@ class _GameTableScreenState extends State<GameTableScreen> {
       final response = await apiRequest(http.get(Uri.parse(roomUrl()), headers: authHeaders()));
       if (response.statusCode == 200) {
         applyRoom(jsonDecode(response.body) as Map<String, dynamic>);
+      } else if (response.statusCode == 404 && mounted) {
+        setState(() => notFound = true);
       }
     } catch (_) {}
   }
@@ -843,11 +850,16 @@ class _GameTableScreenState extends State<GameTableScreen> {
   Widget build(BuildContext context) {
     final data = room;
 
+    if (notFound) return const RoomClosedScreen();
     if (data == null || data['game'] is! Map) {
       return Scaffold(
         appBar: backOnlyAppBar(),
         body: const Center(child: CircularProgressIndicator()),
       );
+    }
+    // Все ушли из-за стола — рисовать некого (места считаются от меня).
+    if (((data['players'] as List?) ?? const []).isEmpty) {
+      return const RoomClosedScreen(text: 'За столом никого не осталось — игра закрыта.');
     }
 
     // Меня за столом больше нет: вышел или не вернулся за 5 минут (RULES.md §13, §13b).
@@ -1140,7 +1152,7 @@ class _GameTableScreenState extends State<GameTableScreen> {
     }
 
     // Какие кнопки активны, решает сервер через myAllowedBids.
-    bool canBid(String bid) => myAllowedBids.contains(bid) && !sendingBid;
+    bool canBid(String bid) => myAllowedBids.contains(bid) && !sendingBid && !paused;
 
     // Почему пересдача и кто сколько долил — для окна итога.
     String? redealText;
@@ -2412,7 +2424,7 @@ class _GameTableScreenState extends State<GameTableScreen> {
                             return Opacity(
                               opacity: canDiscard ? 1 : 0.35,
                               child: GestureDetector(
-                                onTap: canDiscard && !sendingSpecial
+                                onTap: canDiscard && !sendingSpecial && !paused
                                     ? () => sendSpecial('discard', {'cardId': cardId})
                                     : null,
                                 child: SmallCard(
@@ -2426,7 +2438,8 @@ class _GameTableScreenState extends State<GameTableScreen> {
                           final myPlayTurn = isPlaying && myTurn;
                           final canPlay = myPlayTurn &&
                               myPlayable.contains(cardId) &&
-                              !sendingCard;
+                              !sendingCard &&
+                              !paused;
 
                           // В свой ход недопустимые карты приглушены:
                           // так видно, что правила требуют масть или козырь.
@@ -2630,7 +2643,7 @@ class _GameTableScreenState extends State<GameTableScreen> {
                         children: [
                           ...mySpecialRisks.map(
                             (r) => FilledButton(
-                              onPressed: sendingSpecial
+                              onPressed: sendingSpecial || paused
                                   ? null
                                   : () => sendSpecial(
                                         'special',
@@ -2644,7 +2657,7 @@ class _GameTableScreenState extends State<GameTableScreen> {
                             ),
                           ),
                           OutlinedButton(
-                            onPressed: sendingSpecial
+                            onPressed: sendingSpecial || paused
                                 ? null
                                 : () => sendSpecial('special', {'action': 'pass'}),
                             child: Text(
@@ -2701,7 +2714,7 @@ class _GameTableScreenState extends State<GameTableScreen> {
                             children: myKonTrumpOptions.map((o) {
                               final suit = o['suit'].toString();
                               return GestureDetector(
-                                onTap: choosingKonTrump
+                                onTap: choosingKonTrump || paused
                                     ? null
                                     : () => chooseKonTrump(suit),
                                 child: Column(
