@@ -106,7 +106,15 @@ cd ~/Garba/mobile && flutter analyze
 
 **https://garbagame.kz** — hoster.kz, Cloud 1-2-50 (1 ядро, 2 ГБ, 48 ГБ), Ubuntu 24.04, IP `89.126.200.50`,
 Node 26.10. SSH: `ssh garba-vps` (в `~/.ssh/config`, ключ `garba_vps`). DNS — в кабинете hoster.kz
-(A-записи `@` и `www`). Обновить сервер: `./deploy/deploy.sh garba-vps`. APK:
+(A-записи `@` и `www`). Обновить сервер: `./deploy/deploy.sh garba-vps`.
+
+**Взлом 27.09.2026.** Через сутки после запуска боты подобрали пароль root (вход по паролю был
+открыт): наш ключ заменили своим (`ElPatrono1337`, флаги `chattr +ia`), поставили майнер, стёрли
+журнал входов. Сервер переустановлен через кабинет hoster.kz (OS → «Переустановить»), база
+начата с нуля (решение владельца). Теперь `setup-server.sh` пускает по SSH **только по ключу**
+(`/etc/ssh/sshd_config.d/00-garba.conf`), ставит fail2ban и автообновления безопасности.
+Вход по паролю не включать. Ключ потерян — пароль root в кабинете hoster.kz, VNC там же
+(«Операции»). APK:
 `flutter build apk --release --dart-define=API_BASE=https://garbagame.kz`.
 
 Владелец выбрал **VPS в Казахстане** (данные граждан РК — в РК; уточнить у юриста перед

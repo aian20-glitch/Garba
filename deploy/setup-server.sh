@@ -9,7 +9,21 @@ SRC=/root/garba-deploy
 
 export DEBIAN_FRONTEND=noninteractive
 apt-get update
-apt-get install -y curl ca-certificates rsync sqlite3 ufw caddy
+apt-get install -y curl ca-certificates rsync sqlite3 ufw caddy fail2ban unattended-upgrades
+
+# SSH — только по ключу (27.09.2026: первый сервер взломали подбором пароля root в первые
+# сутки и поставили майнер). Пароль выключаем, только если ключ уже лежит — иначе сами
+# останемся за дверью. fail2ban банит адреса, подбирающие пароль; обновления безопасности
+# Ubuntu ставятся сами.
+if grep -q '^ssh-' /root/.ssh/authorized_keys 2>/dev/null; then
+  printf 'PasswordAuthentication no\nKbdInteractiveAuthentication no\nPermitRootLogin prohibit-password\n' \
+    > /etc/ssh/sshd_config.d/00-garba.conf
+  systemctl reload ssh
+else
+  echo "ВНИМАНИЕ: в /root/.ssh/authorized_keys нет ключа — вход по паролю оставлен включённым"
+fi
+systemctl enable --now fail2ban
+dpkg-reconfigure -f noninteractive unattended-upgrades
 
 # Node.js той же ветки, что при разработке (в нём встроен node:sqlite).
 if ! command -v node >/dev/null || [ "$(node -p 'process.versions.node.split(".")[0]')" != "$NODE_MAJOR" ]; then
