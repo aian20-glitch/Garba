@@ -294,10 +294,11 @@ export function findAccountByToken(db: DatabaseSync, token: string): Account | n
   return toAccount(row);
 }
 
+// Ботов сервера по коду не найти: им не подарить монеты, не позвать в друзья и в комнату.
 export function findAccountByCode(db: DatabaseSync, code: string): Account | null {
   if (!code) return null;
   const row = db
-    .prepare(`SELECT ${ACCOUNT_FIELDS} FROM accounts WHERE code = ?`)
+    .prepare(`SELECT ${ACCOUNT_FIELDS} FROM accounts WHERE code = ? AND is_bot = 0`)
     .get(code) as Record<string, unknown> | undefined;
   return toAccount(row);
 }

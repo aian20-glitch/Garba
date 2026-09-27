@@ -1,7 +1,7 @@
 // Проверки turnTimer.ts: время на ход (RULES.md §13a). Запуск: npm test
 
 import { check, section } from './check.js';
-import { addMiss, clockFor, dealShowStep, pickRandom, TURN_MS, turnMsFor, turnSecondsLeft } from '../src/turnTimer.js';
+import { addMiss, clockFor, dealShowStep, pickRandom, revealShowMs, TURN_MS, turnMsFor, turnSecondsLeft } from '../src/turnTimer.js';
 
 section('время на ход — 20 секунд (§13a, решение владельца правил)');
 const t0 = 1_000_000;
@@ -51,4 +51,5 @@ section('отсчёт хода — после анимации раздачи (�
   const more = dealShowStep(blind, '5', 5, 5, 0, t0 + 30_000);
   check('дораздали после спецкарты — 0,5 с + карты', more!.shownAt - t0, 30_000 + 500 + 25 * 430);
   check('раздачи на столе нет — ничего не меняем', dealShowStep(show, null, 0, 7, 0, t0), show);
+  check('вскрытие на туза: 25 карт по 0,9 с + 1,6 с на возврат — больше 20 с хода', revealShowMs(25), 24_100);
 }

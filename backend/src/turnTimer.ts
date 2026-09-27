@@ -40,6 +40,15 @@ export const DEAL_IZZHOGA_MS = 3_000;
 export const DEAL_CARD_MS = 430;
 export const DEAL_MORE_MS = 500; // дораздача после борьбы за спецкарту
 
+// Вскрытие на туза (dealer_selection.dart): карты открываются по одной, потом 1,6 с
+// возвращаются в колоду. Пока это идёт, раздающий ещё не знает, что раздаёт он.
+export const REVEAL_CARD_MS = 900;
+export const REVEAL_RETURN_MS = 1_600;
+
+export function revealShowMs(cards: number): number {
+  return cards * REVEAL_CARD_MS + REVEAL_RETURN_MS;
+}
+
 // Раздача, которую сейчас показывают игрокам: key — номер раздачи, dealt — сколько карт
 // роздано каждому, shownAt — когда анимация закончится.
 export type DealShow = { key: string; dealt: number; shownAt: number };

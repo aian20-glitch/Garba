@@ -44,15 +44,22 @@ async function main() {
   check('у каждого бота 30 000', bots.map((b: any) => b.balance), [30_000, 30_000, 30_000]);
   check('имена — «Бот …»', bots.every((b: any) => b.name.startsWith('Бот ')), true);
   check('полный стол — ботов больше не добавить', (await request('POST', `/rooms/${room.id}/bots`, host.token)).status, 409);
+  check('комната с ботами — тренировка', added.body.practice, true);
+  check('бота не найти по коду: ни подарка, ни дружбы', (await request('GET', `/players/${bots[0].code}`, host.token)).status, 404);
+  const ratingBefore = (await request('GET', '/me', host.token)).body.rating;
 
   // Серик играет сам той же логикой, что и боты, и опрашивает сервер — он на связи.
   let firstBidLeft: number | null = null;
   let sawRoundDone = false;
   let lastDeal = 0;
+  let lastVersion = -1;
+  let versionWentBack = false;
   const deadline = Date.now() + 150_000;
   while (Date.now() < deadline && !sawRoundDone) {
     const state = (await request('GET', `/rooms/${room.id}`, host.token)).body;
     const g = state.game;
+    if (state.version < lastVersion) versionWentBack = true;
+    lastVersion = state.version;
     if (g?.stage === 'bidding' && (g.dealNumber ?? 0) > lastDeal) {
       lastDeal = g.dealNumber;
       firstBidLeft ??= g.turnSecondsLeft;
@@ -65,6 +72,18 @@ async function main() {
   check('все нажали «ГОТОВ», боты раздали, торговались и доиграли раздачу', sawRoundDone, true);
   check('сразу после раздачи отсчёт стоит: 20 с хода + анимация (4 игрока — 9,6 с)',
     firstBidLeft !== null && firstBidLeft > 20 && firstBidLeft <= 30, true);
+
+  check('номер состояния растёт и не откатывается', [lastVersion > 5, versionWentBack], [true, false]);
+
+  // Тренировка: сколько бы ни выиграл или проиграл за столом — в аккаунте всё как было.
+  const final = (await request('GET', `/rooms/${room.id}`, host.token)).body;
+  const inRoom = final.players.find((p: any) => p.id === host.id).balance;
+  const meNow = (await request('GET', '/me', host.token)).body;
+  console.log(`   за столом у Серика ${inRoom}, в аккаунте ${meNow.balance}`);
+  check('тренировка: баланс аккаунта не изменился (30 000)', meNow.balance, 30_000);
+  check('тренировка: рейтинг не изменился', meNow.rating, ratingBefore);
+  const profile = (await request('GET', '/me/profile', host.token)).body;
+  check('тренировка: в статистику профиля не попала', profile.stats.deals, 0);
 
   const rating = (await request('GET', '/rating?scope=all', host.token)).body;
   check('в рейтинге ботов нет', rating.players.some((p: any) => p.name.startsWith('Бот ')), false);

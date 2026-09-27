@@ -13,6 +13,8 @@ export type StoredRoom = {
   id: string;
   status: string;
   players: { id: string; balance: number }[];
+  // Тренировка с ботами — в аккаунты ничего не пишется.
+  practice?: boolean;
   // Статистика игроков за эту комнату (этап 9.4). Нет — игра ещё не начиналась.
   stats?: Record<string, PlayerStats>;
   // Мастерство игроков, пока они за столом (этап 9.6) — как баланс.
@@ -68,6 +70,10 @@ export function writeRoom(db: DatabaseSync, room: StoredRoom) {
      ON CONFLICT(id) DO UPDATE SET status = excluded.status, data = excluded.data,
                                    updated_at = excluded.updated_at`,
   ).run(room.id, room.status, JSON.stringify(room), Date.now());
+
+  // Тренировка с ботами (решение владельца, 27.09.2026): монеты, рейтинг и статистика
+  // игроков не меняются — в аккаунты из такой комнаты ничего не пишем.
+  if (room.practice) return;
 
   const setBalance = db.prepare('UPDATE accounts SET balance = ? WHERE id = ?');
   for (const p of room.players) setBalance.run(p.balance, p.id);

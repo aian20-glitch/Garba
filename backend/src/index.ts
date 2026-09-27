@@ -136,6 +136,7 @@ import {
   clockFor,
   dealShowStep,
   pickRandom,
+  revealShowMs,
   type DealShow,
   TURN_SECONDS_OPTIONS,
   turnMsFor,
@@ -381,6 +382,11 @@ type Room = {
   lobbyTimedOut?: boolean;
   // Боты сервера за этим столом (кнопка «ДОБАВИТЬ БОТОВ», 27.09.2026).
   botIds?: string[];
+  // Тренировка (решение владельца, 28.09.2026): за столом боты — монеты, рейтинг,
+  // статистика и зачёт приглашений не меняются (writeRoom в аккаунты не пишет).
+  practice?: boolean;
+  // Номер состояния — растёт с каждым сохранением (persistRoom).
+  version?: number;
   game?: GameState;
   // Статистика игроков за эту комнату (ТЗ §35, этап 9.4). Заводится при старте игры.
   stats?: Record<string, PlayerStats>;
@@ -461,6 +467,9 @@ function activeRoomOf(accountId: string): Room | undefined {
 // дальше, она уронила бы весь сервер. Поэтому только пишем в журнал — комната цела
 // в памяти, и следующее сохранение запишет её целиком.
 function persistRoom(room: Room) {
+  // Номер состояния растёт с каждым сохранением: по нему приложение отбрасывает
+  // опоздавшие старые ответы (28.09.2026).
+  room.version = (room.version ?? 0) + 1;
   try {
     saveRoom(db, room);
     if (room.status === 'finished') payReferrals(room);
@@ -503,6 +512,8 @@ function changeCoins(accountId: string, delta: number, undo: (() => void)[]): Ro
       player.startBalance -= delta;
     });
     writeRoom(db, room);
+    // Тренировка балансы в аккаунт не пишет — начисление кладём в аккаунт сами.
+    if (room.practice) db.prepare('UPDATE accounts SET balance = balance + ? WHERE id = ?').run(delta, accountId);
     return room;
   }
 
@@ -1281,7 +1292,8 @@ function vacateSeat(room: Room, playerId: string, reason: 'left' | 'gone') {
   r.skill = Math.max(0, r.skill + LEFT_GAME);
 
   // Его баланс уходит с ним: пишем в аккаунт сейчас — комната его больше не сохраняет.
-  setBalance(db, playerId, player.balance);
+  // На тренировке с ботами монеты не настоящие — аккаунт не трогаем.
+  if (!room.practice) setBalance(db, playerId, player.balance);
   room.departedIds = [...(room.departedIds ?? []).filter((id) => id !== playerId), playerId];
   room.vacancies = [
     ...(room.vacancies ?? []),
@@ -1472,7 +1484,16 @@ const DEAL_SHOWN_STAGES = ['bidding', 'special', 'special_discard', 'kon_trump']
 // Когда у игроков закончится анимация текущей раздачи (0 — раздачи нет).
 function dealShownAt(room: Room): number {
   const g = room.game;
-  if (!g?.openCard) return 0;
+  if (!g) return 0;
+  // Первый раздающий: сначала все досматривают вскрытие на туза.
+  if (g.stage === 'dealer_found' && !g.openCard) {
+    const prev = dealShows.get(room.id);
+    if (prev?.key === 'reveal') return prev.shownAt;
+    const shownAt = Date.now() + revealShowMs(g.revealLog?.length ?? 0);
+    dealShows.set(room.id, { key: 'reveal', dealt: 0, shownAt });
+    return shownAt;
+  }
+  if (!g.openCard) return 0;
   const key = String(g.dealNumber ?? 0);
   const prev = dealShows.get(room.id);
   // Приложение начинает показ раздачи только в этих стадиях — сервер так же.
@@ -1588,7 +1609,7 @@ function markBack(room: Room, playerId: string) {
 }
 
 async function internalMove(roomId: string, move: TimedMove) {
-  await fetch(`http://127.0.0.1:${PORT}/rooms/${roomId}/${move.path}`, {
+  const res = await fetch(`http://127.0.0.1:${PORT}/rooms/${roomId}/${move.path}`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
@@ -1597,6 +1618,10 @@ async function internalMove(roomId: string, move: TimedMove) {
     },
     body: JSON.stringify(move.body),
   });
+  // Сервер отказал ходу за игрока или бота — в журнал, иначе такие ошибки не видно.
+  if (!res.ok) {
+    console.error(`[ROOM ${roomId}] ход ${move.path} за ${move.playerId} отклонён: ${res.status} ${await res.text()}`);
+  }
 }
 
 // Раз в секунду: у кого вышли 20 секунд — ходим за него; второй пропуск подряд — «ушёл».
@@ -1621,7 +1646,8 @@ async function sweepTurns() {
         const name = room.players.find((p) => p.id === move.playerId)?.name;
         console.log(`[ROOM ${room.id}] время вышло — за ${name}: ${move.path} ${JSON.stringify(move.body)}`);
         if (!room.game || room.status !== 'started') break;
-        if (gone.includes(move.playerId)) continue;
+        // Боту пропуски не считаем: «Я ЗДЕСЬ» он не нажмёт, и стол встал бы на паузу.
+        if (gone.includes(move.playerId) || room.botIds?.includes(move.playerId)) continue;
         const miss = addMiss(room.game.missedTurns ?? {}, move.playerId);
         room.game.missedTurns = miss.missed;
         if (miss.away && room.game.awayAt?.[move.playerId] === undefined) {
@@ -2586,6 +2612,9 @@ function publicRoom(room: Room, viewerId?: string) {
       lastEndVote: room.game.lastEndVote ?? null,
       // Время на ход (§13a): сколько секунд осталось тому, кого ждём; кого ждём.
       turnSecondsLeft: turnSecondsLeft(turnClockOf(room), Date.now(), turnMsOf(room)),
+      // Сколько ещё идёт анимация раздачи (вскрытия на туза): открыл стол позже —
+      // приложение не показывает её заново, а догоняет (28.09.2026).
+      dealShowLeftMs: Math.max(0, dealShownAt(room) - Date.now()),
       awaitedIds: awaitedMoves(room)?.moves.map((m) => m.playerId) ?? [],
       // Владелец спецкарты сбрасывает одну свою карту — кроме самой спецкарты (§7.5).
       myDiscardOptions:
@@ -2619,8 +2648,12 @@ function publicRoom(room: Room, viewerId?: string) {
     lobbyTimedOut: !!room.lobbyTimedOut,
     // У каждого игрока — адрес его фото (этап 9.5) или null.
     // И рейтинг (этап 9.6): сейчас и с каким сел за стол — для итогов «4.0 → 4.9».
+    // Тренировка с ботами: монеты и рейтинг за столом — не настоящие.
+    practice: !!room.practice,
+    version: room.version ?? 0,
     players: room.players.map((p) => {
-      const atTable = room.rating?.[p.id];
+      // На тренировке рейтинг не меняется — показываем тот, что в аккаунте.
+      const atTable = room.practice ? undefined : room.rating?.[p.id];
       return {
         ...p,
         // Код игрока — нажать на него за столом и открыть карточку (в друзья, подарок).
@@ -2848,8 +2881,12 @@ function joinRoom(room: Room, account: Account, wantedSeat?: number): { status: 
 
 // Открытые комнаты, куда можно сесть: лобби, есть место, хватает монет (19.09.2026).
 function openRoomsForAccount(account: Account) {
+  const now = Date.now();
   return openRoomsFor(
-    [...rooms.values()].map((r) => ({
+    [...rooms.values()]
+      // Лобби, которое вот-вот закроется само (меньше минуты), не предлагаем.
+      .filter((r) => r.status !== 'lobby' || lobbySecondsLeft(r.createdAt, now, lobbyMs) >= 60)
+      .map((r) => ({
       id: r.id,
       isPublic: !!r.isPublic,
       status: r.status,
@@ -3094,6 +3131,7 @@ app.post('/rooms/:id/bots', (req, res) => {
       break;
     }
     room.botIds = [...(room.botIds ?? []), bot.id];
+    room.practice = true;
   }
   console.log(`[ROOM ${room.id}] ${me(res).name} добавил ботов — ${room.players.length}/${room.capacity}`);
   return res.json(publicRoom(room, playerId));
@@ -3113,12 +3151,15 @@ async function driveBots() {
     for (const botId of room.botIds) {
       if (!room.players.some((p) => p.id === botId)) continue;
       const planKey = `${room.id}:${botId}`;
-      const action: BotAction | null = botAction(botId, publicRoom(room, botId));
+      const view = publicRoom(room, botId);
+      const action: BotAction | null = botAction(botId, view);
       if (!action) {
         botPlans.delete(planKey);
         continue;
       }
-      const sig = JSON.stringify([action.path, action.body]);
+      // Одинаковое действие в другой стадии или раздаче — новое решение, пауза заново.
+      const g = view.game as { stage?: string; dealNumber?: number; trickNumber?: number } | null;
+      const sig = JSON.stringify([action.path, action.body, view.status, g?.stage, g?.dealNumber, g?.trickNumber]);
       let plan = botPlans.get(planKey);
       if (!plan || plan.sig !== sig) {
         plan = { sig, dueAt: Math.max(now + action.delay, shownAt + BOT_STEP_MS) };
@@ -3143,6 +3184,25 @@ async function driveBots() {
 setInterval(() => {
   driveBots().catch((e) => console.error('bots failed:', e));
 }, 250);
+
+// Закрытые комнаты не держим в памяти вечно (28.09.2026): через 30 минут после закрытия —
+// выгружаем вместе со всем, что о них помнят таймеры. Итоги остаются в базе.
+const UNLOAD_FINISHED_MS = 30 * 60_000;
+const finishedAt = new Map<string, number>();
+setInterval(() => {
+  const now = Date.now();
+  for (const room of rooms.values()) {
+    if (room.status !== 'finished') continue;
+    const since = finishedAt.get(room.id) ?? now;
+    finishedAt.set(room.id, since);
+    if (now - since < UNLOAD_FINISHED_MS) continue;
+    rooms.delete(room.id);
+    finishedAt.delete(room.id);
+    for (const map of [presence, absentSince, turnClocks, dealShows]) map.delete(room.id);
+    referralsChecked.delete(room.id);
+    for (const key of botPlans.keys()) if (key.startsWith(`${room.id}:`)) botPlans.delete(key);
+  }
+}, 60_000);
 
 app.post('/rooms/:id/ready', (req, res) => {
   const room = rooms.get(req.params.id);
@@ -3195,6 +3255,10 @@ function settleReadyCheck(room: Room): boolean {
   room.players = room.players.filter((p) => !outcome.drop.includes(p.id));
   room.readyCheck = null;
   room.readyDroppedIds = outcome.drop;
+  // Создателем бот не становится: следующий по входу человек, людей нет — комнату закрываем.
+  if (outcome.creatorId !== null && room.botIds?.includes(outcome.creatorId)) {
+    outcome.creatorId = room.players.find((p) => !room.botIds!.includes(p.id))?.id ?? null;
+  }
   if (outcome.creatorId === null) {
     room.status = 'finished';
     console.log(`[ROOM ${room.id}] «ГОТОВ» не нажал никто — комната закрыта`);
