@@ -47,9 +47,9 @@
   `flutter build ios --release --dart-define=API_BASE=...` → `xcrun devicectl device install app`.
 
 ## Следующий шаг
-1. Выложить сервер с исправлениями: `./deploy/deploy.sh garba-vps` (выкладывает закоммиченное).
-2. Сборка 1.0.0+4 в TestFlight (команды — CLAUDE.md, «Выгрузка в App Store Connect»),
-   APK для Google Play с API_BASE=https://garbagame.kz.
+1. ~~Сервер с исправлениями~~ — выложен 28.09.2026 (из папки ветки worktree-ios-testflight).
+2. ~~Сборка 1.0.0 (4) в TestFlight~~ — выгружена 28.09.2026. Дальше — APK для Google Play
+   с API_BASE=https://garbagame.kz.
 3. Ответить на 4 вопроса выше.
 4. Google Play ($25) → закрытый тест (12 человек, 14 дней).
 
