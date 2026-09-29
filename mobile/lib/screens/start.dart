@@ -246,7 +246,9 @@ class _StartScreenState extends State<StartScreen> {
                       Text(
                         recovering
                             ? 'Введите код игрока и секретный код, который вы сохранили.'
-                            : 'Это имя увидят другие игроки за столом.',
+                            : 'Это имя увидят другие игроки за столом. '
+                                'Без мата и оскорблений: на имя можно пожаловаться, '
+                                'жалобы мы проверяем в течение суток.',
                         style: TextStyle(color: Colors.white70),
                       ),
                       const SizedBox(height: 16),
@@ -325,12 +327,20 @@ class _StartScreenState extends State<StartScreen> {
                                 : 'ВОССТАНОВИТЬ АККАУНТ'),
                           ),
                           // Требование App Store и Google Play — видно до создания аккаунта.
+                          // Правила поведения (Apple 1.2, 29.09.2026) — в том же тексте.
+                          if (!recovering)
+                            const Text(
+                              'Нажимая «НАЧАТЬ», вы соглашаетесь с правилами поведения: '
+                              'оскорбления и мат недопустимы.',
+                              textAlign: TextAlign.center,
+                              style: TextStyle(color: Colors.white54, fontSize: 12),
+                            ),
                           TextButton(
                             onPressed: () => Navigator.push(
                               context,
                               MaterialPageRoute(builder: (_) => const PrivacyScreen()),
                             ),
-                            child: const Text('Политика конфиденциальности',
+                            child: const Text('Правила поведения и конфиденциальность',
                                 style: TextStyle(color: Colors.white54, fontSize: 12)),
                           ),
                         ],

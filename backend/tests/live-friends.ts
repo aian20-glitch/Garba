@@ -47,6 +47,44 @@ async function main() {
   await request('POST', `/rooms/${room.id}/invite`, host.token, { code: strangerCode });
   check('чужой в комнате не сидит и приглашений не получил', (await request('GET', '/me', stranger.token)).body.roomInvites, []);
 
+  section('жалоба и блокировка (29.09.2026, Apple 1.2)');
+  check('имя с матом не берём', (await request('POST', '/accounts', undefined, { name: 'cyka' })).body.error, 'name not allowed');
+  check('жалоба без причины — 400', (await request('POST', `/players/${palCode}/report`, host.token, {})).status, 400);
+  check('на себя — 400', (await request('POST', `/players/${hostCode}/report`, host.token, { reason: 'name' })).status, 400);
+  check('жалоба на имя принята', (await request('POST', `/players/${palCode}/report`, host.token, { reason: 'name', roomId: room.id })).status, 201);
+  check('вторая такая же — 409', (await request('POST', `/players/${palCode}/report`, host.token, { reason: 'name' })).status, 409);
+  const reports = (await request('GET', '/admin/reports')).body.reports;
+  check('владелец видит жалобу: на кого, от кого, где', reports.map((r: any) => [r.toCode, r.fromName, r.roomId, r.reason]), [[palCode, 'Хозяин', room.id, 'name']]);
+  check('жалобы из интернета не видны', (await fetch(BASE + '/admin/reports', { headers: { 'X-Forwarded-For': '7.7.7.7' } })).status, 403);
+
+  await request('POST', `/rooms/${room.id}/react`, pal.token, { emoji: '👍' });
+  check('до блокировки смайлик друга виден', (await request('GET', `/rooms/${room.id}`, host.token)).body.reactions.length, 1);
+  check('заблокировал', (await request('POST', `/players/${palCode}/block`, host.token)).body, { blocked: true });
+  check('его смайлики мне больше не приходят', (await request('GET', `/rooms/${room.id}`, host.token)).body.reactions, []);
+  check('а сам он свой смайлик видит', (await request('GET', `/rooms/${room.id}`, pal.token)).body.reactions.length, 1);
+  check('дружба снята', (await request('GET', '/friends', host.token)).body.friends, []);
+  check('в карточке — blocked', (await request('GET', `/players/${palCode}`, host.token)).body.blocked, true);
+  check('в списке заблокированных', (await request('GET', '/me/blocks', host.token)).body.players.map((p: any) => p.code), [palCode]);
+  check('заблокированный не может звать в друзья', (await request('POST', '/friends', pal.token, { code: hostCode })).status, 403);
+  check('и дарить монеты', (await request('POST', '/gifts', pal.token, { toCode: hostCode, amount: 100 })).body.error, 'blocked');
+
+  const renamed = await request('POST', '/admin/rename', undefined, { code: palCode, name: 'Игрок' });
+  check('владелец сменил имя по жалобе', renamed.body.name, 'Игрок');
+  check('за столом — новое имя', (await request('GET', `/rooms/${room.id}`, host.token)).body.players.find((p: any) => p.code === palCode)?.name, 'Игрок');
+  check('жалоба разобрана', (await request('POST', `/admin/reports/${reports[0].id}/resolve`)).body.closed, 1);
+  check('открытых жалоб нет', (await request('GET', '/admin/reports')).body.reports, []);
+  check('разблокировал', (await request('DELETE', `/players/${palCode}/block`, host.token)).body, { blocked: false });
+  check('смайлик снова виден', (await request('GET', `/rooms/${room.id}`, host.token)).body.reactions.length, 1);
+
+  await request('POST', `/rooms/${room.id}/visibility`, host.token, { isPublic: true });
+  const openIds = async () => (await request('GET', '/rooms/open', stranger.token)).body.rooms.map((r: any) => r.id);
+  check('открытую комнату чужой видит', (await openIds()).includes(room.id), true);
+  await request('POST', `/players/${hostCode}/block`, stranger.token);
+  check('заблокировал хозяина — его комнату не предлагаем', (await openIds()).includes(room.id), false);
+  check('владелец удаляет аккаунт нарушителя', (await request('POST', '/admin/delete', undefined, { code: strangerCode })).body.ok, true);
+  check('аккаунта больше нет', (await request('GET', '/me', stranger.token)).status, 401);
+  check('за столом нельзя удалить — 409', (await request('POST', '/admin/delete', undefined, { code: palCode })).status, 409);
+
   section('общий лимит запросов с одного адреса (26.09.2026)');
   const from = (ip: string) => fetch(BASE + '/health', { headers: { 'X-Forwarded-For': ip } }).then((r) => r.status);
   const statuses: number[] = [];

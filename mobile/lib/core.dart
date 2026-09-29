@@ -326,6 +326,9 @@ const _apiErrorMessages = <String, String>{
   'room finished': 'Игра в этой комнате уже закончилась.',
   'not enough coins for this risk': 'Не хватает монет на такой риск.',
   'already claimed today': 'Бонус сегодня уже получен.',
+  'name not allowed': 'Такое имя нельзя: без мата и оскорблений.',
+  'blocked': 'Нельзя: один из вас заблокировал другого.',
+  'already reported': 'Вы уже пожаловались на этого игрока — жалоба на проверке.',
 };
 
 String userErrorMessage(Object error, {String fallback = 'Не удалось выполнить действие'}) {

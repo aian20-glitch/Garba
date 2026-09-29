@@ -14,6 +14,7 @@ import { ensureRoomTable } from './roomDb.js';
 import { makePlayerCode } from './bonus.js';
 import { ensureAvatarTable } from './avatars.js';
 import { START_SKILL } from './rating.js';
+import { deleteModerationData, ensureModerationTables } from './moderation.js';
 
 export type Account = {
   id: string;
@@ -81,6 +82,7 @@ export function openDb(file: string): DatabaseSync {
   db.exec('CREATE INDEX IF NOT EXISTS friend_requests_to ON friend_requests (to_id)');
   ensureRoomTable(db); // комнаты — этап 9.2
   ensureAvatarTable(db); // аватары — этап 9.5
+  ensureModerationTables(db); // жалобы и блокировка — 29.09.2026
   return db;
 }
 
@@ -321,6 +323,11 @@ export function setBalance(db: DatabaseSync, id: string, balance: number) {
   db.prepare('UPDATE accounts SET balance = ? WHERE id = ?').run(balance, id);
 }
 
+// Сменить имя — только владелец сервера по жалобе (POST /admin/rename, 29.09.2026).
+export function setName(db: DatabaseSync, id: string, name: string) {
+  db.prepare('UPDATE accounts SET name = ? WHERE id = ?').run(name, id);
+}
+
 export function setSkill(db: DatabaseSync, id: string, skill: number) {
   db.prepare('UPDATE accounts SET skill = ? WHERE id = ?').run(skill, id);
 }
@@ -464,6 +471,7 @@ export function deleteAccountData(db: DatabaseSync, id: string) {
   db.prepare('DELETE FROM friends WHERE owner_id = ? OR friend_id = ?').run(id, id);
   db.prepare('DELETE FROM friend_requests WHERE from_id = ? OR to_id = ?').run(id, id);
   db.prepare('DELETE FROM avatars WHERE account_id = ?').run(id);
+  deleteModerationData(db, id);
   db.prepare('DELETE FROM room_stats WHERE player_id = ?').run(id);
   db.prepare('UPDATE accounts SET invited_by = NULL WHERE invited_by = ?').run(id);
 

@@ -44,6 +44,7 @@
 | `readyCheck.ts` | **Новый** (23.09.2026). «ГОТОВ» перед стартом: 30 с, не нажал — вышел, создатель — следующему. Чистые функции. |
 | `lobbyTimer.ts` | **Новый** (27.09.2026). Лобби ждёт начала игры 10 минут, потом закрывается само (не во время «ГОТОВ»). Чистые функции. |
 | `serverBots.ts` | **Новый** (27.09.2026). Боты сервера — кнопка «ДОБАВИТЬ БОТОВ»: что бот делает в каком состоянии, монеты, имена. Чистые функции. |
+| `moderation.ts` | **Новый** (29.09.2026, Apple 1.2). Жалобы, блокировка игроков, фильтр мата в именах. Таблицы `blocks`, `reports`. |
 | `special.ts` | **Новый** (этап 7). Спецкарты: какая карта, очередь, множители, итог борьбы, первый ход. |
 | `rules.ts` | **Используются** `canPlayCard`, `trickWinner` (этап 3) и `isGarba` (этап 6) — сверены с RULES.md. `specialKind`, `canDeclareMain` — ещё не проверены. |
 
@@ -170,8 +171,13 @@ xcodebuild -exportArchive -archivePath build/ios/archive/Runner.xcarchive \
 ```
 
 **Каждая новая сборка — новый номер** после `+` в `version:` в `pubspec.yaml` (1.0.0+2, +3…),
-иначе App Store Connect её не примет. Сейчас в `pubspec.yaml` — **1.0.0+4** (28.09.2026, после
-последнего аудита; +3 уже собрана).
+иначе App Store Connect её не примет. Сейчас в `pubspec.yaml` — **1.0.0+5** (29.09.2026: жалобы и
+блокировка по ответу Apple; +4 была на проверке).
+
+**Ответ Apple 29.09.2026 — Guideline 2.1 «Information Needed»** (новый аккаунт разработчика):
+просят видео с настоящего iPhone (запуск → регистрация → игра → жалоба/блокировка → удаление
+аккаунта) и 6 письменных ответов — черновик в `store/app-review-reply.md`, тот же текст — в поле
+Notes (App Review Information).
 
 ### Проверка на симуляторе iPhone (20.09.2026)
 
@@ -296,6 +302,17 @@ GET  /friends/requests           → { incoming: [...], outgoing: [...] } — { 
 POST /friends/requests/:code/accept | decline | cancel   — принять / отклонить входящую /
                                  отменить свою; отклонённому не сообщаем
 DELETE /friends/:code            → { ok }; 404 not a friend
+POST /players/:code/report       { reason: name | behavior | other, roomId? } → 201 { ok } — жалоба
+                                 (29.09.2026, Apple 1.2); 400 bad reason | self; 409 already reported
+                                 (неразобранная от меня на него уже есть); 404
+POST /players/:code/block        → { blocked: true } — дружба и заявки между нами снимаются;
+DELETE /players/:code/block      → { blocked: false }
+GET  /me/blocks                  → { players: [{ code, name }] } — кого я заблокировал
+                                 Блок: его смайлики мне не приходят (publicRoom фильтрует reactions),
+                                 друзья и подарки между нами — 403 blocked (кто бы ни блокировал),
+                                 /rooms/open и /rooms/quick не сажают за один стол. В карточке
+                                 /players/:code — blocked: я его заблокировал. Логика — moderation.ts.
+POST /accounts с матом в имени   → 400 name not allowed (nameNotAllowed в moderation.ts, по корням)
 POST /gifts                      { toCode, amount }  → { amount, balance, to: { code, name } }
                                  amount 100..10000 кратно 100 (с 25.09.2026); ошибки: 400 bad amount | self |
                                  not enough coins; 409 already gifted today; 409 finish your game
@@ -370,6 +387,14 @@ POST /rooms/:id/react            { emoji }    смайлик — в любой �
 — служебное, только с этого компьютера (23.09.2026) —
 POST /admin/coins                { code | id, amount }  → { name, amount, balance }; через moveCoins;
                                  с X-Forwarded-For (из интернета через Caddy) — 403 local only
+GET  /admin/reports[?all=1]      жалобы (29.09.2026): { reports: [{ id, reason, toCode, toNameThen,
+                                 toNameNow, fromName, roomId, at, resolved }] }
+POST /admin/reports/:id/resolve  → { closed } — закрывает все открытые жалобы на того же игрока
+POST /admin/rename               { code, name } — сменить имя нарушителю (и за столом)
+POST /admin/delete               { code } — удалить аккаунт нарушителя; 409 player is in a game
+                                 С сервера в интернете — `./deploy/reports.sh garba-vps [all|resolve ID|
+                                 rename КОД ИМЯ|delete КОД]`. **Apple ждёт реакции на жалобу за сутки —
+                                 смотреть каждый день.**
 
 — без токена, для людей (этап 9.7) —
 GET  /privacy                    политика конфиденциальности (26.09.2026) — ссылка для App Store и

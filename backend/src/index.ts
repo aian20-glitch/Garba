@@ -35,6 +35,7 @@ import {
   replaceRecoveryCode,
   setBalance,
   setDaily,
+  setName,
   setSkill,
   anonymize,
   tokenFromHeader,
@@ -133,6 +134,19 @@ import {
 import { LOBBY_MS, lobbyExpired, lobbySecondsLeft } from './lobbyTimer.js';
 import { rateCheck } from './rateLimit.js';
 import { openRoomsFor, QUICK_ROOM } from './openRooms.js';
+import {
+  addReport,
+  avoidIds,
+  blockedBetween,
+  blockedIds,
+  blockPlayer,
+  hasBlocked,
+  isReportReason,
+  listReports,
+  nameNotAllowed,
+  resolveReport,
+  unblockPlayer,
+} from './moderation.js';
 import {
   addMiss,
   clockFor,
@@ -595,6 +609,10 @@ app.post('/accounts', (req, res) => {
   if (!name) {
     return res.status(400).json({ error: 'name must be 1 to 20 characters' });
   }
+  // Мат и оскорбления в имени не берём (Apple, Guideline 1.2; 29.09.2026).
+  if (nameNotAllowed(name)) {
+    return res.status(400).json({ error: 'name not allowed' });
+  }
 
   const inviteCode = normalizeCode(req.body?.inviteCode);
   const inviter = inviteCode ? findAccountByCode(db, inviteCode) : null;
@@ -657,6 +675,12 @@ app.delete('/me', (req, res) => {
   if (room) {
     return res.status(409).json({ error: 'finish your game first', roomId: room.id });
   }
+  deleteAccountEverywhere(account);
+  return res.json({ ok: true });
+});
+
+// Аккаунт — из базы, из комнат в памяти и из сокетов. Вызывать, только когда он не за столом.
+function deleteAccountEverywhere(account: Account) {
   transaction(db, () => deleteAccountData(db, account.id));
   // Закрытые комнаты ещё полчаса в памяти и сохраняются заново (смайлики) — имя и там
   // заменяем, иначе оно вернулось бы в базу.
@@ -669,8 +693,7 @@ app.delete('/me', (req, res) => {
   }
   console.log(`[ACCOUNT] deleted ${account.name} (${account.id})`);
   dropSocketsOf(account.id);
-  return res.json({ ok: true });
-});
+}
 
 // Кто я: по токену. roomId — незаконченная комната, если игрок в ней сидит.
 // daily — ежедневный бонус (ТЗ §3): взят ли сегодня, какой день серии, сколько даст.
@@ -921,7 +944,65 @@ app.get('/players/:code', (req, res) => {
     isFriend: areFriends(db, me.id, player.id),
     // friends | outgoing (я позвал) | incoming (он зовёт меня) | none
     friendStatus: friendStatus(db, me.id, player.id),
+    // Я заблокировал этого игрока (29.09.2026).
+    blocked: hasBlocked(db, me.id, player.id),
   });
+});
+
+// --- Блокировка и жалобы (29.09.2026, Apple Guideline 1.2; moderation.ts) ---
+
+// Заблокировать: дружба и заявки между нами снимаются, его приглашения в комнаты — тоже.
+app.post('/players/:code/block', (req, res) => {
+  const me = accountOf(req);
+  if (!me) return res.status(401).json({ error: 'unauthorized' });
+  const other = findAccountByCode(db, normalizeCode(req.params.code));
+  if (!other) return res.status(404).json({ error: 'player not found' });
+  if (other.id === me.id) return res.status(400).json({ error: 'self' });
+  // removeFriend сама пишет транзакцией — вложить её в ещё одну SQLite не даст.
+  blockPlayer(db, me.id, other.id);
+  removeFriend(db, me.id, other.id);
+  dropRequests(db, me.id, other.id);
+  roomInvites.set(me.id, (roomInvites.get(me.id) ?? []).filter((inv) => inv.fromId !== other.id));
+  roomInvites.set(other.id, (roomInvites.get(other.id) ?? []).filter((inv) => inv.fromId !== me.id));
+  console.log(`[BLOCK] ${me.name} заблокировал ${other.name}`);
+  return res.json({ blocked: true });
+});
+
+app.delete('/players/:code/block', (req, res) => {
+  const me = accountOf(req);
+  if (!me) return res.status(401).json({ error: 'unauthorized' });
+  const other = findAccountByCode(db, normalizeCode(req.params.code));
+  if (!other) return res.status(404).json({ error: 'player not found' });
+  unblockPlayer(db, me.id, other.id);
+  return res.json({ blocked: false });
+});
+
+// Кого я заблокировал — список в профиле, чтобы можно было разблокировать.
+app.get('/me/blocks', (req, res) => {
+  const me = accountOf(req);
+  if (!me) return res.status(401).json({ error: 'unauthorized' });
+  const players = blockedIds(db, me.id)
+    .map((id) => getAccount(db, id))
+    .filter((a): a is Account => a !== null)
+    .map((a) => ({ code: a.code, name: a.name }));
+  return res.json({ players });
+});
+
+// Пожаловаться: reason — name (имя) | behavior (поведение за столом) | other.
+// roomId — где это было, если жалоба из-за стола. Разбирает владелец: deploy/reports.sh.
+app.post('/players/:code/report', (req, res) => {
+  const me = accountOf(req);
+  if (!me) return res.status(401).json({ error: 'unauthorized' });
+  const other = findAccountByCode(db, normalizeCode(req.params.code));
+  if (!other) return res.status(404).json({ error: 'player not found' });
+  if (other.id === me.id) return res.status(400).json({ error: 'self' });
+  const reason = req.body?.reason;
+  if (!isReportReason(reason)) return res.status(400).json({ error: 'bad reason' });
+  const roomId = isRoomCode(req.body?.roomId) ? String(req.body.roomId) : null;
+  const result = addReport(db, { fromId: me.id, toId: other.id, toName: other.name, reason, roomId });
+  if (result === 'already reported') return res.status(409).json({ error: 'already reported' });
+  console.log(`[REPORT] ${me.name} → ${other.name} (${other.code}): ${reason}${roomId ? `, комната ${roomId}` : ''}`);
+  return res.status(201).json({ ok: true });
 });
 
 // --- Рейтинг (ТЗ §38, RULES.md §16) ---
@@ -982,6 +1063,9 @@ app.post('/friends', (req, res) => {
   }
   if (friend.id === me.id) {
     return res.status(400).json({ error: 'self' });
+  }
+  if (blockedBetween(db, me.id, friend.id)) {
+    return res.status(403).json({ error: 'blocked' });
   }
   // Дружба — только с согласия второго: отправляем заявку (решение владельца, 19.09.2026).
   // Он уже звал меня — сразу друзья.
@@ -1074,6 +1158,70 @@ app.post('/admin/coins', (req, res) => {
   return res.json({ name: account.name, amount, balance });
 });
 
+// Жалобы — только с этого компьютера, как /admin/coins (29.09.2026). На сервере в интернете —
+// через deploy/reports.sh (ssh + curl). Apple ждёт, что на жалобу отреагируют за сутки.
+function localOnly(req: express.Request): boolean {
+  return LOOPBACK.includes(req.socket.remoteAddress ?? '') && req.headers['x-forwarded-for'] === undefined;
+}
+
+app.get('/admin/reports', (req, res) => {
+  if (!localOnly(req)) return res.status(403).json({ error: 'local only' });
+  const reports = listReports(db, req.query.all === '1').map((r) => {
+    const to = getAccount(db, r.toId);
+    return {
+      id: r.id,
+      reason: r.reason,
+      toCode: to?.code ?? null,
+      toNameThen: r.toName,
+      toNameNow: to?.name ?? null,
+      fromName: getAccount(db, r.fromId)?.name ?? null,
+      roomId: r.roomId,
+      at: new Date(r.createdAt).toISOString(),
+      resolved: r.resolvedAt !== null,
+    };
+  });
+  return res.json({ reports });
+});
+
+// Разобрать жалобу — закрываются все открытые жалобы на того же игрока.
+app.post('/admin/reports/:id/resolve', (req, res) => {
+  if (!localOnly(req)) return res.status(403).json({ error: 'local only' });
+  const closed = resolveReport(db, Number(req.params.id));
+  if (closed === 0) return res.status(404).json({ error: 'no open report' });
+  return res.json({ closed });
+});
+
+// Сменить игроку недопустимое имя. За столом — тоже, со следующего состояния комнаты.
+app.post('/admin/rename', (req, res) => {
+  if (!localOnly(req)) return res.status(403).json({ error: 'local only' });
+  const account = findAccountByCode(db, normalizeCode(req.body?.code) ?? '');
+  if (!account) return res.status(404).json({ error: 'player not found' });
+  const name = cleanName(req.body?.name);
+  if (!name || nameNotAllowed(name)) return res.status(400).json({ error: 'bad name' });
+  setName(db, account.id, name);
+  for (const room of rooms.values()) {
+    const seat = room.players.find((p) => p.id === account.id);
+    if (!seat) continue;
+    seat.name = name;
+    persistRoom(room);
+    broadcastRoom(room.id).catch((e) => console.error(`[ROOM ${room.id}] broadcast failed:`, e));
+  }
+  console.log(`[ADMIN] имя ${account.name} → ${name} (${account.code})`);
+  return res.json({ code: account.code, name });
+});
+
+// Удалить аккаунт нарушителя (повторные жалобы) — как «Удалить аккаунт» в профиле.
+// Сидит за столом — 409: сначала пусть игра закончится, его деньги в ней.
+app.post('/admin/delete', (req, res) => {
+  if (!localOnly(req)) return res.status(403).json({ error: 'local only' });
+  const account = findAccountByCode(db, normalizeCode(req.body?.code) ?? '');
+  if (!account) return res.status(404).json({ error: 'player not found' });
+  const room = activeRoomOf(account.id);
+  if (room) return res.status(409).json({ error: 'player is in a game', roomId: room.id });
+  deleteAccountEverywhere(account);
+  return res.json({ ok: true, name: account.name });
+});
+
 app.post('/gifts', (req, res) => {
   const from = accountOf(req);
   if (!from) {
@@ -1083,6 +1231,10 @@ app.post('/gifts', (req, res) => {
   const to = findAccountByCode(db, normalizeCode(req.body?.toCode));
   if (!to) {
     return res.status(404).json({ error: 'player not found' });
+  }
+
+  if (blockedBetween(db, from.id, to.id)) {
+    return res.status(403).json({ error: 'blocked' });
   }
 
   const busyIn = activeRoomOf(from.id);
@@ -2533,6 +2685,13 @@ function codeOf(id: string): string | null {
   return codes.get(id)!;
 }
 
+function reactionsFor(room: Room, viewerId?: string): ReactionEntry[] {
+  const list = room.reactions ?? [];
+  if (!viewerId || list.length === 0) return list;
+  const blocked = new Set(blockedIds(db, viewerId));
+  return blocked.size === 0 ? list : list.filter((r) => !blocked.has(r.playerId));
+}
+
 function publicRoom(room: Room, viewerId?: string) {
   let game: any = null;
 
@@ -2802,7 +2961,8 @@ function publicRoom(room: Room, viewerId?: string) {
     // Пауза из-за отключения (§13): кто отключился и сколько секунд у него осталось.
     pause: publicPause(room),
     // Смайлики после раздачи и после игры (§14). Клиент показывает новые по id.
-    reactions: room.reactions ?? [],
+    // Смайлики тех, кого смотрящий заблокировал, ему не показываем (29.09.2026).
+    reactions: reactionsFor(room, viewerId),
     // Статистика игроков за комнату (ТЗ §35) — для экрана «ИТОГИ ИГРЫ».
     stats: room.stats ?? null,
     createdAt: room.createdAt,
@@ -3014,10 +3174,13 @@ function joinRoom(room: Room, account: Account, wantedSeat?: number): { status: 
 // Открытые комнаты, куда можно сесть: лобби, есть место, хватает монет (19.09.2026).
 function openRoomsForAccount(account: Account) {
   const now = Date.now();
+  // За один стол с тем, кого я заблокировал или кто заблокировал меня, не сажаем (29.09.2026).
+  const avoid = avoidIds(db, account.id);
   return openRoomsFor(
     [...rooms.values()]
       // Лобби, которое вот-вот закроется само (меньше минуты), не предлагаем.
       .filter((r) => r.status !== 'lobby' || lobbySecondsLeft(r.createdAt, now, lobbyMs) >= 60)
+      .filter((r) => !r.players.some((p) => avoid.has(p.id)))
       .map((r) => ({
       id: r.id,
       isPublic: !!r.isPublic,

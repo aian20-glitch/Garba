@@ -257,6 +257,14 @@ class _ProfileScreenState extends State<ProfileScreen> {
                 ),
                 const SizedBox(height: 24),
                 TextButton.icon(
+                  onPressed: () => Navigator.push(
+                    context,
+                    MaterialPageRoute(builder: (_) => const BlockedScreen()),
+                  ),
+                  icon: const Icon(Icons.block),
+                  label: const Text('Заблокированные игроки'),
+                ),
+                TextButton.icon(
                   onPressed: deleteAccount,
                   style:
                       TextButton.styleFrom(foregroundColor: Colors.redAccent),
@@ -273,6 +281,72 @@ class _ProfileScreenState extends State<ProfileScreen> {
                 ),
               ],
             ),
+    );
+  }
+}
+
+// Кого я заблокировал (29.09.2026): нажать — карточка, там «РАЗБЛОКИРОВАТЬ».
+class BlockedScreen extends StatefulWidget {
+  const BlockedScreen({super.key});
+
+  @override
+  State<BlockedScreen> createState() => _BlockedScreenState();
+}
+
+class _BlockedScreenState extends State<BlockedScreen> {
+  List<Map<String, dynamic>>? players;
+  String? error;
+
+  @override
+  void initState() {
+    super.initState();
+    load();
+  }
+
+  Future<void> load() async {
+    try {
+      final response = await apiRequest(
+          http.get(Uri.parse('$apiBase/me/blocks'), headers: authHeaders()));
+      expectStatus(response, const [200]);
+      final list = (jsonDecode(response.body) as Map)['players'] as List;
+      if (mounted) {
+        setState(() => players = list.map((p) => Map<String, dynamic>.from(p as Map)).toList());
+      }
+    } catch (e) {
+      if (mounted) setState(() => error = userErrorMessage(e));
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final list = players;
+    return Scaffold(
+      appBar: AppBar(title: const Text('Заблокированные')),
+      body: list == null
+          ? Center(child: error == null ? const CircularProgressIndicator() : Text(error!))
+          : list.isEmpty
+              ? const Center(
+                  child: Text('Вы никого не блокировали',
+                      style: TextStyle(color: Colors.white70)))
+              : ListView(
+                  children: [
+                    for (final p in list)
+                      ListTile(
+                        leading: AvatarView(avatar: null, name: p['name'].toString(), radius: 20),
+                        title: Text(p['name'].toString()),
+                        subtitle: Text('Код: ${p['code']}'),
+                        trailing: const Icon(Icons.chevron_right),
+                        onTap: () async {
+                          await Navigator.push(
+                            context,
+                            MaterialPageRoute(
+                                builder: (_) => PlayerScreen(code: p['code'].toString())),
+                          );
+                          load();
+                        },
+                      ),
+                  ],
+                ),
     );
   }
 }
@@ -602,6 +676,94 @@ class _PlayerScreenState extends State<PlayerScreen> {
     }
   }
 
+  // Пожаловаться (Apple 1.2, 29.09.2026): причина — имя, поведение или другое.
+  // Жалобу разбирает владелец в течение суток; сам игрок о ней не узнаёт.
+  Future<void> report() async {
+    final reason = await showModalBottomSheet<String>(
+      context: context,
+      builder: (ctx) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Padding(
+              padding: EdgeInsets.all(16),
+              child: Text('На что жалуетесь?',
+                  style: TextStyle(fontSize: 18, fontWeight: FontWeight.w800)),
+            ),
+            for (final (code, label) in const [
+              ('name', 'Оскорбительное имя'),
+              ('behavior', 'Поведение за столом'),
+              ('other', 'Другое'),
+            ])
+              ListTile(
+                leading: const Icon(Icons.flag_outlined),
+                title: Text(label),
+                onTap: () => Navigator.pop(ctx, code),
+              ),
+          ],
+        ),
+      ),
+    );
+    if (reason == null || !mounted) return;
+    setState(() => busy = true);
+    try {
+      final response = await apiRequest(http.post(
+        Uri.parse('$apiBase/players/${Uri.encodeComponent(widget.code)}/report'),
+        headers: authHeaders(),
+        body: jsonEncode({'reason': reason}),
+      ));
+      expectStatus(response, const [201]);
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+          content: Text('Жалоба отправлена. Мы проверим её в течение суток.')));
+    } catch (e) {
+      if (mounted) showGarbaError(context, e);
+    } finally {
+      if (mounted) setState(() => busy = false);
+    }
+  }
+
+  // Заблокировать / разблокировать. Блокировка снимает дружбу — переспрашиваем.
+  Future<void> toggleBlock(bool blocked) async {
+    if (!blocked) {
+      final ok = await showDialog<bool>(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          title: Text('Заблокировать ${player?['name']}?'),
+          content: const Text(
+            'Он не сможет звать вас в друзья и дарить монеты, его смайлики вы не '
+            'увидите, быстрая игра не посадит вас за один стол. Если вы друзья — '
+            'дружба удалится. Он об этом не узнает.',
+          ),
+          actions: [
+            TextButton(
+                onPressed: () => Navigator.pop(ctx, false),
+                child: const Text('ОТМЕНА')),
+            FilledButton(
+              style: FilledButton.styleFrom(backgroundColor: Colors.redAccent),
+              onPressed: () => Navigator.pop(ctx, true),
+              child: const Text('ЗАБЛОКИРОВАТЬ'),
+            ),
+          ],
+        ),
+      );
+      if (ok != true || !mounted) return;
+    }
+    setState(() => busy = true);
+    try {
+      final uri = Uri.parse('$apiBase/players/${Uri.encodeComponent(widget.code)}/block');
+      final response = await apiRequest(blocked
+          ? http.delete(uri, headers: authHeaders())
+          : http.post(uri, headers: authHeaders(), body: '{}'));
+      expectStatus(response, const [200]);
+      await load();
+    } catch (e) {
+      if (mounted) showGarbaError(context, e);
+    } finally {
+      if (mounted) setState(() => busy = false);
+    }
+  }
+
   Widget friendButtons(String status) {
     switch (status) {
       case 'friends':
@@ -680,22 +842,47 @@ class _PlayerScreenState extends State<PlayerScreen> {
                         style: TextStyle(color: Colors.greenAccent)),
                   ),
                 const SizedBox(height: 12),
+                if (p['blocked'] == true)
+                  const Text('Вы заблокировали этого игрока',
+                      style: TextStyle(color: Colors.redAccent))
+                else
+                  Row(
+                    children: [
+                      Expanded(
+                          child: friendButtons(
+                              p['friendStatus']?.toString() ?? 'none')),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: FilledButton(
+                          onPressed: () => Navigator.push(
+                            context,
+                            MaterialPageRoute(
+                              builder: (_) =>
+                                  GiftScreen(initialCode: p['code'].toString()),
+                            ),
+                          ),
+                          child: const Text('ПОДАРИТЬ'),
+                        ),
+                      ),
+                    ],
+                  ),
+                const SizedBox(height: 8),
                 Row(
                   children: [
                     Expanded(
-                        child: friendButtons(
-                            p['friendStatus']?.toString() ?? 'none')),
-                    const SizedBox(width: 12),
+                      child: TextButton.icon(
+                        onPressed: busy ? null : report,
+                        style: TextButton.styleFrom(foregroundColor: Colors.orangeAccent),
+                        icon: const Icon(Icons.flag_outlined),
+                        label: const Text('ПОЖАЛОВАТЬСЯ'),
+                      ),
+                    ),
                     Expanded(
-                      child: FilledButton(
-                        onPressed: () => Navigator.push(
-                          context,
-                          MaterialPageRoute(
-                            builder: (_) =>
-                                GiftScreen(initialCode: p['code'].toString()),
-                          ),
-                        ),
-                        child: const Text('ПОДАРИТЬ'),
+                      child: TextButton.icon(
+                        onPressed: busy ? null : () => toggleBlock(p['blocked'] == true),
+                        style: TextButton.styleFrom(foregroundColor: Colors.redAccent),
+                        icon: const Icon(Icons.block),
+                        label: Text(p['blocked'] == true ? 'РАЗБЛОКИРОВАТЬ' : 'ЗАБЛОКИРОВАТЬ'),
                       ),
                     ),
                   ],
