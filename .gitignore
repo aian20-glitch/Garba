@@ -23,3 +23,6 @@ tools/.bots.json
 tools/.bots-online.pid
 tools/.bots-online.log
 store/android/*.aab
+
+# Рабочие копии Claude Code (git worktree)
+.claude/worktrees/
