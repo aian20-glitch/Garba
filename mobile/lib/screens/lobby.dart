@@ -230,8 +230,6 @@ class _LobbyScreenState extends State<LobbyScreen> {
               ),
               const SizedBox(height: 4),
               const Text('Свободно', style: TextStyle(fontSize: 11, color: Colors.white70)),
-              if (me != null)
-                const Text('нажмите — пересесть', style: TextStyle(fontSize: 9, color: Colors.white38)),
             ],
           ),
         );
@@ -317,7 +315,7 @@ class _LobbyScreenState extends State<LobbyScreen> {
           children: [
             const Positioned.fill(child: CustomPaint(painter: KazakhTablePainter())),
             Align(
-              alignment: Alignment.center,
+              alignment: const Alignment(0, -0.2),
               child: Column(
                 mainAxisSize: MainAxisSize.min,
                 children: [
@@ -551,13 +549,30 @@ class _LobbyScreenState extends State<LobbyScreen> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            Text(
-              'Код комнаты: ${widget.roomCode}',
-              style: const TextStyle(
-                fontSize: 20,
-                color: Color(0xFFD4A94F),
-                fontWeight: FontWeight.w700,
-              ),
+            // Код комнаты и, справа, сколько осталось до автозакрытия лобби.
+            Row(
+              crossAxisAlignment: CrossAxisAlignment.baseline,
+              textBaseline: TextBaseline.alphabetic,
+              children: [
+                Expanded(
+                  child: Text(
+                    'Код комнаты: ${widget.roomCode}',
+                    style: const TextStyle(
+                      fontSize: 20,
+                      color: Color(0xFFD4A94F),
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                ),
+                if (lobbyLeft != null && readyCheck == null)
+                  Text(
+                    'закроется ${lobbyLeft ~/ 60}:${(lobbyLeft % 60).toString().padLeft(2, '0')}',
+                    style: TextStyle(
+                      fontSize: 12,
+                      color: lobbyLeft <= 60 ? Colors.redAccent : Colors.white60,
+                    ),
+                  ),
+              ],
             ),
             if (room!['practice'] == true) const PracticeBanner(),
             // Условия комнаты — их выбрал создатель.
@@ -566,48 +581,36 @@ class _LobbyScreenState extends State<LobbyScreen> {
                 final s = Map<String, dynamic>.from(room!['settings'] as Map);
                 int v(String k) => (s[k] as num?)?.toInt() ?? 0;
                 return Padding(
-                  padding: const EdgeInsets.only(top: 8),
+                  padding: const EdgeInsets.only(top: 4),
                   child: Text(
-                    'Взнос ${fmtCoins(v('ante'))} · вход от ${fmtCoins(v('minBalance'))}\n'
-                    'Лимит пустых раздач ${v('emptyLimit')} · КОН с ×${v('konThreshold')}\n'
-                    'Время на ход ${s['turnSeconds'] ?? 20} с',
-                    style: const TextStyle(color: Colors.white60),
+                    'Взнос ${fmtCoins(v('ante'))} · вход от ${fmtCoins(v('minBalance'))} · ход ${s['turnSeconds'] ?? 20} с\n'
+                    'Пустых раздач ${v('emptyLimit')} · КОН с ×${v('konThreshold')}',
+                    style: const TextStyle(color: Colors.white60, fontSize: 13),
                   ),
                 );
               }),
             // Открытая комната — видна всем; создатель открывает и закрывает до старта.
             if (isCreator)
               SwitchListTile(
+                dense: true,
                 contentPadding: EdgeInsets.zero,
                 value: room!['isPublic'] == true,
                 onChanged: changingVisibility ? null : setPublic,
-                title: const Text('Открытая комната'),
-                subtitle: Text(
+                title: Text(
                   room!['isPublic'] == true
-                      ? 'Видна всем — может зайти любой, без кода'
-                      : 'Только по коду. Откройте, если не хватает игроков',
+                      ? 'Открытая: видна всем, без кода'
+                      : 'Закрытая: только по коду',
                 ),
               )
             else if (room!['isPublic'] == true)
               const Padding(
-                padding: EdgeInsets.only(top: 8),
+                padding: EdgeInsets.only(top: 4),
                 child: Text(
                   'Открытая комната — может зайти любой',
-                  style: TextStyle(color: Colors.white60),
+                  style: TextStyle(color: Colors.white60, fontSize: 13),
                 ),
               ),
-            if (lobbyLeft != null && readyCheck == null)
-              Padding(
-                padding: const EdgeInsets.only(top: 8),
-                child: Text(
-                  'Комната закроется через ${lobbyLeft ~/ 60}:${(lobbyLeft % 60).toString().padLeft(2, '0')}, '
-                  'если игра не начнётся',
-                  style: TextStyle(
-                    color: lobbyLeft <= 60 ? Colors.redAccent : Colors.white60,
-                  ),
-                ),
-              ),
-            const SizedBox(height: 20),
+            const SizedBox(height: 8),
             // Лобби — стол: сразу видно, кто где сидит, свободный стул — пересесть.
             Expanded(
               child: seatTable(
@@ -618,23 +621,31 @@ class _LobbyScreenState extends State<LobbyScreen> {
                 readyLeft: readyLeft,
               ),
             ),
-            const SizedBox(height: 12),
-            OutlinedButton.icon(
-              onPressed: () => SharePlus.instance.share(
-                ShareParams(
-                  text: 'Играем в ГАРБУ! Заходи в комнату #${widget.roomCode}: '
-                      '${roomLink(widget.roomCode)}\n'
-                      'Если ссылка не открылась — введи код комнаты ${widget.roomCode} в приложении.',
-                ),
-              ),
-              icon: const Icon(Icons.share),
-              label: const Text('ПРИГЛАСИТЬ ПО ССЫЛКЕ'),
-            ),
             const SizedBox(height: 8),
-            OutlinedButton.icon(
-              onPressed: () => showFriendInviteSheet(context, widget.roomCode),
-              icon: const Icon(Icons.group_add),
-              label: const Text('ПОЗВАТЬ ДРУЗЕЙ'),
+            Row(
+              children: [
+                Expanded(
+                  child: OutlinedButton.icon(
+                    onPressed: () => SharePlus.instance.share(
+                      ShareParams(
+                        text: 'Играем в ГАРБУ! Заходи в комнату #${widget.roomCode}: '
+                            '${roomLink(widget.roomCode)}\n'
+                            'Если ссылка не открылась — введи код комнаты ${widget.roomCode} в приложении.',
+                      ),
+                    ),
+                    icon: const Icon(Icons.share, size: 18),
+                    label: const Text('ССЫЛКА'),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: OutlinedButton.icon(
+                    onPressed: () => showFriendInviteSheet(context, widget.roomCode),
+                    icon: const Icon(Icons.group_add, size: 18),
+                    label: const Text('ДРУЗЬЯ'),
+                  ),
+                ),
+              ],
             ),
             // Людей мало — создатель сажает ботов на свободные места, играют они сами.
             if (isCreator && readyCheck == null && players.length < capacity) ...[
@@ -642,17 +653,13 @@ class _LobbyScreenState extends State<LobbyScreen> {
               OutlinedButton.icon(
                 onPressed: addingBots ? null : addBots,
                 icon: const Icon(Icons.smart_toy_outlined),
-                label: Text('ДОБАВИТЬ БОТОВ (${capacity - players.length}) · ТРЕНИРОВКА'),
+                label: Text('БОТЫ (${capacity - players.length}) · ТРЕНИРОВКА'),
               ),
             ],
-            const SizedBox(height: 12),
+            const SizedBox(height: 4),
             // Комната набралась — у всех «ГОТОВ» с отсчётом; нажали все — игра начнётся сама.
             if (readyCheck == null)
-              FilledButton.icon(
-                onPressed: null,
-                icon: const Icon(Icons.hourglass_empty),
-                label: Text('ЖДЁМ ИГРОКОВ ${players.length} / $capacity'),
-              )
+              const SizedBox.shrink()
             else if (iAmReady)
               FilledButton.icon(
                 onPressed: null,
@@ -672,7 +679,6 @@ class _LobbyScreenState extends State<LobbyScreen> {
                   style: const TextStyle(fontSize: 20, fontWeight: FontWeight.w900),
                 ),
               ),
-            const SizedBox(height: 12),
             TextButton(
               onPressed: leaveRoom,
               child: Text(isCreator ? 'ЗАКРЫТЬ КОМНАТУ' : 'ВЫЙТИ ИЗ КОМНАТЫ'),
