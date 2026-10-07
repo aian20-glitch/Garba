@@ -1,11 +1,17 @@
 #!/bin/bash
 # Положить токен бота Telegram на сервер (07.10.2026). Токен спрашивается без показа на
 # экране и в git не попадает: /etc/garba/telegram.env, только для root.
-#   ./deploy/set-telegram-token.sh garba-vps
+#   ./deploy/set-telegram-token.sh garba-vps              — спросит токен (в обычном Терминале)
+#   ./deploy/set-telegram-token.sh garba-vps --clipboard  — возьмёт из буфера обмена (скопируй
+#                                                          токен в @BotFather и запусти)
 set -euo pipefail
 TARGET=${1:?укажи сервер: set-telegram-token.sh garba-vps}
-read -rsp "Токен бота от @BotFather: " TOKEN
-echo
+if [ "${2:-}" = "--clipboard" ]; then
+  TOKEN="$(pbpaste | tr -d '[:space:]')"
+else
+  read -rsp "Токен бота от @BotFather: " TOKEN || { echo "Не получилось прочитать токен — попробуй с --clipboard." >&2; exit 1; }
+  echo
+fi
 if ! [[ "$TOKEN" =~ ^[0-9]+:[A-Za-z0-9_-]{30,}$ ]]; then
   echo "Это не похоже на токен бота (вид: 1234567890:AA...)." >&2
   exit 1
