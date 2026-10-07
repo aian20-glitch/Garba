@@ -171,7 +171,7 @@ xcodebuild -exportArchive -archivePath build/ios/archive/Runner.xcarchive \
 ```
 
 **Каждая новая сборка — новый номер** после `+` в `version:` в `pubspec.yaml` (1.0.0+2, +3…),
-иначе App Store Connect её не примет. Сейчас в `pubspec.yaml` — **1.0.0+5** (29.09.2026: жалобы и
+иначе App Store Connect её не примет. Сейчас в `pubspec.yaml` — **1.0.0+6** (07.10.2026: лобби на iPhone SE, карты открываются после раздачи; +5 — жалобы и
 блокировка по ответу Apple; +4 была на проверке). **1.0.0 (5) выгружена 29.09.2026**, сервер с
 жалобами и блокировкой выложен в тот же день.
 
@@ -596,6 +596,9 @@ pause: null | { players: [{ id, name, secondsLeft }] }   — на уровне �
   всем до конца раздачи (RULES.md §10.6). Свои сыгранные карты клиент показывает в руке серыми.
 - `tricksWon` — `{ playerId: число взяток }`.
 - `result` — после раздачи: `[{ playerId, playerName, declaration, tricks, won }]`.
+- `openHands` — `{ playerId: [карты] }`: оставшиеся руки всех игроков, только когда раздача
+  сыграна (`round_done` / `vote` с `result`) или `room_done`, иначе `null` (RULES.md §10.8,
+  `openHands` в `play.ts`). В приложении — открытые карты в веере у каждого игрока.
 - `myPlayableCardIds` — какими картами запросивший может пойти сейчас.
   Пусто, если не его ход. **Клиент даёт нажать только эти карты.**
 

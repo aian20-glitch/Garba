@@ -1585,6 +1585,16 @@ class _GameTableScreenState extends State<GameTableScreen> {
               Map<String, dynamic>.from(t['card'] as Map),
             );
       }
+      // Раздача сыграна или игра закончилась — сервер открывает всем оставшиеся
+      // карты (RULES.md §10.8): они ложатся в веер после сыгранных.
+      final openHands = (game['openHands'] as Map?) ?? const {};
+      openHands.forEach((id, cards) {
+        for (final card in (cards as List)) {
+          revealedOf.putIfAbsent(id.toString(), () => []).add(
+                Map<String, dynamic>.from(card as Map),
+              );
+        }
+      });
       const gold = Color(0xFFD4A94F);
       const seatWidth = 96.0;
 
@@ -1627,16 +1637,19 @@ class _GameTableScreenState extends State<GameTableScreen> {
                 isPlaying ||
                 isRoundDone ||
                 isDiscard ||
-                stage == 'kon_trump');
+                stage == 'kon_trump' ||
+                openHands.isNotEmpty);
         // Во время борьбы за спецкарту карт столько, сколько раздал сервер:
         // в слепом круге туза — ни одной, в окне — по одной (§7.2, §7.3).
         final serverCount = isSpecial
             ? ((game['handCounts'] as Map?)?[pId] as num?)?.toInt()
             : null;
-        final shownCardCount = math.min(
-          presentingCurrentDeal ? presentedCountFor(pId, players) : 5,
-          serverCount ?? 5,
-        );
+        final shownCardCount = openHands.isNotEmpty
+            ? revealedCards.length
+            : math.min(
+                presentingCurrentDeal ? presentedCountFor(pId, players) : 5,
+                serverCount ?? 5,
+              );
 
         final namePlate = Container(
           width: seatWidth,

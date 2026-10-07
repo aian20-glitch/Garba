@@ -168,6 +168,7 @@ import {
   instantWinIndex,
   mainStatus,
   nextSeat,
+  openHands,
   playableCards,
   TRICKS_PER_ROUND,
   winnerOfTrick,
@@ -2840,6 +2841,8 @@ function publicRoom(room: Room, viewerId?: string) {
           Math.min(cards.length, visibleCardCount(room.game!) ?? cards.length),
         ]),
       ),
+      // Раздача сыграна или игра закончилась — оставшиеся карты открыты всем (§10.8).
+      openHands: openHands(room.game.stage, !!room.game.result, room.game.hands),
       // Спецкарта и борьба за неё (§7). Кто что сказал — открыто всем.
       special: room.game.special
         ? {

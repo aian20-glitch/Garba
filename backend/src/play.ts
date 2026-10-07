@@ -113,3 +113,17 @@ export function mainStatuses(
       : mainStatus(tricksWon[m.playerId] ?? 0, tricksPlayed),
   );
 }
+
+// Карты на руках после раздачи открываются всем (RULES.md §10.8, решение владельца
+// 07.10.2026): раздача сыграна (есть итог) или игра закончилась. Пока раздача идёт —
+// ничего не открываем, чужие руки скрыты (железное правило 2).
+export function openHands(
+  stage: string,
+  hasResult: boolean,
+  hands: Record<string, Card[]>,
+): Record<string, Card[]> | null {
+  if (stage === 'room_done' || (hasResult && (stage === 'round_done' || stage === 'vote'))) {
+    return Object.fromEntries(Object.entries(hands).map(([id, cards]) => [id, [...cards]]));
+  }
+  return null;
+}

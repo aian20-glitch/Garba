@@ -7,6 +7,7 @@ import {
   mainStatuses,
   mainStatus,
   nextSeat,
+  openHands,
   playableCards,
   TRICKS_PER_ROUND,
   winnerOfTrick,
@@ -127,3 +128,14 @@ check('Дана потом взяла 3 — выиграла, Серик про�
   mainStatuses([{ playerId: 'Серик' }, { playerId: 'Дана' }], { Серик: 1, Дана: 3 }, 4, ['Серик']), ['lost', 'won']);
 check('никто не сдавался — как раньше, по взяткам',
   mainStatuses([{ playerId: 'Серик' }], { Серик: 1 }, 2, []), ['open']);
+
+section('карты открываются после раздачи (§10.8)');
+{
+  const hands = { A: [c('hearts', 'A'), c('clubs', '7')], B: [c('spades', 'K')] };
+  check('идёт розыгрыш — руки скрыты', openHands('playing', false, hands), null);
+  check('торги — руки скрыты', openHands('bidding', false, hands), null);
+  check('раздача сыграна — открыты все', openHands('round_done', true, hands), hands);
+  check('голосование после раздачи — открыты', openHands('vote', true, hands), hands);
+  check('всеобщий ПАС, итога нет — нечего открывать', openHands('awaiting_deal', false, {}), null);
+  check('игра закончилась — открыты', openHands('room_done', false, hands), hands);
+}
