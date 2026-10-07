@@ -294,8 +294,10 @@ export function recoverAccount(
       hashRecoveryCode(normalizeRecoveryCode(recoveryCode)!).toString('hex'),
       account.id,
     );
-    // Восстановление выкидывает и все входы через Telegram — на случай, если телефон украли.
+    // Восстановление выкидывает и все входы через Telegram — на случай, если телефон украли
+    // вместе с Telegram: иначе вор снова вошёл бы через него. Привязать заново — кодом.
     db.prepare('DELETE FROM account_tokens WHERE account_id = ?').run(account.id);
+    db.prepare('UPDATE accounts SET telegram_id = NULL WHERE id = ?').run(account.id);
   });
   return { account, token, recoveryCode };
 }

@@ -228,8 +228,10 @@ section('аккаунты: вход через Telegram (07.10.2026)');
   check('Telegram переехал на другой аккаунт', findAccountByTelegram(tg, 777)?.id, b.account.id);
   check('у старого отвязан', telegramIdOf(tg, a.account.id), null);
 
+  linkTelegram(tg, a.account.id, 888);
   recoverAccount(tg, a.account.code, a.recoveryCode);
   check('восстановление выкидывает входы Telegram', findAccountByToken(tg, many[4]), null);
+  check('и отвязывает Telegram', findAccountByTelegram(tg, 888), null);
 
   const c = createAccount(tg, 'Асель');
   const cTok = issueExtraToken(tg, c.account.id);

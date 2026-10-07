@@ -401,7 +401,7 @@ POST /telegram/webhook           обновления от Telegram (загол�
 GET  /play/                      веб-сборка игры (GARBA_WEB_DIR); index.html не кешируется
 Бот пишет игроку с привязанным Telegram (не чаще раза в 10 мин на событие): позвали в комнату,
 заявка в друзья, стол собран — жми «ГОТОВ», игра на паузе — стол ждёт. `notifyTelegram` в index.ts.
-Восстановление аккаунта (`/accounts/recover`) и удаление снимают все токены Telegram.
+Восстановление аккаунта (`/accounts/recover`) снимает все токены Telegram и отвязывает Telegram; удаление — тоже.
 Токен бота — /etc/garba/telegram.env на сервере (`./deploy/set-telegram-token.sh garba-vps`), имя
 бота — `deploy/telegram-bot`. Веб-сборку собирает `deploy.sh`: `flutter build web --base-href /play/
 --dart-define=TG_BOT=<бот>`. Проверка без настоящего Telegram: открыть /play/#tgWebAppData=<initData,
