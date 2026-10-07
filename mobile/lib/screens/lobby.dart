@@ -626,12 +626,10 @@ class _LobbyScreenState extends State<LobbyScreen> {
               children: [
                 Expanded(
                   child: OutlinedButton.icon(
-                    onPressed: () => SharePlus.instance.share(
-                      ShareParams(
-                        text: 'Играем в ГАРБУ! Заходи в комнату #${widget.roomCode}: '
-                            '${roomLink(widget.roomCode)}\n'
-                            'Если ссылка не открылась — введи код комнаты ${widget.roomCode} в приложении.',
-                      ),
+                    onPressed: () => shareInvite(
+                      text: 'Играем в ГАРБУ! Заходи в комнату #${widget.roomCode}:',
+                      link: roomLink(widget.roomCode),
+                      extra: 'Если ссылка не открылась — введи код комнаты ${widget.roomCode} в приложении.',
                     ),
                     icon: const Icon(Icons.share, size: 18),
                     label: const Text('ССЫЛКА'),

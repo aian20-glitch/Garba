@@ -80,6 +80,16 @@ export function openDb(file: string): DatabaseSync {
     )
   `);
   db.exec('CREATE INDEX IF NOT EXISTS friend_requests_to ON friend_requests (to_id)');
+  // Дополнительные токены входа (07.10.2026): игра в Telegram получает свой токен на каждом
+  // устройстве, и телефон с приложением при этом не выходит из аккаунта.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS account_tokens (
+      token_hash  TEXT PRIMARY KEY,
+      account_id  TEXT NOT NULL,
+      created_at  INTEGER NOT NULL
+    )
+  `);
+  db.exec('CREATE INDEX IF NOT EXISTS account_tokens_account ON account_tokens (account_id)');
   ensureRoomTable(db); // комнаты — этап 9.2
   ensureAvatarTable(db); // аватары — этап 9.5
   ensureModerationTables(db); // жалобы и блокировка — 29.09.2026
@@ -102,6 +112,8 @@ function migrateAccounts(db: DatabaseSync) {
   add('recovery_hash', 'TEXT');
   // Бот сервера (кнопка «ДОБАВИТЬ БОТОВ», 27.09.2026) — в рейтинге не показывается.
   add('is_bot', 'INTEGER NOT NULL DEFAULT 0');
+  // Аккаунт Telegram (игра как Mini App, 07.10.2026): id пользователя Telegram.
+  add('telegram_id', 'INTEGER');
   // Бонус за приглашение платится после 3 комнат друга (19.09.2026). Кого пригласили
   // раньше, тем уже заплатили сразу при регистрации — помечаем оплаченными.
   if (!columns.has('referral_paid')) {
@@ -115,6 +127,7 @@ function migrateAccounts(db: DatabaseSync) {
     db.prepare('UPDATE accounts SET code = ? WHERE id = ?').run(freeCode(db), id);
   }
   db.exec('CREATE UNIQUE INDEX IF NOT EXISTS accounts_code ON accounts (code)');
+  db.exec('CREATE UNIQUE INDEX IF NOT EXISTS accounts_telegram ON accounts (telegram_id)');
 }
 
 function freeCode(db: DatabaseSync): string {
@@ -270,18 +283,8 @@ export function recoverAccount(
   playerCode: string,
   rawRecoveryCode: unknown,
 ): { account: Account; token: string; recoveryCode: string } | null {
-  const normalized = normalizeRecoveryCode(rawRecoveryCode);
-  if (!normalized) return null;
-  const account = findAccountByCode(db, playerCode);
+  const account = checkRecoveryCode(db, playerCode, rawRecoveryCode);
   if (!account) return null;
-  const row = db.prepare('SELECT recovery_hash FROM accounts WHERE id = ?').get(account.id) as
-    | { recovery_hash: string | null }
-    | undefined;
-  if (!row?.recovery_hash) return null;
-
-  const actual = hashRecoveryCode(normalized);
-  const expected = Buffer.from(row.recovery_hash, 'hex');
-  if (expected.length !== actual.length || !timingSafeEqual(expected, actual)) return null;
 
   const token = randomBytes(32).toString('hex');
   const recoveryCode = makeRecoveryCode();
@@ -291,6 +294,8 @@ export function recoverAccount(
       hashRecoveryCode(normalizeRecoveryCode(recoveryCode)!).toString('hex'),
       account.id,
     );
+    // Восстановление выкидывает и все входы через Telegram — на случай, если телефон украли.
+    db.prepare('DELETE FROM account_tokens WHERE account_id = ?').run(account.id);
   });
   return { account, token, recoveryCode };
 }
@@ -298,9 +303,70 @@ export function recoverAccount(
 export function findAccountByToken(db: DatabaseSync, token: string): Account | null {
   if (!token) return null;
   const row = db
-    .prepare(`SELECT ${ACCOUNT_FIELDS} FROM accounts WHERE token_hash = ?`)
+    .prepare(
+      `SELECT ${ACCOUNT_FIELDS} FROM accounts WHERE token_hash = ?1
+         OR id = (SELECT account_id FROM account_tokens WHERE token_hash = ?1)`,
+    )
     .get(hashToken(token)) as Record<string, unknown> | undefined;
   return toAccount(row);
+}
+
+// Telegram (07.10.2026). Сколько устройств с Telegram держат вход одновременно —
+// при входе с шестого самый старый токен перестаёт работать.
+export const TELEGRAM_TOKENS_KEPT = 5;
+
+export function findAccountByTelegram(db: DatabaseSync, telegramId: number): Account | null {
+  const row = db
+    .prepare(`SELECT ${ACCOUNT_FIELDS} FROM accounts WHERE telegram_id = ? AND is_bot = 0`)
+    .get(telegramId) as Record<string, unknown> | undefined;
+  return toAccount(row);
+}
+
+export function telegramIdOf(db: DatabaseSync, accountId: string): number | null {
+  const row = db.prepare('SELECT telegram_id FROM accounts WHERE id = ?').get(accountId) as
+    | { telegram_id: number | null }
+    | undefined;
+  return row?.telegram_id ?? null;
+}
+
+// Привязать Telegram к аккаунту. Был привязан к другому — переезжает сюда.
+export function linkTelegram(db: DatabaseSync, accountId: string, telegramId: number) {
+  transaction(db, () => {
+    db.prepare('UPDATE accounts SET telegram_id = NULL WHERE telegram_id = ? AND id <> ?').run(telegramId, accountId);
+    db.prepare('UPDATE accounts SET telegram_id = ? WHERE id = ?').run(telegramId, accountId);
+  });
+}
+
+// Новый дополнительный токен входа; лишние старые удаляются.
+export function issueExtraToken(db: DatabaseSync, accountId: string, keep = TELEGRAM_TOKENS_KEPT): string {
+  const token = randomBytes(32).toString('hex');
+  transaction(db, () => {
+    db.prepare('INSERT INTO account_tokens (token_hash, account_id, created_at) VALUES (?, ?, ?)')
+      .run(hashToken(token), accountId, Date.now());
+    db.prepare(
+      `DELETE FROM account_tokens WHERE account_id = ?1 AND token_hash NOT IN
+         (SELECT token_hash FROM account_tokens WHERE account_id = ?1
+          ORDER BY created_at DESC, rowid DESC LIMIT ?2)`,
+    ).run(accountId, keep);
+  });
+  return token;
+}
+
+// Проверить код восстановления, ничего не меняя. Для привязки Telegram к аккаунту
+// из приложения: телефон при этом остаётся в аккаунте, а код меняется (одноразовый).
+export function checkRecoveryCode(db: DatabaseSync, playerCode: string, rawRecoveryCode: unknown): Account | null {
+  const normalized = normalizeRecoveryCode(rawRecoveryCode);
+  if (!normalized) return null;
+  const account = findAccountByCode(db, playerCode);
+  if (!account) return null;
+  const row = db.prepare('SELECT recovery_hash FROM accounts WHERE id = ?').get(account.id) as
+    | { recovery_hash: string | null }
+    | undefined;
+  if (!row?.recovery_hash) return null;
+  const actual = hashRecoveryCode(normalized);
+  const expected = Buffer.from(row.recovery_hash, 'hex');
+  if (expected.length !== actual.length || !timingSafeEqual(expected, actual)) return null;
+  return account;
 }
 
 // Ботов сервера по коду не найти: им не подарить монеты, не позвать в друзья и в комнату.
@@ -471,6 +537,7 @@ export function deleteAccountData(db: DatabaseSync, id: string) {
   db.prepare('DELETE FROM friends WHERE owner_id = ? OR friend_id = ?').run(id, id);
   db.prepare('DELETE FROM friend_requests WHERE from_id = ? OR to_id = ?').run(id, id);
   db.prepare('DELETE FROM avatars WHERE account_id = ?').run(id);
+  db.prepare('DELETE FROM account_tokens WHERE account_id = ?').run(id);
   deleteModerationData(db, id);
   db.prepare('DELETE FROM room_stats WHERE player_id = ?').run(id);
   db.prepare('UPDATE accounts SET invited_by = NULL WHERE invited_by = ?').run(id);

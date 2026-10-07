@@ -15,6 +15,8 @@
 ~/Garba/mobile/lib/core.dart     адрес сервера, аккаунт (Session), RoomLink, ссылки, форматирование
 ~/Garba/mobile/lib/screens/      по файлу на экран (game_table.dart — игровой стол)
 ~/Garba/mobile/lib/widgets/      карты, казахский орнамент, окно итога, общие элементы
+~/Garba/mobile/lib/tg/           Telegram Mini App: на телефоне заглушка, в веб-сборке — telegram-web-app.js
+~/Garba/mobile/web/              веб-сборка (браузер и Telegram), сервер отдаёт её по /play/
 ```
 
 Модули в `backend/src` — что подключено к `index.ts`, а что нет:
@@ -45,6 +47,7 @@
 | `lobbyTimer.ts` | **Новый** (27.09.2026). Лобби ждёт начала игры 10 минут, потом закрывается само (не во время «ГОТОВ»). Чистые функции. |
 | `serverBots.ts` | **Новый** (27.09.2026). Боты сервера — кнопка «ДОБАВИТЬ БОТОВ»: что бот делает в каком состоянии, монеты, имена. Чистые функции. |
 | `moderation.ts` | **Новый** (29.09.2026, Apple 1.2). Жалобы, блокировка игроков, фильтр мата в именах. Таблицы `blocks`, `reports`. |
+| `telegram.ts` | **Новый** (07.10.2026). Telegram Mini App: проверка подписи initData, имя из профиля, `startapp`-параметр, отправка Bot API. Чистые функции (кроме `sendTelegram`). |
 | `special.ts` | **Новый** (этап 7). Спецкарты: какая карта, очередь, множители, итог борьбы, первый ход. |
 | `rules.ts` | **Используются** `canPlayCard`, `trickWinner` (этап 3) и `isGarba` (этап 6) — сверены с RULES.md. `specialKind`, `canDeclareMain` — ещё не проверены. |
 
@@ -384,6 +387,25 @@ POST /rooms/:id/end-game         { choice }   yes | no — закончить и
                                               не за столом — 403 player is not in this room (28.09.2026)
 POST /rooms/:id/react            { emoji }    смайлик — в любой момент, и в лобби, и на паузе (25.09.2026);
                                  400 не из набора, 429 чаще раза в 2 секунды
+
+— Telegram Mini App (07.10.2026), без токена, по подписанным данным запуска —
+POST /accounts/telegram/login    { initData } → { ...аккаунт, token } — каждому устройству свой токен
+                                 (таблица account_tokens, до 5 на аккаунт; телефон из аккаунта не выходит);
+                                 404 { error: 'telegram not linked', suggestedName, inviteCode }; 401 bad telegram data;
+                                 503 telegram disabled (нет TELEGRAM_BOT_TOKEN)
+POST /accounts/telegram          { initData, name, inviteCode? } → 201 { ...аккаунт, token, recoveryCode };
+                                 409 telegram already linked; имя и лимиты — как у POST /accounts
+POST /accounts/telegram/link     { initData, playerCode, recoveryCode } → аккаунт из приложения подключается
+                                 к Telegram; код восстановления одноразовый — в ответе новый; 401, 429
+POST /telegram/webhook           обновления от Telegram (заголовок-секрет из токена): на /start — кнопка «ИГРАТЬ»
+GET  /play/                      веб-сборка игры (GARBA_WEB_DIR); index.html не кешируется
+Бот пишет игроку с привязанным Telegram (не чаще раза в 10 мин на событие): позвали в комнату,
+заявка в друзья, стол собран — жми «ГОТОВ», игра на паузе — стол ждёт. `notifyTelegram` в index.ts.
+Восстановление аккаунта (`/accounts/recover`) и удаление снимают все токены Telegram.
+Токен бота — /etc/garba/telegram.env на сервере (`./deploy/set-telegram-token.sh garba-vps`), имя
+бота — `deploy/telegram-bot`. Веб-сборку собирает `deploy.sh`: `flutter build web --base-href /play/
+--dart-define=TG_BOT=<бот>`. Проверка без настоящего Telegram: открыть /play/#tgWebAppData=<initData,
+подписанный тестовым токеном>&tgWebAppVersion=8.0 — telegram-web-app.js читает данные из адреса.
 
 — служебное, только с этого компьютера (23.09.2026) —
 POST /admin/coins                { code | id, amount }  → { name, amount, balance }; через moveCoins;

@@ -250,12 +250,10 @@ class InviteScreen extends StatelessWidget {
               const SizedBox(height: 8),
               GarbaButton(
                 label: 'ОТПРАВИТЬ ССЫЛКУ',
-                onTap: () => SharePlus.instance.share(
-                  ShareParams(
-                    text: 'Играю в ГАРБУ — карточная игра для друзей. '
-                        'Заходи по ссылке: ${inviteLink(code)}\n'
-                        'При первом входе введи код приглашения $code.',
-                  ),
+                onTap: () => shareInvite(
+                  text: 'Играю в ГАРБУ — карточная игра для друзей. Заходи по ссылке:',
+                  link: inviteLink(code),
+                  extra: 'При первом входе введи код приглашения $code.',
                 ),
               ),
               const SizedBox(height: 8),

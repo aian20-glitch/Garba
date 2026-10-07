@@ -2297,11 +2297,9 @@ class _GameTableScreenState extends State<GameTableScreen> {
                               Padding(
                                 padding: const EdgeInsets.only(top: 8),
                                 child: OutlinedButton.icon(
-                                  onPressed: () => SharePlus.instance.share(
-                                    ShareParams(
-                                      text: 'Освободилось место в ГАРБЕ! Заходи в комнату #${widget.roomCode}: '
-                                          '${roomLink(widget.roomCode)}',
-                                    ),
+                                  onPressed: () => shareInvite(
+                                    text: 'Освободилось место в ГАРБЕ! Заходи в комнату #${widget.roomCode}:',
+                                    link: roomLink(widget.roomCode),
                                   ),
                                   icon: const Icon(Icons.share, size: 18),
                                   label: const Text('ПОЗВАТЬ ПО ССЫЛКЕ'),

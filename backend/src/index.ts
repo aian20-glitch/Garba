@@ -2,8 +2,8 @@ import express from 'express';
 import cors from 'cors';
 import { createServer, type IncomingMessage } from 'node:http';
 import { mkdirSync } from 'node:fs';
-import { randomBytes } from 'node:crypto';
-import { dirname } from 'node:path';
+import { createHash, randomBytes } from 'node:crypto';
+import { dirname, join } from 'node:path';
 import { Server as SocketServer } from 'socket.io';
 
 import {
@@ -18,6 +18,7 @@ import {
   addFriend,
   areFriends,
   cleanName,
+  NAME_MAX_LENGTH,
   createAccount,
   markBot,
   botAccounts,
@@ -41,7 +42,20 @@ import {
   tokenFromHeader,
   transaction,
   type Account,
+  checkRecoveryCode,
+  findAccountByTelegram,
+  issueExtraToken,
+  linkTelegram,
+  telegramIdOf,
 } from './accounts.js';
+import {
+  parseStartParam,
+  sendTelegram,
+  startAppLink,
+  suggestedName,
+  verifyInitData,
+  type TelegramLaunch,
+} from './telegram.js';
 import { createDeck, shuffle } from './deck.js';
 import { STARTING_COINS } from './config.js';
 import { BOT_STEP_MS, botAction, botTopUp, freeBotName, type BotAction } from './serverBots.js';
@@ -632,6 +646,169 @@ app.post('/accounts', (req, res) => {
   return res.status(201).json({ ...account, token, recoveryCode });
 });
 
+// --- Telegram: игра как Mini App (07.10.2026) ---
+//
+// Токен бота — переменная TELEGRAM_BOT_TOKEN (в git не лежит). Без неё вход через
+// Telegram отвечает 503, бот молчит — остальная игра работает как раньше.
+// Игра в Telegram — веб-сборка приложения по адресу <GARBA_PUBLIC_URL>/play/.
+const TELEGRAM_TOKEN = process.env.TELEGRAM_BOT_TOKEN ?? '';
+const PUBLIC_URL = process.env.GARBA_PUBLIC_URL ?? 'https://garbagame.kz';
+const PLAY_URL = `${PUBLIC_URL}/play/`;
+// Секрет адреса для обновлений от Telegram — из токена, отдельная настройка не нужна.
+const TELEGRAM_WEBHOOK_SECRET = TELEGRAM_TOKEN
+  ? createHash('sha256').update(`webhook:${TELEGRAM_TOKEN}`).digest('hex').slice(0, 48)
+  : '';
+// Имя бота (@...) — узнаём у Telegram при старте; нужно для ссылок t.me/<бот>?startapp=.
+let telegramBotUsername = process.env.TELEGRAM_BOT_USERNAME ?? '';
+
+function telegramLaunch(req: express.Request, res: express.Response): TelegramLaunch | null {
+  if (!TELEGRAM_TOKEN) {
+    res.status(503).json({ error: 'telegram disabled' });
+    return null;
+  }
+  const launch = verifyInitData(req.body?.initData, TELEGRAM_TOKEN, Math.floor(Date.now() / 1000));
+  if (!launch) {
+    res.status(401).json({ error: 'bad telegram data' });
+    return null;
+  }
+  return launch;
+}
+
+// Вход: Telegram уже привязан — новый токен этому устройству. Нет — 404 и имя из
+// профиля Telegram для экрана первого входа (игрок может его поменять).
+app.post('/accounts/telegram/login', (req, res) => {
+  const launch = telegramLaunch(req, res);
+  if (!launch) return;
+  const account = findAccountByTelegram(db, launch.user.id);
+  if (!account) {
+    const start = parseStartParam(launch.startParam);
+    return res.status(404).json({
+      error: 'telegram not linked',
+      suggestedName: suggestedName(launch.user, NAME_MAX_LENGTH),
+      inviteCode: start?.kind === 'invite' ? start.value : null,
+    });
+  }
+  const token = issueExtraToken(db, account.id);
+  return res.json({ ...account, token });
+});
+
+// Новый аккаунт из Telegram: имя проверяется как обычно, лимит по адресу тот же.
+app.post('/accounts/telegram', (req, res) => {
+  const launch = telegramLaunch(req, res);
+  if (!launch) return;
+  if (findAccountByTelegram(db, launch.user.id)) {
+    return res.status(409).json({ error: 'telegram already linked' });
+  }
+  const ip = req.ip ?? 'unknown';
+  const limit = rateCheck(accountsByIp.get(ip) ?? [], Date.now(), ACCOUNT_LIMITS);
+  if (!limit.allowed && !LOOPBACK.includes(ip)) {
+    return res.status(429).json({ error: 'too many accounts, try later' });
+  }
+  const name = cleanName(req.body?.name);
+  if (!name) return res.status(400).json({ error: 'name must be 1 to 20 characters' });
+  if (nameNotAllowed(name)) return res.status(400).json({ error: 'name not allowed' });
+  const inviteCode = normalizeCode(req.body?.inviteCode);
+  const inviter = inviteCode ? findAccountByCode(db, inviteCode) : null;
+  if (inviteCode && !inviter) return res.status(400).json({ error: 'invite code not found' });
+
+  const { account, recoveryCode } = createAccount(db, name, inviter?.id ?? null);
+  accountsByIp.set(ip, limit.times);
+  linkTelegram(db, account.id, launch.user.id);
+  const token = issueExtraToken(db, account.id);
+  console.log(`[ACCOUNT] created ${account.name} (${account.id}) via Telegram`);
+  return res.status(201).json({ ...account, token, recoveryCode });
+});
+
+// Уже играю в приложении — подключаю тот же аккаунт к Telegram кодом восстановления.
+// Телефон остаётся в аккаунте; код одноразовый — в ответе новый.
+app.post('/accounts/telegram/link', (req, res) => {
+  const launch = telegramLaunch(req, res);
+  if (!launch) return;
+  const ip = req.ip ?? 'unknown';
+  const limit = rateCheck(recoveriesByIp.get(ip) ?? [], Date.now(), [
+    { max: 5, windowMs: 15 * 60_000 },
+    { max: 20, windowMs: 86_400_000 },
+  ]);
+  recoveriesByIp.set(ip, limit.times);
+  if (!limit.allowed && !LOOPBACK.includes(ip)) {
+    return res.status(429).json({ error: 'too many recovery attempts, try later' });
+  }
+  const playerCode = normalizeCode(req.body?.playerCode);
+  const account = playerCode ? checkRecoveryCode(db, playerCode, req.body?.recoveryCode) : null;
+  if (!account) return res.status(401).json({ error: 'invalid recovery credentials' });
+
+  linkTelegram(db, account.id, launch.user.id);
+  const recoveryCode = replaceRecoveryCode(db, account.id);
+  const token = issueExtraToken(db, account.id);
+  console.log(`[ACCOUNT] ${account.name} (${account.id}) linked Telegram`);
+  return res.json({ ...account, token, recoveryCode });
+});
+
+// Сообщение игроку от бота. Не привязан Telegram или нет токена бота — тихо ничего.
+// Одно и то же (ключ) — не чаще раза в 10 минут, чтобы бот не надоедал.
+const telegramNotified = new Map<string, number>();
+function notifyTelegram(accountId: string, key: string, text: string, startParam?: string) {
+  if (!TELEGRAM_TOKEN) return;
+  const chatId = telegramIdOf(db, accountId);
+  if (!chatId) return;
+  const now = Date.now();
+  const mark = `${accountId}:${key}`;
+  if (now - (telegramNotified.get(mark) ?? 0) < 10 * 60_000) return;
+  telegramNotified.set(mark, now);
+  const button =
+    startParam && telegramBotUsername
+      ? { text: 'ОТКРЫТЬ ИГРУ', url: startAppLink(telegramBotUsername, startParam) }
+      : { text: 'ОТКРЫТЬ ИГРУ', web_app: { url: PLAY_URL } };
+  void sendTelegram(TELEGRAM_TOKEN, 'sendMessage', {
+    chat_id: chatId,
+    text,
+    reply_markup: { inline_keyboard: [[button]] },
+  });
+}
+setInterval(() => {
+  const now = Date.now();
+  for (const [mark, at] of telegramNotified) if (now - at > 10 * 60_000) telegramNotified.delete(mark);
+}, 60_000);
+
+// Обновления от Telegram: на /start бот отвечает кнопкой «ИГРАТЬ».
+app.post('/telegram/webhook', (req, res) => {
+  if (!TELEGRAM_TOKEN || req.get('x-telegram-bot-api-secret-token') !== TELEGRAM_WEBHOOK_SECRET) {
+    return res.status(403).json({ error: 'forbidden' });
+  }
+  const message = req.body?.message;
+  const chatId = message?.chat?.id;
+  if (typeof chatId === 'number' && typeof message?.text === 'string' && message.text.startsWith('/start')) {
+    void sendTelegram(TELEGRAM_TOKEN, 'sendMessage', {
+      chat_id: chatId,
+      text:
+        'ГАРБА — казахская карточная игра на 4–7 игроков.\n' +
+        'Нажми «ИГРАТЬ», чтобы сесть за стол. Монеты в игре ненастоящие: их нельзя купить или вывести.',
+      reply_markup: { inline_keyboard: [[{ text: 'ИГРАТЬ', web_app: { url: PLAY_URL } }]] },
+    });
+  }
+  return res.json({ ok: true });
+});
+
+// При старте на сервере в интернете: узнаём имя бота, говорим Telegram, куда слать
+// обновления, и ставим кнопку меню «Играть». На своём компьютере — только имя бота,
+// чтобы проверка не перехватила обновления у настоящего сервера.
+async function setupTelegram() {
+  if (!TELEGRAM_TOKEN) return;
+  const me = (await sendTelegram(TELEGRAM_TOKEN, 'getMe', {})) as { username?: string } | null;
+  if (me?.username) telegramBotUsername = me.username;
+  if (process.env.NODE_ENV !== 'production') return;
+  await sendTelegram(TELEGRAM_TOKEN, 'setWebhook', {
+    url: `${PUBLIC_URL}/telegram/webhook`,
+    secret_token: TELEGRAM_WEBHOOK_SECRET,
+    allowed_updates: ['message'],
+  });
+  await sendTelegram(TELEGRAM_TOKEN, 'setChatMenuButton', {
+    menu_button: { type: 'web_app', text: 'Играть', web_app: { url: PLAY_URL } },
+  });
+  console.log(`[TELEGRAM] бот @${telegramBotUsername} готов`);
+}
+void setupTelegram();
+
 // Восстановление без телефона и почты: публичный код игрока + секретный код,
 // который был показан при регистрации или заново создан в профиле. Ответ одинаков
 // для неверного игрока и неверного секрета, чтобы нельзя было перебирать аккаунты.
@@ -813,6 +990,23 @@ app.get('/r/:roomId', (req, res) => {
     ),
   );
 });
+
+// Игра в браузере и в Telegram (07.10.2026) — веб-сборка приложения:
+// flutter build web --base-href /play/. Папка — GARBA_WEB_DIR (на сервере /opt/garba/web).
+// index.html не кешируем: после выкладки игроки сразу получают новую версию.
+const WEB_DIR = process.env.GARBA_WEB_DIR ?? join(process.cwd(), '../mobile/build/web');
+app.get('/play', (req, res, next) => (req.originalUrl === '/play' ? res.redirect(301, '/play/') : next()));
+app.use(
+  '/play',
+  express.static(WEB_DIR, {
+    index: 'index.html',
+    setHeaders: (res, file) => {
+      if (file.endsWith('index.html') || file.endsWith('flutter_bootstrap.js')) {
+        res.setHeader('Cache-Control', 'no-cache');
+      }
+    },
+  }),
+);
 
 // Политика конфиденциальности (26.09.2026): страница для App Store и Google Play,
 // ?format=json — для экрана в приложении. Без токена. Почта — GARBA_CONTACT_EMAIL.
@@ -1078,6 +1272,7 @@ app.post('/friends', (req, res) => {
     return res.status(409).json({ error: 'request already sent' });
   }
   console.log(`[FRIENDS] ${me.name} → ${friend.name}: ${result === 'friends' ? 'друзья' : 'заявка'}`);
+  if (result !== 'friends') notifyTelegram(friend.id, `friend:${me.id}`, `${me.name} хочет добавить тебя в друзья в ГАРБЕ.`);
   return res
     .status(result === 'friends' ? 201 : 202)
     .json({ status: result, code: friend.code, name: friend.name });
@@ -1610,7 +1805,14 @@ function sweepPresence() {
       now,
       presenceOpts,
     );
+    const wasOffline = presenceOf(room.id).disconnectedAt;
     presence.set(room.id, { lastSeen: step.lastSeen, disconnectedAt: step.disconnectedAt });
+    // Пропал из игры — бот в Telegram напомнит, что стол ждёт.
+    for (const id of Object.keys(step.disconnectedAt)) {
+      if (wasOffline[id] === undefined) {
+        notifyTelegram(id, `offline:${room.id}`, `Игра #${room.id} на паузе — стол ждёт тебя. Вернись в течение 5 минут.`, `room_${room.id}`);
+      }
+    }
 
     // Общий запас 5 минут на всю игру — и на потерю связи, и на «ушёл» (§13, §13a).
     const absence = absenceOf(room, now);
@@ -3170,6 +3372,11 @@ function joinRoom(room: Room, account: Account, wantedSeat?: number): { status: 
   if (room.players.length === room.capacity) {
     room.readyCheck = startReadyCheck(Date.now());
     console.log(`[ROOM ${room.id}] набралась — ждём «ГОТОВ» от всех`);
+    for (const p of room.players) {
+      if (p.id !== account.id && !room.botIds?.includes(p.id)) {
+        notifyTelegram(p.id, `ready:${room.id}`, `Стол #${room.id} собран! Нажми «ГОТОВ» — на это 30 секунд.`, `room_${room.id}`);
+      }
+    }
   }
   return { status: 200, body: publicRoom(room, account.id) };
 }
@@ -3324,6 +3531,7 @@ app.post('/rooms/:id/invite', (req, res) => {
   const list = (roomInvites.get(friend.id) ?? []).filter((inv) => inv.roomId !== room.id);
   roomInvites.set(friend.id, [...list, { roomId: room.id, fromId: from.id, fromName: from.name, at: Date.now() }]);
   console.log(`[ROOM ${room.id}] ${from.name} зовёт друга ${friend.name}`);
+  notifyTelegram(friend.id, `invite:${room.id}`, `${from.name} зовёт тебя за стол ГАРБЫ — комната #${room.id}.`, `room_${room.id}`);
   return res.json({ ok: true });
 });
 

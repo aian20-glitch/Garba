@@ -15,6 +15,11 @@ Environment=HOST=127.0.0.1
 Environment=GARBA_DB=/var/lib/garba/garba.db
 # Почта для связи в политике конфиденциальности (/privacy). Без неё — «через профиль в игре».
 Environment=GARBA_CONTACT_EMAIL=bot20aian@gmail.com
+# Веб-сборка игры (браузер и Telegram Mini App) — отдаётся по адресу /play/ (07.10.2026).
+Environment=GARBA_WEB_DIR=/opt/garba/web
+# Токен бота Telegram (TELEGRAM_BOT_TOKEN=...) — в git не лежит, кладёт set-telegram-token.sh.
+# Нет файла — игра работает, вход через Telegram выключен.
+EnvironmentFile=-/etc/garba/telegram.env
 ExecStart=/usr/bin/node dist/index.js
 Restart=always
 RestartSec=3

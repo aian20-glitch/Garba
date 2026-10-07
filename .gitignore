@@ -26,3 +26,4 @@ store/android/*.aab
 
 # Рабочие копии Claude Code (git worktree)
 .claude/worktrees/
+.playwright-mcp/

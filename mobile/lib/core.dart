@@ -6,9 +6,13 @@ const _apiBaseOverride = String.fromEnvironment('API_BASE');
 // Без API_BASE: релиз — сервер в интернете (забыли флаг — всё равно рабочая сборка,
 // 28.09.2026); отладка — сервер на этом компьютере: Android-эмулятор видит его как
 // 10.0.2.2, симулятор iPhone — как localhost.
+// Веб-сборка (браузер и Telegram, 07.10.2026) лежит на том же сервере (/play/) —
+// сервер там же, откуда открыта страница.
 final apiBase = _apiBaseOverride.isNotEmpty
     ? _apiBaseOverride
-    : kReleaseMode
+    : kIsWeb
+        ? Uri.base.origin
+        : kReleaseMode
         ? 'https://garbagame.kz'
         : Platform.isIOS
             ? 'http://localhost:3000'
@@ -411,9 +415,26 @@ bool isStaleRoom(Map<String, dynamic>? current, Map<String, dynamic> next) {
   return have != null && got != null && got < have;
 }
 
-String roomLink(String roomId) => '$apiBase/r/$roomId';
+// Имя бота Telegram (без @) — задаётся при веб-сборке: --dart-define=TG_BOT=garbagame_bot.
+const tgBot = String.fromEnvironment('TG_BOT');
+bool get _tgLinks => Tg.available && tgBot.isNotEmpty;
 
-String inviteLink(String code) => '$apiBase/i/$code';
+// В Telegram друг получает ссылку на бота: нажал — игра открылась сразу в комнате.
+String roomLink(String roomId) =>
+    _tgLinks ? 'https://t.me/$tgBot?startapp=room_$roomId' : '$apiBase/r/$roomId';
+
+String inviteLink(String code) =>
+    _tgLinks ? 'https://t.me/$tgBot?startapp=invite_$code' : '$apiBase/i/$code';
+
+// «Поделиться»: в Telegram — его окно выбора чата, на телефоне — системное.
+void shareInvite({required String text, required String link, String extra = ''}) {
+  if (Tg.available) {
+    final q = 'url=${Uri.encodeComponent(link)}&text=${Uri.encodeComponent(text)}';
+    Tg.openLink('https://t.me/share/url?$q');
+    return;
+  }
+  SharePlus.instance.share(ShareParams(text: '$text $link${extra.isEmpty ? '' : '\n$extra'}'));
+}
 
 class DeepLinks {
   // Ссылка пришла раньше, чем игрок вошёл в аккаунт, — откроем после входа.
@@ -422,8 +443,20 @@ class DeepLinks {
 
   // Подписка ловит и ту ссылку, которой приложение запустили.
   static void start() {
+    if (kIsWeb) {
+      // Веб и Telegram: ссылка t.me/<бот>?startapp=room_12345 / invite_КОД.
+      final param = Tg.startParam ?? '';
+      final match = RegExp(r'^(room|invite)_([A-Za-z0-9]+)$').firstMatch(param);
+      if (match != null && !_webStartHandled) {
+        _webStartHandled = true;
+        handle(Uri.parse('garba://${match.group(1)}/${match.group(2)}'));
+      }
+      return;
+    }
     _sub ??= AppLinks().uriLinkStream.listen(handle);
   }
+
+  static bool _webStartHandled = false;
 
   // Что может прийти в ссылке: номер комнаты — цифры, код игрока — 6 знаков.
   // Всё прочее не пускаем: pathSegments раскодирует %2F и %3F, и чужая ссылка

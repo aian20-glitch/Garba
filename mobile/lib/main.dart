@@ -1,7 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io' show Platform, SocketException;
-import 'package:flutter/foundation.dart' show kDebugMode, kReleaseMode;
+import 'package:flutter/foundation.dart' show kDebugMode, kIsWeb, kReleaseMode;
 import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -11,6 +11,7 @@ import 'package:audioplayers/audioplayers.dart';
 import 'package:share_plus/share_plus.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:socket_io_client/socket_io_client.dart' as io;
+import 'tg/tg.dart';
 
 // Приложение — одна библиотека Dart, разложенная по файлам (part): экраны в screens/,
 // общие элементы в widgets/, адрес сервера и связь с ним — в core.dart.
@@ -36,6 +37,8 @@ Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   // Только вертикально: круглый стол и карты в руке под горизонталь не рассчитаны.
   await SystemChrome.setPreferredOrientations([DeviceOrientation.portraitUp]);
+  // Внутри Telegram: во весь экран, свайп вниз не закрывает игру. На телефоне — ничего.
+  Tg.ready();
   unawaited(GarbaSounds.init());
   runApp(const GarbaApp());
 }

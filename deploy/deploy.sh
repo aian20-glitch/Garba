@@ -15,9 +15,9 @@ fi
 
 # Выкладываем только закоммиченное (28.09.2026): иначе на сервер уйдут случайные правки,
 # которых нет в git. Осознанно без коммита — GARBA_DIRTY_OK=1.
-if [ -n "$(git -C "$ROOT" status --porcelain -- backend deploy)" ] && [ "${GARBA_DIRTY_OK:-}" != "1" ]; then
-  echo "В backend или deploy есть незакоммиченные изменения — сначала коммит (или GARBA_DIRTY_OK=1)." >&2
-  git -C "$ROOT" status --short -- backend deploy >&2
+if [ -n "$(git -C "$ROOT" status --porcelain -- backend deploy mobile)" ] && [ "${GARBA_DIRTY_OK:-}" != "1" ]; then
+  echo "В backend, deploy или mobile есть незакоммиченные изменения — сначала коммит (или GARBA_DIRTY_OK=1)." >&2
+  git -C "$ROOT" status --short -- backend deploy mobile >&2
   exit 1
 fi
 
@@ -25,6 +25,13 @@ cd "$ROOT/backend"
 npm test
 rm -rf dist && npm run build
 rsync -az --delete dist package.json package-lock.json "$TARGET:/opt/garba/backend/"
+# Веб-сборка игры для браузера и Telegram (07.10.2026). Имя бота — deploy/telegram-bot
+# (без @), из него игра строит ссылки t.me/<бот>?startapp=... для приглашений.
+TG_BOT="$(tr -d '[:space:]' < "$ROOT/deploy/telegram-bot" 2>/dev/null || true)"
+(cd "$ROOT/mobile" && flutter build web --release --base-href /play/ --no-wasm-dry-run \
+  --dart-define=TG_BOT="$TG_BOT")
+ssh "$TARGET" 'mkdir -p /opt/garba/web'
+rsync -az --delete "$ROOT/mobile/build/web/" "$TARGET:/opt/garba/web/"
 # Файлы настройки (сервис, копия базы) — тоже свежие: их меняют вместе с кодом.
 rsync -az "$ROOT/deploy/" "$TARGET:/root/garba-deploy/"
 ssh "$TARGET" 'set -e

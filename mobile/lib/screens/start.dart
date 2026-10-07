@@ -65,6 +65,9 @@ class _StartScreenState extends State<StartScreen> {
       error = null;
     });
 
+    // В Telegram аккаунт узнаём по Telegram — на любом устройстве (07.10.2026).
+    if (Tg.available) return telegramLogin();
+
     await Session.load();
     if (Session.token.isEmpty) {
       // Пришли по ссылке-приглашению — код уже заполнен.
@@ -104,6 +107,40 @@ class _StartScreenState extends State<StartScreen> {
     }
   }
 
+  // Вход через Telegram: привязан — сразу на главный; нет — экран имени с именем
+  // из Telegram (и кодом приглашения из ссылки).
+  Future<void> telegramLogin() async {
+    try {
+      final response = await apiRequest(http.post(
+        Uri.parse('$apiBase/accounts/telegram/login'),
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode({'initData': Tg.initData}),
+      ));
+      if (response.statusCode == 404) {
+        final body = jsonDecode(response.body) as Map<String, dynamic>;
+        nameController.text = (body['suggestedName'] ?? '').toString();
+        final fromLink = DeepLinks.takeInviteCode();
+        inviteController.text =
+            fromLink.isNotEmpty ? fromLink : (body['inviteCode'] ?? '').toString();
+        if (!mounted) return;
+        setState(() {
+          checking = false;
+          needName = true;
+        });
+        return;
+      }
+      expectStatus(response, const [200]);
+      await Session.save(jsonDecode(response.body) as Map<String, dynamic>);
+      openHome();
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        checking = false;
+        error = userErrorMessage(e, fallback: 'Не удалось войти через Telegram');
+      });
+    }
+  }
+
   Future<void> createAccount() async {
     final name = nameController.text.trim();
     if (name.isEmpty || creating) return;
@@ -114,9 +151,10 @@ class _StartScreenState extends State<StartScreen> {
 
     try {
       final response = await apiRequest(http.post(
-        Uri.parse('$apiBase/accounts'),
+        Uri.parse(Tg.available ? '$apiBase/accounts/telegram' : '$apiBase/accounts'),
         headers: {'Content-Type': 'application/json'},
         body: jsonEncode({
+          if (Tg.available) 'initData': Tg.initData,
           'name': name,
           if (inviteController.text.trim().isNotEmpty)
             'inviteCode': inviteController.text.trim(),
@@ -126,12 +164,18 @@ class _StartScreenState extends State<StartScreen> {
       final account = jsonDecode(response.body) as Map<String, dynamic>;
       await Session.save(account);
       if (!mounted) return;
-      await showRecoveryCode(
-        context,
-        playerCode: account['code'].toString(),
-        recoveryCode: account['recoveryCode'].toString(),
-        firstTime: true,
-      );
+      if (Tg.available) {
+        // Аккаунт держится на Telegram — коды не нужны сразу (их можно взять в профиле).
+        // Просим разрешить боту писать: приглашения в комнату и «стол ждёт тебя».
+        Tg.requestWriteAccess();
+      } else {
+        await showRecoveryCode(
+          context,
+          playerCode: account['code'].toString(),
+          recoveryCode: account['recoveryCode'].toString(),
+          firstTime: true,
+        );
+      }
       openHome();
     } catch (e) {
       if (!mounted) return;
@@ -156,10 +200,16 @@ class _StartScreenState extends State<StartScreen> {
     });
     try {
       final response = await apiRequest(http.post(
-        Uri.parse('$apiBase/accounts/recover'),
+        // В Telegram — подключить аккаунт из приложения: телефон остаётся в нём.
+        Uri.parse(Tg.available
+            ? '$apiBase/accounts/telegram/link'
+            : '$apiBase/accounts/recover'),
         headers: {'Content-Type': 'application/json'},
-        body: jsonEncode(
-            {'playerCode': playerCode, 'recoveryCode': recoveryCode}),
+        body: jsonEncode({
+          if (Tg.available) 'initData': Tg.initData,
+          'playerCode': playerCode,
+          'recoveryCode': recoveryCode,
+        }),
       ));
       expectStatus(response, const [200]);
       final account = jsonDecode(response.body) as Map<String, dynamic>;
@@ -237,7 +287,7 @@ class _StartScreenState extends State<StartScreen> {
                     else if (needName) ...[
                       Text(
                         recovering
-                            ? 'Восстановление аккаунта'
+                            ? (Tg.available ? 'Аккаунт из приложения' : 'Восстановление аккаунта')
                             : 'Как вас зовут?',
                         style: TextStyle(
                             fontSize: 24, fontWeight: FontWeight.w800),
@@ -245,7 +295,10 @@ class _StartScreenState extends State<StartScreen> {
                       const SizedBox(height: 8),
                       Text(
                         recovering
-                            ? 'Введите код игрока и секретный код, который вы сохранили.'
+                            ? (Tg.available
+                                ? 'Уже играете в приложении ГАРБА? Введите код игрока и код '
+                                    'восстановления из профиля — тот же аккаунт откроется и в Telegram.'
+                                : 'Введите код игрока и секретный код, который вы сохранили.')
                             : 'Это имя увидят другие игроки за столом. '
                                 'Без мата и оскорблений: на имя можно пожаловаться, '
                                 'жалобы мы проверяем в течение суток.',
@@ -315,7 +368,7 @@ class _StartScreenState extends State<StartScreen> {
                             label: creating
                                 ? 'ПОДОЖДИТЕ...'
                                 : recovering
-                                    ? 'ВОССТАНОВИТЬ'
+                                    ? (Tg.available ? 'ПОДКЛЮЧИТЬ' : 'ВОССТАНОВИТЬ')
                                     : 'НАЧАТЬ',
                             onTap: recovering ? recoverAccount : createAccount,
                           ),
@@ -324,7 +377,9 @@ class _StartScreenState extends State<StartScreen> {
                             onPressed: creating ? null : toggleRecovery,
                             child: Text(recovering
                                 ? 'СОЗДАТЬ НОВЫЙ АККАУНТ'
-                                : 'ВОССТАНОВИТЬ АККАУНТ'),
+                                : Tg.available
+                                    ? 'УЖЕ ИГРАЮ В ПРИЛОЖЕНИИ'
+                                    : 'ВОССТАНОВИТЬ АККАУНТ'),
                           ),
                           // Требование App Store и Google Play — видно до создания аккаунта.
                           // Правила поведения (Apple 1.2, 29.09.2026) — в том же тексте.

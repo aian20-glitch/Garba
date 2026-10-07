@@ -23,6 +23,11 @@ import {
   invitedCount,
   listFriends,
   openDb,
+  findAccountByTelegram,
+  linkTelegram,
+  telegramIdOf,
+  issueExtraToken,
+  checkRecoveryCode,
   normalizeRecoveryCode,
   recoverAccount,
   recordGift,
@@ -195,4 +200,40 @@ section('база занята чтением (ночная копия) — за
   reader.close();
   writer.close();
   for (const f of [file, `${file}-wal`, `${file}-shm`]) rmSync(f, { force: true });
+}
+
+section('аккаунты: вход через Telegram (07.10.2026)');
+{
+  const tg = openDb(':memory:');
+  const a = createAccount(tg, 'Дана');
+  check('Telegram ещё не привязан', findAccountByTelegram(tg, 777), null);
+  linkTelegram(tg, a.account.id, 777);
+  check('нашли по Telegram', findAccountByTelegram(tg, 777)?.id, a.account.id);
+  check('id Telegram у аккаунта', telegramIdOf(tg, a.account.id), 777);
+
+  const extra = issueExtraToken(tg, a.account.id);
+  check('доп. токен входит в аккаунт', findAccountByToken(tg, extra)?.id, a.account.id);
+  check('основной токен телефона тоже работает', findAccountByToken(tg, a.token)?.id, a.account.id);
+
+  const many = [1, 2, 3, 4, 5].map(() => issueExtraToken(tg, a.account.id, 5));
+  check('шестой вытесняет самый старый', findAccountByToken(tg, extra), null);
+  check('последний работает', findAccountByToken(tg, many[4])?.id, a.account.id);
+
+  check('код восстановления верный — аккаунт', checkRecoveryCode(tg, a.account.code, a.recoveryCode)?.id, a.account.id);
+  check('проверка кода не выкидывает телефон', findAccountByToken(tg, a.token)?.id, a.account.id);
+  check('неверный код — нет', checkRecoveryCode(tg, a.account.code, 'AAAA-BBBB-CCCC-DDDD'), null);
+
+  const b = createAccount(tg, 'Ержан');
+  linkTelegram(tg, b.account.id, 777);
+  check('Telegram переехал на другой аккаунт', findAccountByTelegram(tg, 777)?.id, b.account.id);
+  check('у старого отвязан', telegramIdOf(tg, a.account.id), null);
+
+  recoverAccount(tg, a.account.code, a.recoveryCode);
+  check('восстановление выкидывает входы Telegram', findAccountByToken(tg, many[4]), null);
+
+  const c = createAccount(tg, 'Асель');
+  const cTok = issueExtraToken(tg, c.account.id);
+  deleteAccountData(tg, c.account.id);
+  check('удалили аккаунт — токен Telegram не работает', findAccountByToken(tg, cTok), null);
+  tg.close();
 }
