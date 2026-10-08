@@ -109,11 +109,12 @@ const friend = createAccount(db, 'Дана', account.id).account;
 check('пришёл по приглашению — записано, кто пригласил', friend.invitedBy, account.id);
 check('у пригласившего 1 приглашённый', invitedCount(db, account.id), 1);
 
-check('сегодня ещё не дарил', giftedOn(db, account.id, '2026-09-18'), false);
+check('сегодня ещё не дарил', giftedOn(db, account.id, '2026-09-18'), 0);
 recordGift(db, account.id, friend.id, 400, '2026-09-18');
-check('подарил 400 — сегодня уже дарил', giftedOn(db, account.id, '2026-09-18'), true);
-check('завтра — снова можно', giftedOn(db, account.id, '2026-09-19'), false);
-check('получатель при этом может дарить сам', giftedOn(db, friend.id, '2026-09-18'), false);
+recordGift(db, account.id, friend.id, 1_000, '2026-09-18');
+check('подарил 400 и 1 000 — за сегодня 1 400', giftedOn(db, account.id, '2026-09-18'), 1_400);
+check('завтра — счёт с нуля', giftedOn(db, account.id, '2026-09-19'), 0);
+check('получатель при этом может дарить сам', giftedOn(db, friend.id, '2026-09-18'), 0);
 
 setDaily(db, account.id, '2026-09-18', 3);
 check('серия бонусов сохраняется', [getAccount(db, account.id)?.dailyDay, getAccount(db, account.id)?.dailyStreak], ['2026-09-18', 3]);

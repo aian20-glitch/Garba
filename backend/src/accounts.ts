@@ -404,9 +404,11 @@ export function setDaily(db: DatabaseSync, id: string, day: string, streak: numb
   db.prepare('UPDATE accounts SET daily_day = ?, daily_streak = ? WHERE id = ?').run(day, streak, id);
 }
 
-// Дарил ли игрок сегодня (ТЗ §5: не больше одного подарка в сутки).
-export function giftedOn(db: DatabaseSync, fromId: string, day: string): boolean {
-  return db.prepare('SELECT 1 FROM gifts WHERE from_id = ? AND day = ?').get(fromId, day) !== undefined;
+// Сколько игрок подарил за этот день, всем вместе (лимит 10 000 в сутки, 08.10.2026).
+export function giftedOn(db: DatabaseSync, fromId: string, day: string): number {
+  const row = db.prepare('SELECT COALESCE(SUM(amount), 0) AS total FROM gifts WHERE from_id = ? AND day = ?')
+    .get(fromId, day) as { total: number | bigint };
+  return Number(row.total);
 }
 
 export function recordGift(db: DatabaseSync, fromId: string, toId: string, amount: number, day: string) {

@@ -79,7 +79,7 @@ async function main() {
     capacity: 4, ante: 100, emptyLimit: 5, konThreshold: 10, minBalance: 1000,
   });
   const roomId = created.body.id;
-  check('без запаса на отлучку — 5 минут, как раньше', created.body.settings?.absenceMinutes, 5);
+  check('без выбора запаса на отлучку — 1 минута (08.10.2026)', created.body.settings?.absenceMinutes, 1);
   check('запас на отлучку только 1…5 минут — 400',
     (await post('/rooms', serik.token, { capacity: 4, ante: 100, emptyLimit: 5, konThreshold: 10, minBalance: 1000, absenceMinutes: 7 })).status, 400);
   check('создатель комнаты — владелец токена, а не playerId из тела',
@@ -181,7 +181,9 @@ async function main() {
   const gift = await post('/gifts', a.token, { toCode: bMe.code, amount: 400 });
   check('подарил 400', [gift.status, gift.body.balance, gift.body.to?.name], [200, 30_600, 'Ержан']);
   check('получатель получил', (await request('GET', '/me', b.token)).body.balance, 30_400);
-  check('второй подарок в тот же день — нельзя', (await post('/gifts', a.token, { toCode: bMe.code, amount: 100 })).body.error, 'already gifted today');
+  check('второй подарок в тот же день — можно, пока не вышло 10 000', (await post('/gifts', a.token, { toCode: bMe.code, amount: 100 })).body.leftToday, 9_500);
+  check('больше остатка на сегодня — нельзя', (await post('/gifts', a.token, { toCode: bMe.code, amount: 10_000 })).body.error, 'over daily limit');
+  check('в /me — сколько ещё можно подарить', (await request('GET', '/me', a.token)).body.giftLeftToday, 9_500);
 
   const serikBefore = (await request('GET', `/rooms/${roomId}`, serik.token)).body.players.find((p: any) => p.id === serik.id);
   check('сидит за столом — дарить нельзя', (await post('/gifts', serik.token, { toCode: bMe.code, amount: 100 })).body.error, 'finish your game first');

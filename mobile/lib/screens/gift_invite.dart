@@ -1,7 +1,8 @@
 // Подарить монеты и пригласить друга.
 part of '../main.dart';
 
-// Подарок монет другому игроку по его коду (ТЗ §5): до 10 000, раз в сутки (с 25.09.2026).
+// Подарок монет другому игроку по его коду (ТЗ §5): до 10 000 в сутки на всех вместе —
+// одному 10 000 или десятерым по 1 000 (08.10.2026).
 // Все проверки — на сервере; экран только подсказывает заранее.
 class GiftScreen extends StatefulWidget {
   // Код получателя, если подарок открыт из карточки друга.
@@ -23,6 +24,8 @@ class _GiftScreenState extends State<GiftScreen> {
   // С сервера (GET /me): сколько монет, дарил ли сегодня, сидит ли в комнате.
   int balance = 0;
   bool giftSentToday = false;
+  // Сколько ещё можно подарить сегодня (старый сервер поля не отдаёт — тогда 10 000).
+  int giftLeft = 10000;
   bool inRoom = false;
   bool loaded = false;
 
@@ -43,6 +46,7 @@ class _GiftScreenState extends State<GiftScreen> {
       setState(() {
         balance = (me['balance'] as num).toInt();
         giftSentToday = me['giftSentToday'] == true;
+        giftLeft = (me['giftLeftToday'] as num?)?.toInt() ?? (giftSentToday ? 0 : 10000);
         inRoom = me['roomId'] != null;
         loaded = true;
       });
@@ -57,7 +61,8 @@ class _GiftScreenState extends State<GiftScreen> {
     'player not found': 'Игрока с таким кодом нет',
     'bad amount': 'Сумма — от 100 до 10 000',
     'self': 'Себе подарить нельзя',
-    'already gifted today': 'Сегодня вы уже дарили. Следующий подарок — завтра',
+    'already gifted today': 'Сегодня вы уже подарили 10 000. Следующие подарки — завтра',
+    'over daily limit': 'Столько уже не влезает в лимит на сегодня',
     'not enough coins': 'Не хватает монет',
     'finish your game first': 'Сначала доиграйте: пока вы в комнате, дарить нельзя',
   };
@@ -146,9 +151,17 @@ class _GiftScreenState extends State<GiftScreen> {
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
               const Text(
-                'Можно подарить до 10 000 монет, один раз в сутки.',
+                'Можно подарить до 10 000 монет в сутки — одному или нескольким игрокам.',
                 style: TextStyle(color: Colors.white70),
               ),
+              if (blocked == null && giftLeft < 10000)
+                Padding(
+                  padding: const EdgeInsets.only(top: 4),
+                  child: Text(
+                    'Сегодня можно подарить ещё ${fmtCoins(giftLeft)}',
+                    style: const TextStyle(color: Color(0xFFD4A94F), fontWeight: FontWeight.w700),
+                  ),
+                ),
               const SizedBox(height: 16),
               if (blocked != null)
                 Text(blocked, style: const TextStyle(color: Colors.orangeAccent, fontSize: 16))
@@ -185,7 +198,7 @@ class _GiftScreenState extends State<GiftScreen> {
                     return ChoiceChip(
                       label: Text(fmtCoins(n)),
                       selected: amount == n,
-                      onSelected: n <= balance ? (_) => setState(() => amount = n) : null,
+                      onSelected: n <= balance && n <= giftLeft ? (_) => setState(() => amount = n) : null,
                     );
                   }).toList(),
                 ),

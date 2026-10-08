@@ -318,15 +318,18 @@ GET  /me/blocks                  → { players: [{ code, name }] } — кого 
                                  /rooms/open и /rooms/quick не сажают за один стол. В карточке
                                  /players/:code — blocked: я его заблокировал. Логика — moderation.ts.
 POST /accounts с матом в имени   → 400 name not allowed (nameNotAllowed в moderation.ts, по корням)
-POST /gifts                      { toCode, amount }  → { amount, balance, to: { code, name } }
-                                 amount 100..10000 кратно 100 (с 25.09.2026); ошибки: 400 bad amount | self |
-                                 not enough coins; 409 already gifted today; 409 finish your game
+POST /gifts                      { toCode, amount }  → { amount, balance, to: { code, name }, leftToday }
+                                 amount 100..10000 кратно 100 (с 25.09.2026); с 08.10.2026 — 10 000 в сутки
+                                 на всех вместе, подарков сколько угодно (/me → giftLeftToday);
+                                 ошибки: 400 bad amount | self | not enough coins; 409 already gifted today
+                                 (лимит выбран) | over daily limit { leftToday }; 409 finish your game
                                  first (дарить нельзя, пока сидишь в комнате); 404 player not found
 
 — дальше всё с токеном —
 POST /rooms                      { capacity, ante, emptyLimit, konThreshold, minBalance, isPublic?,
                                    turnSeconds?, absenceMinutes? }   turnSeconds 20 | 40, без него — 20 (§13a, 23.09.2026)
-                                 absenceMinutes 1..5 — запас на отлучку за игру, без него — 5 (§13, 08.10.2026)
+                                 absenceMinutes 1..5 — запас на отлучку за игру, без него — 1 (§13, 08.10.2026);
+                                 у комнат, созданных раньше, поля нет — 5 минут
                                  capacity 4..7; ante 100..1000 кратно 100;
                                  emptyLimit 3..10; konThreshold 3..10;
                                  minBalance 1000..10000 кратно 1000, не меньше ante × 10

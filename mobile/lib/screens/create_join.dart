@@ -19,8 +19,8 @@ class _CreateRoomScreenState extends State<CreateRoomScreen> {
   int minBalance = 1000;
   // Время на ход: 20 или 40 секунд (RULES.md §13a).
   int turnSeconds = 20;
-  // Запас на отлучку за игру: 1…5 минут (RULES.md §13, 08.10.2026).
-  int absenceMinutes = 5;
+  // Запас на отлучку за игру: 1…5 минут (RULES.md §13, 08.10.2026), по умолчанию 1.
+  int absenceMinutes = 1;
   // Открытая — видна всем в «Открытых комнатах», войти можно без кода.
   bool isPublic = false;
   bool loading = false;

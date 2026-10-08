@@ -53,23 +53,31 @@ export function dailyClaim(lastDay: string | null, streak: number, today: string
 // --- Подарки ---
 
 export type GiftError =
-  | 'bad amount' // не 100…1 000 с шагом 100
+  | 'bad amount' // не 100…10 000 с шагом 100
   | 'self' // себе дарить нельзя
-  | 'already gifted today' // один подарок в сутки
+  | 'already gifted today' // за сутки уже подарил все 10 000
+  | 'over daily limit' // этот подарок не влезает в остаток на сегодня
   | 'not enough coins';
 
-// Проверка подарка. Сумма — от 100 до 1 000, кратно 100: монеты в игре ходят сотнями.
+// Сколько ещё можно подарить сегодня: 10 000 в сутки на всех вместе — одному 10 000 или
+// десятерым по 1 000 (решение владельца, 08.10.2026; раньше — один подарок в сутки).
+export function giftLeftToday(sentToday: number): number {
+  return Math.max(0, MAX_GIFT - sentToday);
+}
+
+// Проверка подарка. Сумма — от 100 до 10 000, кратно 100: монеты в игре ходят сотнями.
 export function giftError(p: {
   amount: number;
   balance: number;
-  giftedToday: boolean;
+  sentToday: number; // сколько уже подарил сегодня, всем вместе
   toSelf: boolean;
 }): GiftError | null {
   if (!Number.isInteger(p.amount) || p.amount < COIN_STEP || p.amount > MAX_GIFT || p.amount % COIN_STEP !== 0) {
     return 'bad amount';
   }
   if (p.toSelf) return 'self';
-  if (p.giftedToday) return 'already gifted today';
+  if (giftLeftToday(p.sentToday) <= 0) return 'already gifted today';
+  if (p.amount > giftLeftToday(p.sentToday)) return 'over daily limit';
   if (p.balance < p.amount) return 'not enough coins';
   return null;
 }

@@ -68,6 +68,7 @@ import {
   dailyClaim,
   dayKey,
   giftError,
+  giftLeftToday,
   normalizeCode,
   REFERRAL_BONUS,
   referralDue,
@@ -77,7 +78,7 @@ import {
   ABSENCE_MINUTES_OPTIONS,
   absenceMsFor,
   absenceStep,
-  DEFAULT_ABSENCE_MINUTES,
+  NEW_ROOM_ABSENCE_MINUTES,
   DISCONNECT_TIMEOUT_MS,
   OFFLINE_GRACE_MS,
   presenceStep,
@@ -898,7 +899,9 @@ app.get('/me', (req, res) => {
       streak: claim.streak,
       amount: claim.claimable ? claim.amount : 0,
     },
-    giftSentToday: giftedOn(db, account.id, today),
+    // Подарил ли уже весь дневной лимит; giftLeftToday — сколько ещё можно (08.10.2026).
+    giftSentToday: giftLeftToday(giftedOn(db, account.id, today)) === 0,
+    giftLeftToday: giftLeftToday(giftedOn(db, account.id, today)),
     invitedCount: invitedCount(db, account.id),
     // Сколько человек зовут меня в друзья — цифра у кнопки «ДРУЗЬЯ».
     friendRequests: friendRequests(db, account.id).incoming.length,
@@ -1449,11 +1452,14 @@ app.post('/gifts', (req, res) => {
   const error = giftError({
     amount,
     balance: from.balance,
-    giftedToday: giftedOn(db, from.id, today),
+    sentToday: giftedOn(db, from.id, today),
     toSelf: to.id === from.id,
   });
   if (error) {
-    return res.status(error === 'already gifted today' ? 409 : 400).json({ error });
+    const leftToday = giftLeftToday(giftedOn(db, from.id, today));
+    return res
+      .status(error === 'already gifted today' || error === 'over daily limit' ? 409 : 400)
+      .json({ error, leftToday });
   }
 
   moveCoins(
@@ -1465,7 +1471,12 @@ app.post('/gifts', (req, res) => {
   );
   console.log(`[GIFT] ${from.name} → ${to.name}: ${amount}`);
 
-  return res.json({ amount, balance: from.balance - amount, to: { code: to.code, name: to.name } });
+  return res.json({
+    amount,
+    balance: from.balance - amount,
+    to: { code: to.code, name: to.name },
+    leftToday: giftLeftToday(giftedOn(db, from.id, today)),
+  });
 });
 
 // Всё про комнаты — только с токеном. Кто делает запрос, сервер знает сам:
@@ -3270,7 +3281,7 @@ app.post('/rooms', (req, res) => {
   }
 
   // Запас на отлучку — 1…5 минут (§13, 08.10.2026). Не прислали — 5, как было раньше.
-  const absenceValue = absenceMinutes === undefined ? DEFAULT_ABSENCE_MINUTES : Number(absenceMinutes);
+  const absenceValue = absenceMinutes === undefined ? NEW_ROOM_ABSENCE_MINUTES : Number(absenceMinutes);
   if (!ABSENCE_MINUTES_OPTIONS.includes(absenceValue)) {
     return res.status(400).json({ error: `absenceMinutes must be one of ${ABSENCE_MINUTES_OPTIONS.join(', ')}` });
   }
