@@ -74,7 +74,10 @@ import {
   REFERRAL_ROOMS,
 } from './bonus.js';
 import {
+  ABSENCE_MINUTES_OPTIONS,
+  absenceMsFor,
   absenceStep,
+  DEFAULT_ABSENCE_MINUTES,
   DISCONNECT_TIMEOUT_MS,
   OFFLINE_GRACE_MS,
   presenceStep,
@@ -214,6 +217,7 @@ type RoomSettings = {
   konThreshold: number; // КОН открывается при коне ≥ базовый × это число, 3…10
   minBalance: number; // минимум денег для входа, 1 000…10 000, не меньше взноса × 10
   turnSeconds?: number; // время на ход, 20 или 40 (§13a); нет — 20 (старые комнаты)
+  absenceMinutes?: number; // запас на отлучку за игру, 1…5 минут (§13); нет — 5
 };
 
 type RevealCard = Card & {
@@ -1647,6 +1651,9 @@ const presenceOpts = {
   graceMs: Number(process.env.GARBA_GRACE_MS ?? OFFLINE_GRACE_MS),
   timeoutMs: Number(process.env.GARBA_DISCONNECT_MS ?? DISCONNECT_TIMEOUT_MS),
 };
+// Запас на отлучку этой комнаты (выбирает создатель, 1…5 минут). Для проверок — GARBA_DISCONNECT_MS.
+const absenceMsOf = (room: Room) =>
+  process.env.GARBA_DISCONNECT_MS ? presenceOpts.timeoutMs : absenceMsFor(room.settings.absenceMinutes);
 const presence = new Map<string, PresenceState>();
 // С какого момента идёт текущее отсутствие игрока — только в памяти: после перезапуска
 // сервера текущий отрезок не засчитывается (в пользу игрока).
@@ -1680,7 +1687,7 @@ function absenceOf(room: Room, now: number) {
     absentSince.get(room.id) ?? {},
     room.game?.absenceUsedMs ?? {},
     now,
-    presenceOpts.timeoutMs,
+    absenceMsOf(room),
   );
 }
 
@@ -1702,10 +1709,9 @@ function connectedPlayerIds(roomId: string): string[] {
   return [...ids, ...(rooms.get(roomId)?.botIds ?? [])];
 }
 
-// Игрок ушёл из игры (24.09.2026): «Выйти» между раздачами или пропал на 5 минут.
+// Игрок ушёл из игры: «Выйти» между раздачами или кончился запас на отлучку (1…5 минут).
 // Кон сразу делится между оставшимися (остаток — тому, кто больше всех проиграл, как в
-// §12.2), ушедшему −1.0 рейтинга (§16.3a), его место ждёт нового игрока 10 минут.
-// Новый игрок садится с пустым коном — в следующей раздаче все снова вносят взнос.
+// §12.2), ушедшему −1.0 рейтинга (§16.3a), и игра заканчивается (08.10.2026).
 function vacateSeat(room: Room, playerId: string, reason: 'left' | 'gone') {
   const game = room.game!;
   const player = room.players.find((p) => p.id === playerId);
@@ -1737,10 +1743,6 @@ function vacateSeat(room: Room, playerId: string, reason: 'left' | 'gone') {
   // Вернётся за этот стол — рейтинг возьмём из аккаунта заново: он мог сыграть где-то ещё.
   delete room.rating?.[playerId];
   room.departedIds = [...(room.departedIds ?? []).filter((id) => id !== playerId), playerId];
-  room.vacancies = [
-    ...(room.vacancies ?? []),
-    { seat: player.seat ?? 0, since: Date.now(), wasDealer: game.dealerId === playerId },
-  ];
   room.players = rest;
 
   // Всё, что про него помнила пауза и таймер хода.
@@ -1760,12 +1762,16 @@ function vacateSeat(room: Room, playerId: string, reason: 'left' | 'gone') {
 
   console.log(
     `[ROOM ${room.id}] ${player.name} ${reason === 'left' ? 'вышел из игры' : 'не вернулся за 5 минут'} — ` +
-      `кон ${game.lastLeave.kon} разделён: по ${perPlayer}, место ${player.seat} свободно`,
+      `кон ${game.lastLeave.kon} разделён: по ${perPlayer} — игра закончена`,
   );
+  // Кто-то ушёл — игра заканчивается (решение владельца, 08.10.2026; с 24.09 место ждало
+  // нового игрока 10 минут). Кон уже поделён, остальным — итог комнаты по §16.3.
   if (rest.length === 0) {
     game.stage = 'room_done';
-    game.closeReason = 'seat_empty';
+    game.closeReason = 'player_left';
     room.status = 'finished';
+  } else {
+    closeWithSplit(room, 'player_left');
   }
 }
 
@@ -1814,7 +1820,7 @@ function sweepPresence() {
     // Пропал из игры — бот в Telegram напомнит, что стол ждёт.
     for (const id of Object.keys(step.disconnectedAt)) {
       if (wasOffline[id] === undefined) {
-        notifyTelegram(id, `offline:${room.id}`, `Игра #${room.id} на паузе — стол ждёт тебя. Вернись в течение 5 минут.`, `room_${room.id}`);
+        notifyTelegram(id, `offline:${room.id}`, `Игра #${room.id} на паузе — стол ждёт тебя. Вернись в течение ${Math.round(absenceMsOf(room) / 60_000)} мин.`, `room_${room.id}`);
       }
     }
 
@@ -2388,7 +2394,10 @@ function applyVoteIfDecided(room: Room) {
 }
 
 // Комната закрывается, кон делится поровну (RULES.md §12.2).
-function closeWithSplit(room: Room, reason: 'nobody_can_play' | 'agreed_end' | 'seat_empty' = 'nobody_can_play') {
+function closeWithSplit(
+  room: Room,
+  reason: 'nobody_can_play' | 'agreed_end' | 'seat_empty' | 'player_left' = 'nobody_can_play',
+) {
   const game = room.game!;
   const { shares, perPlayer, remainder, remainderTo } = splitKon(
     game.kon,
@@ -3184,7 +3193,7 @@ app.get('/health', (_req, res) => {
 });
 
 app.post('/rooms', (req, res) => {
-  const { playerId, name, capacity, ante, emptyLimit, konThreshold, minBalance, turnSeconds } =
+  const { playerId, name, capacity, ante, emptyLimit, konThreshold, minBalance, turnSeconds, absenceMinutes } =
     req.body ?? {};
   const cap = Number(capacity);
   const anteValue = Number(ante);
@@ -3243,6 +3252,12 @@ app.post('/rooms', (req, res) => {
     return res.status(400).json({ error: `turnSeconds must be one of ${TURN_SECONDS_OPTIONS.join(', ')}` });
   }
 
+  // Запас на отлучку — 1…5 минут (§13, 08.10.2026). Не прислали — 5, как было раньше.
+  const absenceValue = absenceMinutes === undefined ? DEFAULT_ABSENCE_MINUTES : Number(absenceMinutes);
+  if (!ABSENCE_MINUTES_OPTIONS.includes(absenceValue)) {
+    return res.status(400).json({ error: `absenceMinutes must be one of ${ABSENCE_MINUTES_OPTIONS.join(', ')}` });
+  }
+
   // Играть можно только в одной комнате за раз — roomId, чтобы вернуться в неё.
   const busyIn = activeRoomOf(me(res).id);
   if (busyIn) {
@@ -3278,6 +3293,7 @@ app.post('/rooms', (req, res) => {
       konThreshold: thresholdValue,
       minBalance: minBalanceValue,
       turnSeconds: turnSecondsValue,
+      absenceMinutes: absenceValue,
     },
     req.body?.isPublic === true,
   );

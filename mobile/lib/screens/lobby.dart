@@ -583,7 +583,7 @@ class _LobbyScreenState extends State<LobbyScreen> {
                 return Padding(
                   padding: const EdgeInsets.only(top: 4),
                   child: Text(
-                    'Взнос ${fmtCoins(v('ante'))} · вход от ${fmtCoins(v('minBalance'))} · ход ${s['turnSeconds'] ?? 20} с\n'
+                    'Взнос ${fmtCoins(v('ante'))} · вход от ${fmtCoins(v('minBalance'))} · ход ${s['turnSeconds'] ?? 20} с · ждём ${s['absenceMinutes'] ?? 5} мин\n'
                     'Пустых раздач ${v('emptyLimit')} · КОН с ×${v('konThreshold')}',
                     style: const TextStyle(color: Colors.white60, fontSize: 13),
                   ),

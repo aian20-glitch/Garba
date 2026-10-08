@@ -11,6 +11,17 @@
 export const DISCONNECT_TIMEOUT_MS = 5 * 60 * 1000; // §13: 5 минут
 export const OFFLINE_GRACE_MS = 10_000;
 
+// Запас на отлучку выбирает создатель комнаты: 1…5 минут (решение владельца, 08.10.2026).
+// Старые комнаты и «Быстрая игра» — 5 минут.
+export const ABSENCE_MINUTES_OPTIONS = [1, 2, 3, 4, 5];
+export const DEFAULT_ABSENCE_MINUTES = 5;
+
+export function absenceMsFor(minutes: number | undefined): number {
+  return ABSENCE_MINUTES_OPTIONS.includes(minutes ?? NaN)
+    ? minutes! * 60_000
+    : DEFAULT_ABSENCE_MINUTES * 60_000;
+}
+
 export type PresenceState = {
   // Когда игрока последний раз видели. Живёт только в памяти сервера.
   lastSeen: Record<string, number>;

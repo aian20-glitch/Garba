@@ -637,17 +637,15 @@ class _GameTableScreenState extends State<GameTableScreen> {
   }
 
   // Выйти из игры между раздачами (RULES.md §13b): кон делят оставшиеся, рейтинг −1.0,
-  // место ждёт нового игрока. Сначала спрашиваем. Место за столом уже пустует —
-  // уход без штрафа (§16.3a, 08.10.2026), решает сервер.
-  Future<void> leaveGame(int kon, {bool seatAlreadyEmpty = false}) async {
+  // игра заканчивается (08.10.2026). Сначала спрашиваем.
+  Future<void> leaveGame(int kon) async {
     final ok = await showDialog<bool>(
       context: context,
       builder: (context) => AlertDialog(
         title: const Text('Выйти из игры?'),
         content: Text(
           '${kon > 0 ? 'Кон ${fmtCoins(kon)} разделят между остальными игроками.\n' : ''}'
-          '${seatAlreadyEmpty ? 'Рейтинг не изменится — за столом уже есть свободное место.' : 'Рейтинг −1.0.'}'
-          ' Ваше место займёт другой игрок.',
+          'Игра закончится для всех. Ваш рейтинг −1.0.',
         ),
         actions: [
           TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('ОСТАТЬСЯ')),
@@ -864,7 +862,7 @@ class _GameTableScreenState extends State<GameTableScreen> {
       return const RoomClosedScreen(text: 'За столом никого не осталось — игра закрыта.');
     }
 
-    // Меня за столом больше нет: вышел или не вернулся за 5 минут (RULES.md §13, §13b).
+    // Меня за столом больше нет: вышел или кончился запас на отлучку (RULES.md §13, §13b).
     final seated = ((data['players'] as List?) ?? const [])
         .any((p) => (p as Map)['id'].toString() == widget.currentPlayerId);
     if (!seated && data['status'] == 'started') {
@@ -1220,30 +1218,24 @@ class _GameTableScreenState extends State<GameTableScreen> {
                 ),
               );
             }),
-          // Игрок отключился и не вернулся за 5 минут — кон поделили
-          // между оставшимися (RULES.md §13).
-          if (game['closeReason'] == 'player_left' && game['split'] is Map)
+          // Кто-то ушёл из игры — игра закончилась, кон поделили между оставшимися
+          // (RULES.md §13, §13b; 08.10.2026). Кто и сколько — в lastLeave.
+          if (game['closeReason'] == 'player_left' && game['lastLeave'] is Map)
             Builder(builder: (_) {
-              final split = Map<String, dynamic>.from(game['split'] as Map);
-              final leftIds = ((game['leftPlayerIds'] as List?) ?? const [])
-                  .map((e) => e.toString())
-                  .toSet();
-              final leftNames = players
-                  .where((p) => leftIds.contains(p['id'].toString()))
-                  .map((p) => p['name'].toString())
-                  .join(', ');
-              final remainder = (split['remainder'] as num).toInt();
+              final leave = Map<String, dynamic>.from(game['lastLeave'] as Map);
+              final leaveKon = (leave['kon'] as num?)?.toInt() ?? 0;
+              final remainder = (leave['remainder'] as num?)?.toInt() ?? 0;
               final remainderName = players
-                  .where((p) => p['id'].toString() == split['remainderTo']?.toString())
+                  .where((p) => p['id'].toString() == leave['remainderTo']?.toString())
                   .map((p) => p['name'].toString())
                   .join();
               return Padding(
                 padding: const EdgeInsets.only(top: 6),
                 child: Text(
-                  '$leftNames не вернулся за 5 минут — игра прекращена. '
-                  'Кон ${fmtCoins((split['kon'] as num).toInt())} поделили между оставшимися: '
-                  'по ${fmtCoins((split['perPlayer'] as num).toInt())}'
-                  '${remainder > 0 ? ', остаток ${fmtCoins(remainder)} — $remainderName' : ''}',
+                  '${leave['name']} ${leave['reason'] == 'left' ? 'вышел из игры' : 'не вернулся'} — игра закончена.'
+                  '${leaveKon > 0 ? ' Кон ${fmtCoins(leaveKon)} поделили между оставшимися: '
+                      'по ${fmtCoins((leave['perPlayer'] as num).toInt())}'
+                      '${remainder > 0 ? ', остаток ${fmtCoins(remainder)} — $remainderName' : ''}' : ''}',
                   textAlign: TextAlign.center,
                   style: const TextStyle(color: Colors.white70, fontSize: 13),
                 ),
@@ -2119,7 +2111,9 @@ class _GameTableScreenState extends State<GameTableScreen> {
     }
 
     // Выйти из-за стола посреди игры — не остановит её: за игрока пойдёт таймер хода,
-    // после двух пропусков — пауза и тратится запас 5 минут (§13a). Переспрашиваем.
+    // после двух пропусков — пауза и тратится запас на отлучку (§13a). Переспрашиваем.
+    final absenceMinutes =
+        ((data['settings'] as Map?)?['absenceMinutes'] as num?)?.toInt() ?? 5;
     return PopScope(
       canPop: isRoomDone,
       onPopInvokedWithResult: (didPop, _) async {
@@ -2128,10 +2122,10 @@ class _GameTableScreenState extends State<GameTableScreen> {
           context: context,
           builder: (ctx) => AlertDialog(
             title: const Text('Выйти из-за стола?'),
-            content: const Text(
+            content: Text(
               'Игра не остановится: пока вас нет, за вас ходит таймер. '
-              'Два пропуска подряд — игра встаёт на паузу, и тратится ваш запас 5 минут. '
-              'Кончится запас — комната закроется, а вы потеряете рейтинг.',
+              'Два пропуска подряд — игра встаёт на паузу, и тратится ваш запас $absenceMinutes мин. '
+              'Кончится запас — игра закончится, а вы потеряете рейтинг.',
             ),
             actions: [
               FilledButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('ОСТАТЬСЯ')),
@@ -2288,7 +2282,7 @@ class _GameTableScreenState extends State<GameTableScreen> {
                             Text(
                               vacancies.isNotEmpty && pausedPlayers.isEmpty
                                   ? 'Никто не сядет — игра закончится, кон разделят оставшиеся.'
-                                  : 'Не вернётся — его место освободится, кон разделят оставшиеся.',
+                                  : 'Не вернётся — игра закончится, кон разделят оставшиеся.',
                               textAlign: TextAlign.center,
                               style: const TextStyle(
                                 color: Colors.white70,
@@ -2622,7 +2616,7 @@ class _GameTableScreenState extends State<GameTableScreen> {
                     // Выйти — только между раздачами (RULES.md §13b).
                     if (endVote == null)
                       TextButton.icon(
-                        onPressed: leaving ? null : () => leaveGame(kon, seatAlreadyEmpty: vacancies.isNotEmpty),
+                        onPressed: leaving ? null : () => leaveGame(kon),
                         icon: const Icon(Icons.logout, size: 18),
                         label: const Text('ВЫЙТИ ИЗ ИГРЫ'),
                         style: TextButton.styleFrom(foregroundColor: Colors.white54),

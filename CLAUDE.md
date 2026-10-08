@@ -325,7 +325,8 @@ POST /gifts                      { toCode, amount }  → { amount, balance, to: 
 
 — дальше всё с токеном —
 POST /rooms                      { capacity, ante, emptyLimit, konThreshold, minBalance, isPublic?,
-                                   turnSeconds? }   turnSeconds 20 | 40, без него — 20 (§13a, 23.09.2026)
+                                   turnSeconds?, absenceMinutes? }   turnSeconds 20 | 40, без него — 20 (§13a, 23.09.2026)
+                                 absenceMinutes 1..5 — запас на отлучку за игру, без него — 5 (§13, 08.10.2026)
                                  capacity 4..7; ante 100..1000 кратно 100;
                                  emptyLimit 3..10; konThreshold 3..10;
                                  minBalance 1000..10000 кратно 1000, не меньше ante × 10
@@ -365,7 +366,8 @@ POST /rooms/:id/join             { seat? }   место — выбранное �
                                       409 already in another room
 POST /rooms/:id/leave            {}   в лобби — выйти (ушёл создатель — комната закрывается);
                                       в игре — только между раздачами (§13b, 24.09.2026): кон
-                                      делится между оставшимися, −1.0 рейтинга, место свободно
+                                      делится между оставшимися, −1.0 рейтинга, игра заканчивается
+                                      (closeReason 'player_left', game.lastLeave; с 08.10.2026)
                                       → { left: true }; 409 can leave only between deals
 POST /rooms/:id/start            {}   только создатель
 POST /rooms/:id/dealer/continue  {}   только раздающий (не создатель!);
@@ -545,6 +547,9 @@ pause: null | { players: [{ id, name, secondsLeft }] }   — на уровне �
 потрачено — `game.absenceUsedMs` (в базе), текущий отрезок — в памяти; `pause.players[].secondsLeft`
 — остаток запаса.
 
+**С 08.10.2026 ушедший закрывает игру** (`vacateSeat` → `closeWithSplit(room, 'player_left')`),
+запас на отлучку — `room.settings.absenceMinutes` (1…5, `absenceMsFor` в `presence.ts`). Замена
+ушедшего ниже живёт только для комнат, где место освободилось раньше.
 **Места и замена ушедшего (24.09.2026, `seats.ts`, RULES.md §2, §13, §13b).** У игрока
 `players[].seat` 0…capacity−1; `room.players` всегда отсортирован по месту (следующий — сосед
 справа), при старте не перемешивается. Ушёл (`vacateSeat`) — кон делится между оставшимися

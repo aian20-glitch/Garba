@@ -79,6 +79,9 @@ async function main() {
     capacity: 4, ante: 100, emptyLimit: 5, konThreshold: 10, minBalance: 1000,
   });
   const roomId = created.body.id;
+  check('без запаса на отлучку — 5 минут, как раньше', created.body.settings?.absenceMinutes, 5);
+  check('запас на отлучку только 1…5 минут — 400',
+    (await post('/rooms', serik.token, { capacity: 4, ante: 100, emptyLimit: 5, konThreshold: 10, minBalance: 1000, absenceMinutes: 7 })).status, 400);
   check('создатель комнаты — владелец токена, а не playerId из тела',
     [created.body.creatorId, created.body.players?.[0]?.name], [serik.id, 'Серик']);
   check('вторую комнату тому же игроку не создать — 409 и номер его комнаты',

@@ -19,6 +19,8 @@ class _CreateRoomScreenState extends State<CreateRoomScreen> {
   int minBalance = 1000;
   // Время на ход: 20 или 40 секунд (RULES.md §13a).
   int turnSeconds = 20;
+  // Запас на отлучку за игру: 1…5 минут (RULES.md §13, 08.10.2026).
+  int absenceMinutes = 5;
   // Открытая — видна всем в «Открытых комнатах», войти можно без кода.
   bool isPublic = false;
   bool loading = false;
@@ -48,6 +50,7 @@ class _CreateRoomScreenState extends State<CreateRoomScreen> {
           'konThreshold': konThreshold,
           'minBalance': minBalance,
           'turnSeconds': turnSeconds,
+          'absenceMinutes': absenceMinutes,
           'isPublic': isPublic,
         }),
       );
@@ -251,6 +254,29 @@ class _CreateRoomScreenState extends State<CreateRoomScreen> {
             const Text(
               'Не успел — за игрока сходит игра: в торгах ПАС, в розыгрыше — любая допустимая карта',
               style: TextStyle(color: Colors.white60),
+            ),
+            const SizedBox(height: 24),
+            const Text(
+              'Сколько ждать отошедшего',
+              style: TextStyle(fontSize: 20, fontWeight: FontWeight.w800),
+            ),
+            const SizedBox(height: 12),
+            Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              children: [1, 2, 3, 4, 5].map((n) {
+                return ChoiceChip(
+                  label: Text('$n мин'),
+                  selected: absenceMinutes == n,
+                  onSelected: (_) => setState(() => absenceMinutes = n),
+                );
+              }).toList(),
+            ),
+            const SizedBox(height: 6),
+            Text(
+              'Игрок пропал или не ходит — игра ждёт его $absenceMinutes мин за всю игру. '
+              'Не вернулся — игра заканчивается, кон делят остальные',
+              style: const TextStyle(color: Colors.white60),
             ),
           ],
                 ),

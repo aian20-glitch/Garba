@@ -2,6 +2,7 @@
 
 import { check, section } from './check.js';
 import {
+  absenceMsFor,
   absenceStep,
   DISCONNECT_TIMEOUT_MS,
   OFFLINE_GRACE_MS,
@@ -116,3 +117,9 @@ check('3 минуты вышли — комната закрывается', a.e
 check('у Даны свой нетронутый запас', a.msLeft.Дана, 5 * MIN);
 const b = absenceStep(seats, ['Дана'], {}, { Дана: 5 * MIN }, 0, 5 * MIN);
 check('запас кончился раньше — следующий уход сразу закрывает', b.expired, ['Дана']);
+
+section('запас на отлучку выбирает создатель: 1…5 минут (08.10.2026)');
+check('3 минуты', absenceMsFor(3), 180_000);
+check('1 минута', absenceMsFor(1), 60_000);
+check('старая комната без настройки — 5 минут', absenceMsFor(undefined), 300_000);
+check('чужое значение — 5 минут', absenceMsFor(7), 300_000);
