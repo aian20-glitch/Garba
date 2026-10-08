@@ -1712,10 +1712,12 @@ function connectedPlayerIds(roomId: string): string[] {
 // Игрок ушёл из игры: «Выйти» между раздачами или кончился запас на отлучку (1…5 минут).
 // Кон сразу делится между оставшимися (остаток — тому, кто больше всех проиграл, как в
 // §12.2), ушедшему −1.0 рейтинга (§16.3a), и игра заканчивается (08.10.2026).
-function vacateSeat(room: Room, playerId: string, reason: 'left' | 'gone') {
+// close = false — вызывающий уберёт ещё кого-то и закроет игру сам (finishLeaving), один раз:
+// иначе итог комнаты и рейтинг оставшимся посчитались бы дважды.
+function vacateSeat(room: Room, playerId: string, reason: 'left' | 'gone', close = true) {
   const game = room.game!;
   const player = room.players.find((p) => p.id === playerId);
-  if (!player) return;
+  if (!player || room.status === 'finished') return;
   const rest = room.players.filter((p) => p.id !== playerId);
 
   // Место уже пустовало до него — уход без штрафа к рейтингу (§16.3a, 08.10.2026).
@@ -1764,9 +1766,15 @@ function vacateSeat(room: Room, playerId: string, reason: 'left' | 'gone') {
     `[ROOM ${room.id}] ${player.name} ${reason === 'left' ? 'вышел из игры' : 'не вернулся за 5 минут'} — ` +
       `кон ${game.lastLeave.kon} разделён: по ${perPlayer} — игра закончена`,
   );
-  // Кто-то ушёл — игра заканчивается (решение владельца, 08.10.2026; с 24.09 место ждало
-  // нового игрока 10 минут). Кон уже поделён, остальным — итог комнаты по §16.3.
-  if (rest.length === 0) {
+  if (close) finishLeaving(room);
+}
+
+// Кто-то ушёл — игра заканчивается (решение владельца, 08.10.2026; с 24.09 место ждало
+// нового игрока 10 минут). Кон уже поделён, остальным — итог комнаты по §16.3.
+function finishLeaving(room: Room) {
+  if (room.status === 'finished') return;
+  const game = room.game!;
+  if (room.players.length === 0) {
     game.stage = 'room_done';
     game.closeReason = 'player_left';
     room.status = 'finished';
@@ -1837,12 +1845,21 @@ function sweepPresence() {
     const goneNow = betweenDeals(room.game!.stage) ? gone : [];
 
     if (expired.length > 0 || goneNow.length > 0) {
-      for (const id of goneNow) vacateSeat(room, id, 'gone');
+      // Сначала убираем всех ушедших, игру закрываем один раз.
+      const between = betweenDeals(room.game!.stage);
+      let leftSomeone = false;
+      for (const id of goneNow) {
+        vacateSeat(room, id, 'gone', false);
+        leftSomeone = true;
+      }
       for (const id of expired) {
         if (!room.players.some((p) => p.id === id)) continue;
-        if (betweenDeals(room.game!.stage)) vacateSeat(room, id, 'gone');
-        else markGone(room, id);
+        if (between) {
+          vacateSeat(room, id, 'gone', false);
+          leftSomeone = true;
+        } else markGone(room, id);
       }
+      if (leftSomeone) finishLeaving(room);
     } else if (step.changed || usedChanged) {
       const off = room.players.filter((p) => step.disconnectedAt[p.id] !== undefined);
       console.log(
