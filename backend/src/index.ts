@@ -1134,6 +1134,8 @@ app.get('/players/:code', (req, res) => {
     code: player.code,
     name: player.name,
     avatar: avatarOf(player.id),
+    // Монеты видны всем, как за столом (решение владельца, 08.10.2026).
+    balance: player.balance,
     rating: shownRating(accountRating(player.id)),
     stats: profileStats(db, player.id),
     isFriend: areFriends(db, me.id, player.id),

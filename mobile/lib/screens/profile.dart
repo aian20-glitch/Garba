@@ -828,6 +828,20 @@ class _PlayerScreenState extends State<PlayerScreen> {
                 ),
                 Text('Код игрока: ${p['code']}',
                     style: const TextStyle(color: Colors.white70)),
+                // Сколько у него монет (с 08.10.2026; старый сервер поля не отдаёт).
+                if (p['balance'] is num)
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      const CoinIcon(size: 19),
+                      const SizedBox(width: 4),
+                      Text(
+                        fmtCoins((p['balance'] as num).toInt()),
+                        style: const TextStyle(
+                            fontSize: 18, fontWeight: FontWeight.w700),
+                      ),
+                    ],
+                  ),
                 Text(
                   'Рейтинг: ⭐ ${fmtRating(p['rating'])}',
                   style: const TextStyle(

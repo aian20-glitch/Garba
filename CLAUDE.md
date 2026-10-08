@@ -287,7 +287,8 @@ POST /me/daily-bonus             → { amount, streak, balance }; 409 already cl
 DELETE /me                       → { ok } — удалить аккаунт навсегда (требование Apple/Google):
                                  аккаунт, фото, друзья, статистика; в старых комнатах имя —
                                  «Удалённый игрок». 409 finish your game first { roomId }
-GET  /players/:code              → { code, name, stats, isFriend, friendStatus }   карточка игрока;
+GET  /players/:code              → { code, name, balance, stats, isFriend, friendStatus }   карточка игрока
+                                 (balance — с 08.10.2026);
                                  friendStatus: friends | outgoing | incoming | none; 404
 GET  /me/profile                 → { id, name, code, balance, createdAt, stats, friendsCount }
                                  stats — за всё время: rooms, deals, mains, wins, losses, raz, dva,

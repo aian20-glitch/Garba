@@ -172,6 +172,7 @@ async function main() {
   // карточка с 9.4 шире (stats, isFriend, avatar, rating) — здесь важны только код и имя
   const card = (await request('GET', `/players/${bMe.code}`, a.token)).body;
   check('найти игрока по коду перед подарком', { code: card.code, name: card.name }, { code: bMe.code, name: 'Ержан' });
+  check('в карточке игрока видно, сколько у него монет', card.balance, bMe.balance);
   check('больше 10 000 подарить нельзя', (await post('/gifts', a.token, { toCode: bMe.code, amount: 10_100 })).body.error, 'bad amount');
   check('себе — нельзя', (await post('/gifts', a.token, { toCode: aMe.code, amount: 400 })).body.error, 'self');
   const gift = await post('/gifts', a.token, { toCode: bMe.code, amount: 400 });
