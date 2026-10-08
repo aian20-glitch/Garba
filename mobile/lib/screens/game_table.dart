@@ -637,15 +637,17 @@ class _GameTableScreenState extends State<GameTableScreen> {
   }
 
   // Выйти из игры между раздачами (RULES.md §13b): кон делят оставшиеся, рейтинг −1.0,
-  // место ждёт нового игрока. Сначала спрашиваем.
-  Future<void> leaveGame(int kon) async {
+  // место ждёт нового игрока. Сначала спрашиваем. Место за столом уже пустует —
+  // уход без штрафа (§16.3a, 08.10.2026), решает сервер.
+  Future<void> leaveGame(int kon, {bool seatAlreadyEmpty = false}) async {
     final ok = await showDialog<bool>(
       context: context,
       builder: (context) => AlertDialog(
         title: const Text('Выйти из игры?'),
         content: Text(
           '${kon > 0 ? 'Кон ${fmtCoins(kon)} разделят между остальными игроками.\n' : ''}'
-          'Рейтинг −1.0. Ваше место займёт другой игрок.',
+          '${seatAlreadyEmpty ? 'Рейтинг не изменится — за столом уже есть свободное место.' : 'Рейтинг −1.0.'}'
+          ' Ваше место займёт другой игрок.',
         ),
         actions: [
           TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('ОСТАТЬСЯ')),
@@ -2620,7 +2622,7 @@ class _GameTableScreenState extends State<GameTableScreen> {
                     // Выйти — только между раздачами (RULES.md §13b).
                     if (endVote == null)
                       TextButton.icon(
-                        onPressed: leaving ? null : () => leaveGame(kon),
+                        onPressed: leaving ? null : () => leaveGame(kon, seatAlreadyEmpty: vacancies.isNotEmpty),
                         icon: const Icon(Icons.logout, size: 18),
                         label: const Text('ВЫЙТИ ИЗ ИГРЫ'),
                         style: TextButton.styleFrom(foregroundColor: Colors.white54),

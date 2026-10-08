@@ -22,6 +22,12 @@ export const ROOM_BIGGEST_LOSER = -0.4;
 // §16.3a: ушёл из игры, не вернулся за 5 минут — из-за него закрылась комната.
 export const LEFT_GAME = -1.0;
 
+// §16.3a: штраф за уход. Если за столом уже пустое место (кто-то ушёл раньше и стол ждёт
+// нового игрока), уходить не наказываем — играть всё равно не с кем (решение владельца, 08.10.2026).
+export function leavePenalty(seatAlreadyEmpty: boolean): number {
+  return seatAlreadyEmpty ? 0 : LEFT_GAME;
+}
+
 // §16.4a — прибавки за большим столом ценнее.
 const TABLE_FACTOR: Record<number, number> = { 4: 1.0, 5: 1.1, 6: 1.2, 7: 1.3 };
 

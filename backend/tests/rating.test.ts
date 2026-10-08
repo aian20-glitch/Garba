@@ -6,6 +6,7 @@ import {
   afterRoom,
   applySkill,
   experience,
+  leavePenalty,
   ratingOf,
   shownRating,
   START_SKILL,
@@ -94,6 +95,10 @@ const left = afterRoom([
 check('ушедший теряет 1.0 — больше, чем за любой проигрыш', near(left.q, 3), true);
 check('«проиграл больше всех» считается среди оставшихся: у c −0.40, а не −0.20', near(left.c, 3.6), true);
 check('ушедший со слабым мастерством не уходит ниже 0', afterRoom([{ id: 'q', skill: 0.5, rating: 1, diff: -1 }], [], 4, ['q']).q, 0);
+
+section('ушёл, когда место за столом уже пустует (§16.3a, 08.10.2026)');
+check('за столом все на месте — уход стоит −1.0', leavePenalty(false), -1);
+check('кто-то уже ушёл, стол ждёт нового игрока — уход без штрафа', leavePenalty(true), 0);
 
 section('10 — очень трудно (просьба владельца правил)');
 let top = START_SKILL;

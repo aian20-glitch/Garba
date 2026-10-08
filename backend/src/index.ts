@@ -60,7 +60,7 @@ import { createDeck, shuffle } from './deck.js';
 import { STARTING_COINS } from './config.js';
 import { BOT_STEP_MS, botAction, botTopUp, freeBotName, type BotAction } from './serverBots.js';
 import { loadUnfinishedRooms, profileStats, ratedPlayers, roomIdTaken, saveRoom, writeRoom } from './roomDb.js';
-import { afterDeal, afterRoom, LEFT_GAME, ratingOf, shownRating, START_SKILL } from './rating.js';
+import { afterDeal, afterRoom, leavePenalty, ratingOf, shownRating, START_SKILL } from './rating.js';
 import { addReaction, isPlayerCode, isRoomCode, type ReactionEntry } from './reactions.js';
 import { addDeal, addMoney, emptyStats, roomWinners, type PlayerStats } from './stats.js';
 import { avatarPath, detectImageType, loadAvatar, MAX_AVATAR_BYTES, saveAvatar } from './avatars.js';
@@ -1710,6 +1710,8 @@ function vacateSeat(room: Room, playerId: string, reason: 'left' | 'gone') {
   if (!player) return;
   const rest = room.players.filter((p) => p.id !== playerId);
 
+  // Место уже пустовало до него — уход без штрафа к рейтингу (§16.3a, 08.10.2026).
+  const seatAlreadyEmpty = (room.vacancies?.length ?? 0) > 0;
   const { shares, perPlayer, remainder, remainderTo } = splitKon(
     game.kon,
     rest.length > 0 ? rest.map((p) => ({ id: p.id, lost: p.startBalance - p.balance })) : [],
@@ -1722,7 +1724,7 @@ function vacateSeat(room: Room, playerId: string, reason: 'left' | 'gone') {
   if (rest.length > 0) game.kon = 0;
 
   const r = ratingState(room, playerId);
-  r.skill = Math.max(0, r.skill + LEFT_GAME);
+  r.skill = Math.max(0, r.skill + leavePenalty(seatAlreadyEmpty));
 
   // Его баланс и рейтинг уходят с ним: пишем в аккаунт сейчас — комната его больше
   // не сохраняет. На тренировке с ботами всё не настоящее — аккаунт не трогаем.
