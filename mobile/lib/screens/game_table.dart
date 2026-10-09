@@ -1645,6 +1645,11 @@ class _GameTableScreenState extends State<GameTableScreen> {
                 serverCount ?? 5,
               );
 
+        final plateText = TextStyle(
+          fontSize: 10,
+          fontWeight: FontWeight.w700,
+          color: isMain ? Colors.black87 : gold,
+        );
         final namePlate = Container(
           width: seatWidth,
           padding: const EdgeInsets.fromLTRB(4, 3, 4, 2),
@@ -1669,15 +1674,33 @@ class _GameTableScreenState extends State<GameTableScreen> {
           ),
           child: Column(
             children: [
-              Text(
-                p['name'].toString(),
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: TextStyle(
-                  fontSize: 12,
-                  fontWeight: FontWeight.w900,
-                  color: isMain ? Colors.black : Colors.white,
-                ),
+              // Имя и рейтинг, ниже — на столе и всего (на столе + вне стола) —
+              // у каждого игрока (просьба владельца, 09.10.2026).
+              // Длинное имя сокращается, рейтинг виден всегда.
+              Row(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  Flexible(
+                    child: Text(
+                      p['name'].toString(),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                        fontSize: 12,
+                        fontWeight: FontWeight.w900,
+                        color: isMain ? Colors.black : Colors.white,
+                      ),
+                    ),
+                  ),
+                  Text(
+                    ' ⭐${fmtRating(p['rating'])}',
+                    style: TextStyle(
+                      fontSize: 11,
+                      fontWeight: FontWeight.w800,
+                      color: isMain ? Colors.black87 : gold,
+                    ),
+                  ),
+                ],
               ),
               FittedBox(
                 fit: BoxFit.scaleDown,
@@ -1686,13 +1709,13 @@ class _GameTableScreenState extends State<GameTableScreen> {
                   children: [
                     const CoinIcon(size: 11),
                     const SizedBox(width: 2),
+                    Text(fmtCoins(balanceOf(pId)), style: plateText),
+                    const SizedBox(width: 6),
+                    Icon(Icons.account_balance_wallet, size: 11, color: isMain ? Colors.black87 : gold),
+                    const SizedBox(width: 2),
                     Text(
-                      '${fmtCoins(balanceOf(pId))}  ⭐${fmtRating(p['rating'])}',
-                      style: TextStyle(
-                        fontSize: 10,
-                        fontWeight: FontWeight.w700,
-                        color: isMain ? Colors.black87 : gold,
-                      ),
+                      fmtCoins(balanceOf(pId) + ((p['reserve'] as num?)?.toInt() ?? 0)),
+                      style: plateText,
                     ),
                   ],
                 ),
@@ -2209,11 +2232,6 @@ class _GameTableScreenState extends State<GameTableScreen> {
                   ],
                 ],
               ),
-              // Мои монеты: на столе, всего и рейтинг (09.10.2026).
-              if (myWalletBar(room!) case final bar?) ...[
-                const SizedBox(height: 2),
-                bar,
-              ],
               if (closing && !isRoomDone)
                 Padding(
                   padding: const EdgeInsets.only(top: 6),

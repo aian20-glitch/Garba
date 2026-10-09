@@ -340,7 +340,7 @@ POST /rooms                      { capacity, ante, emptyLimit, konThreshold, min
                                  buyIn — сколько взять за стол (RULES.md §9.1b, 09.10.2026): minBalance…баланс;
                                  то же поле у /rooms/:id/join и /rooms/quick; нет — весь баланс (старые
                                  приложения, боты); 400 bad buyIn. За столом players[].balance — сумма за
-                                 столом, остальное — players[].reserve (наружу не отдаётся); в аккаунт пишется
+                                 столом, остальное — players[].reserve (открыто всем, как и баланс; за столом у каждого — «на столе» и «всего»); в аккаунт пишется
                                  balance + reserve; бонус и подарок за столом — в reserve (buyIn.ts, changeCoins).
                                  /me и /me/profile: balance — вне стола, tableBalance — за столом или null
 GET  /rooms/open                 → { rooms: [{ id, capacity, players, creatorName, settings }] } — открытые
