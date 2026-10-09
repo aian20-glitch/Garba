@@ -5,7 +5,23 @@
 
 // Набор смайликов. Свои тексты слать нельзя — это был бы чат.
 export const REACTIONS = ['👍', '👏', '😂', '😎', '😮', '🤔', '😭', '😡', '🔥', '🤝', '🙈', '🎉'] as const;
-export type Reaction = (typeof REACTIONS)[number];
+// Готовые фразы (09.10.2026, решение владельца): то, что чаще всего хочется сказать за столом.
+// Тоже готовый набор, своих текстов нет. Шлются тем же полем emoji, с тем же ограничением частоты.
+export const PHRASES = [
+  'Жми ГОТОВ!',
+  'Ходи быстрее!',
+  'Раздавай!',
+  'Удачи всем!',
+  'Хорошая игра!',
+  'Вот это ход!',
+  'Не повезло…',
+  'Повезло тебе!',
+  'Ещё партию?',
+  'Сейчас вернусь',
+  'Спасибо!',
+  'Рахмет!',
+] as const;
+export type Reaction = (typeof REACTIONS)[number] | (typeof PHRASES)[number];
 
 
 export const REACTION_COOLDOWN_MS = 2_000; // не чаще раза в 2 секунды от игрока
@@ -16,7 +32,10 @@ export type ReactionEntry = { id: number; playerId: string; emoji: Reaction; at:
 export type ReactionError = 'not now' | 'unknown emoji' | 'too fast';
 
 export function isReaction(value: unknown): value is Reaction {
-  return typeof value === 'string' && (REACTIONS as readonly string[]).includes(value);
+  return (
+    typeof value === 'string' &&
+    ((REACTIONS as readonly string[]).includes(value) || (PHRASES as readonly string[]).includes(value))
+  );
 }
 
 // Добавить реакцию. Возвращает новый список или ошибку.

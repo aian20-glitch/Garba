@@ -194,26 +194,52 @@ class EmojiButton extends StatelessWidget {
       onTap: () => showModalBottomSheet<void>(
         context: context,
         backgroundColor: const Color(0xFF13232E),
+        isScrollControlled: true,
         builder: (sheet) => SafeArea(
-          child: Padding(
+          child: SingleChildScrollView(
             padding: const EdgeInsets.fromLTRB(12, 16, 12, 12),
-            child: Wrap(
-              alignment: WrapAlignment.center,
-              spacing: 6,
-              runSpacing: 6,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
               children: [
-                for (final emoji in tableReactions)
-                  InkWell(
-                    borderRadius: BorderRadius.circular(28),
-                    onTap: () {
-                      Navigator.pop(sheet);
-                      onSend(emoji);
-                    },
-                    child: Padding(
-                      padding: const EdgeInsets.all(8),
-                      child: Text(emoji, style: const TextStyle(fontSize: 34)),
-                    ),
-                  ),
+                Wrap(
+                  alignment: WrapAlignment.center,
+                  spacing: 6,
+                  runSpacing: 6,
+                  children: [
+                    for (final emoji in tableReactions)
+                      InkWell(
+                        borderRadius: BorderRadius.circular(28),
+                        onTap: () {
+                          Navigator.pop(sheet);
+                          onSend(emoji);
+                        },
+                        child: Padding(
+                          padding: const EdgeInsets.all(8),
+                          child: Text(emoji, style: const TextStyle(fontSize: 34)),
+                        ),
+                      ),
+                  ],
+                ),
+                const Divider(height: 24, color: Colors.white24),
+                // Готовые фразы (09.10.2026).
+                Wrap(
+                  alignment: WrapAlignment.center,
+                  spacing: 8,
+                  runSpacing: 8,
+                  children: [
+                    for (final phrase in tablePhrases)
+                      ActionChip(
+                        label: Text(phrase, style: const TextStyle(fontWeight: FontWeight.w700)),
+                        backgroundColor: const Color(0xFF1C3442),
+                        side: const BorderSide(color: Color(0xFFD4A94F)),
+                        shape: const StadiumBorder(),
+                        onPressed: () {
+                          Navigator.pop(sheet);
+                          onSend(phrase);
+                        },
+                      ),
+                  ],
+                ),
               ],
             ),
           ),
@@ -230,6 +256,41 @@ class EmojiButton extends StatelessWidget {
           boxShadow: const [BoxShadow(color: Colors.black45, blurRadius: 8)],
         ),
         child: const Text('😊', style: TextStyle(fontSize: 24)),
+      ),
+    );
+  }
+}
+
+// Готовая фраза облачком над аватаркой: выпрыгивает и держится 4 секунды (09.10.2026).
+class PhraseBubble extends StatelessWidget {
+  final String text;
+
+  const PhraseBubble({super.key, required this.text});
+
+  @override
+  Widget build(BuildContext context) {
+    return TweenAnimationBuilder<double>(
+      tween: Tween(begin: 0.2, end: 1),
+      duration: const Duration(milliseconds: 500),
+      curve: Curves.elasticOut,
+      builder: (_, scale, child) => Transform.scale(scale: scale, child: child),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+        decoration: BoxDecoration(
+          color: Colors.white,
+          borderRadius: BorderRadius.circular(14),
+          border: Border.all(color: const Color(0xFFD4A94F), width: 1.5),
+          boxShadow: const [BoxShadow(color: Colors.black54, blurRadius: 8)],
+        ),
+        child: Text(
+          text,
+          maxLines: 1,
+          style: const TextStyle(
+            color: Color(0xFF0B1620),
+            fontSize: 13,
+            fontWeight: FontWeight.w900,
+          ),
+        ),
       ),
     );
   }

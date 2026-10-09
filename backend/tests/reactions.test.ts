@@ -7,6 +7,9 @@ section('реакции и смайлики (§14)');
 check('в любой момент — и в торгах, и в розыгрыше, и в лобби (25.09.2026)',
   ['bidding', 'playing', 'lobby'].map((st) => Array.isArray(addReaction([], st, 'a', '👍', 0))), [true, true, true]);
 check('свой текст — нельзя, это был бы чат', addReaction([], 'round_done', 'a', 'привет', 0), 'unknown emoji');
+check('готовая фраза из набора — можно (09.10.2026)',
+  (addReaction([], 'lobby', 'a', 'Жми ГОТОВ!', 0) as ReactionEntry[])[0].emoji, 'Жми ГОТОВ!');
+check('фраза не из набора — нельзя', addReaction([], 'lobby', 'a', 'Жми готов', 0), 'unknown emoji');
 
 let list = addReaction([], 'round_done', 'a', '👍', 1_000) as ReactionEntry[];
 check('после раздачи — можно', list, [{ id: 1, playerId: 'a', emoji: '👍', at: 1_000 }]);

@@ -45,7 +45,7 @@ class _LobbyScreenState extends State<LobbyScreen> {
       final playerId = r['playerId'].toString();
       final emoji = r['emoji'].toString();
       flyingEmoji[playerId] = emoji;
-      Timer(const Duration(seconds: 3), () {
+      Timer(reactionShowTime(emoji), () {
         if (!mounted) return;
         setState(() {
           if (flyingEmoji[playerId] == emoji) flyingEmoji.remove(playerId);
@@ -267,13 +267,22 @@ class _LobbyScreenState extends State<LobbyScreen> {
                         bottom: -8,
                         child: Center(child: TopBadge(place, fontSize: 8)),
                       ),
-                    if (flyingEmoji[id] != null)
+                    if (flyingEmoji[id] case final emoji? when !tablePhrases.contains(emoji))
                       Positioned(
                         left: -5,
                         top: -5,
                         right: -5,
                         bottom: -5,
-                        child: AvatarEmoji(key: ValueKey('${id}_${flyingEmoji[id]}_$lastReactionId'), emoji: flyingEmoji[id]!),
+                        child: AvatarEmoji(key: ValueKey('${id}_${emoji}_$lastReactionId'), emoji: emoji),
+                      ),
+                    if (flyingEmoji[id] case final phrase? when tablePhrases.contains(phrase))
+                      Positioned(
+                        left: -70,
+                        right: -70,
+                        top: -30,
+                        child: Center(
+                          child: PhraseBubble(key: ValueKey('${id}_${phrase}_$lastReactionId'), text: phrase),
+                        ),
                       ),
                   ],
                 ),

@@ -75,6 +75,26 @@ String fmtDelta(int value) => value > 0 ? '+${fmtCoins(value)}' : fmtCoins(value
 // Смайлики за столом (RULES.md §14). Тот же набор, что принимает сервер.
 const tableReactions = ['👍', '👏', '😂', '😎', '😮', '🤔', '😭', '😡', '🔥', '🤝', '🙈', '🎉'];
 
+// Готовые фразы (09.10.2026) — тот же список, что PHRASES в reactions.ts, менять вместе.
+const tablePhrases = [
+  'Жми ГОТОВ!',
+  'Ходи быстрее!',
+  'Раздавай!',
+  'Удачи всем!',
+  'Хорошая игра!',
+  'Вот это ход!',
+  'Не повезло…',
+  'Повезло тебе!',
+  'Ещё партию?',
+  'Сейчас вернусь',
+  'Спасибо!',
+  'Рахмет!',
+];
+
+// Фраза живёт над аватаркой дольше смайлика — её надо успеть прочитать.
+Duration reactionShowTime(String emoji) =>
+    Duration(seconds: tablePhrases.contains(emoji) ? 4 : 3);
+
 bool isRedSuit(String suit) =>
     suit == 'hearts' || suit == 'diamonds' || suit == '♥' || suit == '♦';
 

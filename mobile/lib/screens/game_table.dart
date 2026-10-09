@@ -432,7 +432,7 @@ class _GameTableScreenState extends State<GameTableScreen> {
       final playerId = r['playerId'].toString();
       final emoji = r['emoji'].toString();
       flyingEmoji[playerId] = emoji;
-      Timer(const Duration(seconds: 3), () {
+      Timer(reactionShowTime(emoji), () {
         if (!mounted) return;
         setState(() {
           if (flyingEmoji[playerId] == emoji) flyingEmoji.remove(playerId);
@@ -1830,13 +1830,23 @@ class _GameTableScreenState extends State<GameTableScreen> {
                 child: Center(child: TopBadge(place, fontSize: 8)),
               ),
             // Смайлик — прямо на аватарке, крупно.
-            if (flyingEmoji[pId] != null)
+            if (flyingEmoji[pId] case final emoji? when !tablePhrases.contains(emoji))
               Positioned(
                 left: -6,
                 top: -6,
                 right: -6,
                 bottom: -6,
-                child: AvatarEmoji(key: ValueKey('${pId}_${flyingEmoji[pId]}_$lastReactionId'), emoji: flyingEmoji[pId]!),
+                child: AvatarEmoji(key: ValueKey('${pId}_${emoji}_$lastReactionId'), emoji: emoji),
+              ),
+            // Фраза — облачком над аватаркой.
+            if (flyingEmoji[pId] case final phrase? when tablePhrases.contains(phrase))
+              Positioned(
+                left: -70,
+                right: -70,
+                top: -34,
+                child: Center(
+                  child: PhraseBubble(key: ValueKey('${pId}_${phrase}_$lastReactionId'), text: phrase),
+                ),
               ),
           ],
         );
