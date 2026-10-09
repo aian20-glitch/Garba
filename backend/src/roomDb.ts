@@ -12,7 +12,7 @@ import { ratingOf } from './rating.js';
 export type StoredRoom = {
   id: string;
   status: string;
-  players: { id: string; balance: number }[];
+  players: { id: string; balance: number; reserve?: number }[];
   // Тренировка с ботами — в аккаунты ничего не пишется.
   practice?: boolean;
   // Закрытая комната уже записала итог в аккаунты (28.09.2026). Дальше её старые
@@ -81,7 +81,8 @@ export function writeRoom(db: DatabaseSync, room: StoredRoom) {
   if (room.practice || room.accountsClosed) return;
 
   const setBalance = db.prepare('UPDATE accounts SET balance = ? WHERE id = ?');
-  for (const p of room.players) setBalance.run(p.balance, p.id);
+  // В аккаунте — всё вместе: монеты за столом и запас, не взятый за стол (09.10.2026).
+  for (const p of room.players) setBalance.run(p.balance + (p.reserve ?? 0), p.id);
 
   // Мастерство — только тем, кто за столом. Ушедшему оно записано при уходе
   // (vacateSeat): иначе старая комната затирала бы рейтинг, набранный в новой.

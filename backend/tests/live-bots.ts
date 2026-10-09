@@ -80,7 +80,9 @@ async function main() {
   const inRoom = final.players.find((p: any) => p.id === host.id).balance;
   const meNow = (await request('GET', '/me', host.token)).body;
   console.log(`   за столом у Серика ${inRoom}, в аккаунте ${meNow.balance}`);
-  check('тренировка: баланс аккаунта не изменился (30 000)', meNow.balance, 30_000);
+  // Вне стола + взятое за стол (09.10.2026) — выигрыш и проигрыш за столом сюда не попали.
+  const taken = final.players.find((p: any) => p.id === host.id).startBalance;
+  check('тренировка: баланс аккаунта не изменился (30 000)', meNow.balance + taken, 30_000);
   check('тренировка: рейтинг не изменился', meNow.rating, ratingBefore);
   const profile = (await request('GET', '/me/profile', host.token)).body;
   check('тренировка: в статистику профиля не попала', profile.stats.deals, 0);

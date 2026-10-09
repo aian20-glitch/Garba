@@ -104,7 +104,9 @@ async function main() {
   check('та же стадия и тот же кон', [after.body.game?.stage, after.body.game?.kon], [before.game.stage, before.game.kon]);
   check('те же карты на руке',
     after.body.game?.hand?.map((c: any) => c.id), before.game.hand.map((c: any) => c.id));
-  check('баланс на аккаунте — после взноса', (await request('GET', '/me', serik.token)).body.balance, 29_900);
+  // Взял за стол весь баланс (нет buyIn): вне стола 0, за столом 29 900 (09.10.2026).
+  const serikMe = (await request('GET', '/me', serik.token)).body;
+  check('баланс на аккаунте — после взноса', [serikMe.balance, serikMe.tableBalance], [0, 29_900]);
   check('игрок по-прежнему в своей комнате', (await request('GET', '/me', serik.token)).body.roomId, roomId);
 
   await wait(2_500); // сокеты переподключаются сами

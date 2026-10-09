@@ -40,6 +40,9 @@ class _CreateRoomScreenState extends State<CreateRoomScreen> {
     setState(() => loading = true);
 
     try {
+      // Сколько взять за стол — от минимума комнаты до всего баланса (09.10.2026).
+      final buyIn = await askBuyIn(context, minBalance: minBalance);
+      if (buyIn == null) return;
       final response = await http.post(
         Uri.parse('$apiBase/rooms'),
         headers: authHeaders(),
@@ -52,6 +55,7 @@ class _CreateRoomScreenState extends State<CreateRoomScreen> {
           'turnSeconds': turnSeconds,
           'absenceMinutes': absenceMinutes,
           'isPublic': isPublic,
+          'buyIn': buyIn,
         }),
       );
 
@@ -328,11 +332,30 @@ class _JoinRoomScreenState extends State<JoinRoomScreen> {
     setState(() => loading = true);
 
     try {
+      // Сначала — минимум комнаты, чтобы спросить, сколько взять за стол (09.10.2026).
+      // Уже сижу в ней — просто возвращаюсь, ничего не спрашиваем.
+      final peek = await apiRequest(http.get(
+        Uri.parse('$apiBase/rooms/${Uri.encodeComponent(roomId)}'),
+        headers: authHeaders(),
+      ));
+      if (peek.statusCode != 200) throw ApiFailure.fromResponse(peek);
+      final info = jsonDecode(peek.body) as Map<String, dynamic>;
+      final seated = (info['players'] as List).any((p) => (p as Map)['id']?.toString() == Session.id);
+      int? buyIn;
+      if (!seated) {
+        if (!mounted) return;
+        buyIn = await askBuyIn(
+          context,
+          minBalance: ((info['settings'] as Map)['minBalance'] as num).toInt(),
+        );
+        if (buyIn == null) return;
+      }
+
       // Кто входит — сервер знает по токену, имя берётся из аккаунта.
       final response = await http.post(
         Uri.parse('$apiBase/rooms/${Uri.encodeComponent(roomId)}/join'),
         headers: authHeaders(),
-        body: jsonEncode({}),
+        body: jsonEncode({if (buyIn != null) 'buyIn': buyIn}),
       );
 
       final busy = busyInRoomMessage(response);

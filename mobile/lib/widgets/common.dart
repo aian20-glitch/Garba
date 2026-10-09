@@ -457,3 +457,88 @@ class RoomClosedScreen extends StatelessWidget {
     );
   }
 }
+
+// Сумма за стол (решение владельца, 09.10.2026). Перед входом в комнату игрок выбирает,
+// сколько монет взять с собой: от минимума комнаты до всего баланса. За столом он играет
+// только ими, остальное остаётся на балансе. Докупить во время игры нельзя.
+// Проверяет сервер (buyIn.ts) — здесь только выбор. null — передумал.
+Future<int?> askBuyIn(BuildContext context, {required int minBalance}) async {
+  final response = await apiRequest(http.get(Uri.parse('$apiBase/me'), headers: authHeaders()));
+  expectStatus(response, const [200]);
+  final balance = ((jsonDecode(response.body) as Map)['balance'] as num).toInt();
+  if (balance < minBalance) {
+    throw Exception('Недостаточно монет: нужно ${fmtCoins(minBalance)}, у вас ${fmtCoins(balance)}');
+  }
+  if (!context.mounted) return null;
+  return showDialog<int>(
+    context: context,
+    builder: (_) => BuyInDialog(minBalance: minBalance, balance: balance),
+  );
+}
+
+class BuyInDialog extends StatefulWidget {
+  final int minBalance;
+  final int balance;
+
+  const BuyInDialog({super.key, required this.minBalance, required this.balance});
+
+  @override
+  State<BuyInDialog> createState() => _BuyInDialogState();
+}
+
+class _BuyInDialogState extends State<BuyInDialog> {
+  // Варианты — от минимума шагом 1 000, последний — весь баланс.
+  late final List<int> options = [
+    for (var v = widget.minBalance; v < widget.balance; v += 1000) v,
+    widget.balance,
+  ];
+  int index = 0;
+
+  @override
+  Widget build(BuildContext context) {
+    final amount = options[index];
+    return AlertDialog(
+      title: const Text('Сколько взять за стол?'),
+      content: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Row(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              const CoinIcon(size: 26),
+              const SizedBox(width: 6),
+              Text(fmtCoins(amount), style: const TextStyle(fontSize: 30, fontWeight: FontWeight.w800)),
+            ],
+          ),
+          if (options.length > 1)
+            Slider(
+              value: index.toDouble(),
+              max: (options.length - 1).toDouble(),
+              divisions: options.length - 1,
+              activeColor: const Color(0xFFD4A94F),
+              onChanged: (v) => setState(() => index = v.round()),
+            ),
+          if (options.length > 1)
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                TextButton(onPressed: () => setState(() => index = 0), child: const Text('МИНИМУМ')),
+                TextButton(onPressed: () => setState(() => index = options.length - 1), child: const Text('ВСЁ')),
+              ],
+            ),
+          const SizedBox(height: 8),
+          Text(
+            'За столом играете только этими монетами. На балансе останется '
+            '${fmtCoins(widget.balance - amount)}. Докупить во время игры нельзя.',
+            style: const TextStyle(fontSize: 14, color: Colors.white70),
+          ),
+        ],
+      ),
+      actions: [
+        TextButton(onPressed: () => Navigator.pop(context), child: const Text('ОТМЕНА')),
+        FilledButton(onPressed: () => Navigator.pop(context, amount), child: const Text('ЗА СТОЛ')),
+      ],
+    );
+  }
+}

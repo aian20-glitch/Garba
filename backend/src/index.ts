@@ -152,6 +152,7 @@ import {
 import { LOBBY_MS, lobbyExpired, lobbySecondsLeft } from './lobbyTimer.js';
 import { rateCheck } from './rateLimit.js';
 import { openRoomsFor, QUICK_ROOM } from './openRooms.js';
+import { checkBuyIn } from './buyIn.js';
 import {
   addReport,
   avoidIds,
@@ -198,10 +199,14 @@ type Player = {
   name: string;
   ready: boolean;
   joinedAt: number;
-  // Баланс аккаунта. Пока игрок в комнате, деньги считаются здесь, а после каждого
-  // действия записываются обратно в базу (persistRoom).
+  // Монеты за столом (09.10.2026): сколько игрок взял с собой, плюс выигрыш, минус
+  // проигрыш. Все проверки игры — по ним. После каждого действия в аккаунт пишется
+  // balance + reserve (persistRoom).
   balance: number;
-  // Баланс при входе в комнату — от него считается, кто больше всех проиграл (§12.2).
+  // Остаток аккаунта, который игрок не взял за стол (buyIn.ts). В игре не участвует,
+  // бонус и подарок за столом идут сюда. Нет — комната до 09.10.2026: взят весь баланс.
+  reserve?: number;
+  // Сколько взял за стол — от этого считается, кто больше всех проиграл (§12.2).
   startBalance: number;
   // Место за столом 0…capacity−1 по кругу против часовой (24.09.2026): где сел — там и
   // играет. room.players всегда отсортирован по месту. Нет — комната до этого решения.
@@ -551,19 +556,19 @@ function payReferrals(room: Room) {
 // Изменить баланс аккаунта вне игры: бонус, подарок, приглашение (этап 9.3).
 // Вызывать внутри transaction(). Если игрок сидит в незаконченной комнате, его деньги
 // сейчас считаются там — меняем и там, иначе следующее сохранение комнаты затёрло бы
-// начисление. startBalance сдвигаем тоже: бонус и подарок — не выигрыш за столом,
-// в «кто больше всех проиграл» (§12.2, §13) и в итоги комнаты они не входят.
+// начисление. Кладём в запас (reserve), а не на стол: за столом игрок играет только
+// тем, что взял с собой (09.10.2026), и в итоги комнаты бонус и подарок не входят.
 // undo — как откатить изменение в памяти, если транзакция не прошла.
 function changeCoins(accountId: string, delta: number, undo: (() => void)[]): Room | undefined {
   const room = activeRoomOf(accountId);
   const player = room?.players.find((p) => p.id === accountId);
 
   if (room && player) {
-    player.balance += delta;
-    player.startBalance += delta;
+    // Списать можно только из запаса вне стола — монеты на столе в игре (09.10.2026).
+    if ((player.reserve ?? 0) + delta < 0) throw new Error('not enough coins outside the table');
+    player.reserve = (player.reserve ?? 0) + delta;
     undo.push(() => {
-      player.balance -= delta;
-      player.startBalance -= delta;
+      player.reserve = (player.reserve ?? 0) - delta;
     });
     writeRoom(db, room);
     // Тренировка балансы в аккаунт не пишет — начисление кладём в аккаунт сами.
@@ -878,7 +883,16 @@ function deleteAccountEverywhere(account: Account) {
   dropSocketsOf(account.id);
 }
 
+// Сколько у игрока монет вне стола (09.10.2026): за столом — запас, который он не взял
+// с собой; не за столом — весь баланс. tableBalance — сколько сейчас на столе, или null.
+function walletSplit(account: Account): { balance: number; tableBalance: number | null } {
+  const player = activeRoomOf(account.id)?.players.find((p) => p.id === account.id);
+  if (!player) return { balance: account.balance, tableBalance: null };
+  return { balance: player.reserve ?? 0, tableBalance: player.balance };
+}
+
 // Кто я: по токену. roomId — незаконченная комната, если игрок в ней сидит.
+// balance — монеты вне стола, tableBalance — за столом (09.10.2026).
 // daily — ежедневный бонус (ТЗ §3): взят ли сегодня, какой день серии, сколько даст.
 app.get('/me', (req, res) => {
   const account = accountOf(req);
@@ -891,6 +905,7 @@ app.get('/me', (req, res) => {
 
   return res.json({
     ...account,
+    ...walletSplit(account),
     avatar: avatarOf(account.id),
     rating: shownRating(accountRating(account.id)),
     roomId: activeRoomOf(account.id)?.id ?? null,
@@ -932,7 +947,7 @@ app.post('/me/daily-bonus', (req, res) => {
   return res.json({
     amount: claim.amount,
     streak: claim.streak,
-    balance: account.balance + claim.amount,
+    balance: walletSplit(getAccount(db, account.id)!).balance,
   });
 });
 
@@ -1116,7 +1131,7 @@ app.get('/me/profile', (req, res) => {
     id: account.id,
     name: account.name,
     code: account.code,
-    balance: account.balance,
+    ...walletSplit(account),
     createdAt: account.createdAt,
     avatar: avatarOf(account.id),
     rating: shownRating(accountRating(account.id)),
@@ -1354,7 +1369,7 @@ app.post('/admin/coins', (req, res) => {
   const account = findAccountByCode(db, normalizeCode(req.body?.code) ?? '') ?? getAccount(db, String(req.body?.id ?? ''));
   if (!account) return res.status(404).json({ error: 'player not found' });
   const amount = Number(req.body?.amount);
-  if (!Number.isInteger(amount) || amount === 0 || account.balance + amount < 0) {
+  if (!Number.isInteger(amount) || amount === 0 || walletSplit(account).balance + amount < 0) {
     return res.status(400).json({ error: 'bad amount' });
   }
   moveCoins([{ accountId: account.id, delta: amount }]);
@@ -1750,7 +1765,7 @@ function vacateSeat(room: Room, playerId: string, reason: 'left' | 'gone', close
   // Его баланс и рейтинг уходят с ним: пишем в аккаунт сейчас — комната его больше
   // не сохраняет. На тренировке с ботами всё не настоящее — аккаунт не трогаем.
   if (!room.practice) {
-    setBalance(db, playerId, player.balance);
+    setBalance(db, playerId, player.balance + (player.reserve ?? 0));
     setSkill(db, playerId, r.skill);
   }
   // Вернётся за этот стол — рейтинг возьмём из аккаунта заново: он мог сыграть где-то ещё.
@@ -3292,11 +3307,12 @@ app.post('/rooms', (req, res) => {
     return res.status(409).json({ error: 'already in another room', roomId: busyIn.id });
   }
 
-  // Создатель тоже должен проходить по минимуму.
+  // Создатель тоже должен проходить по минимуму и выбрать сумму за стол.
   const creatorBalance = me(res).balance;
-  if (creatorBalance < minBalanceValue) {
-    return res.status(403).json({
-      error: 'not enough coins to enter',
+  const buyIn = checkBuyIn(req.body?.buyIn, creatorBalance, minBalanceValue);
+  if (!buyIn.ok) {
+    return res.status(buyIn.status).json({
+      error: buyIn.error,
       minBalance: minBalanceValue,
       balance: creatorBalance,
     });
@@ -3324,12 +3340,13 @@ app.post('/rooms', (req, res) => {
       absenceMinutes: absenceValue,
     },
     req.body?.isPublic === true,
+    buyIn.amount,
   );
   return res.status(201).json(publicRoom(room, String(playerId)));
 });
 
-// Новая комната с создателем за столом. Условия уже проверены.
-function makeRoom(account: Account, capacity: number, settings: RoomSettings, isPublic: boolean): Room {
+// Новая комната с создателем за столом. Условия и сумма за стол уже проверены.
+function makeRoom(account: Account, capacity: number, settings: RoomSettings, isPublic: boolean, buyIn: number): Room {
   const id = makeRoomId();
   const room: Room = {
     id,
@@ -3342,8 +3359,9 @@ function makeRoom(account: Account, capacity: number, settings: RoomSettings, is
         name: account.name,
         ready: true,
         joinedAt: Date.now(),
-        balance: account.balance,
-        startBalance: account.balance,
+        balance: buyIn,
+        reserve: account.balance - buyIn,
+        startBalance: buyIn,
         seat: 0,
       },
     ],
@@ -3361,7 +3379,13 @@ function makeRoom(account: Account, capacity: number, settings: RoomSettings, is
 // Войти в комнату: те же проверки для кнопки «Войти», ссылки и «Быстрой игры».
 // seat — какое место выбрал (нет — первое свободное). В начатую игру — только на
 // освободившееся место (24.09.2026): новый игрок садится, и игра идёт дальше.
-function joinRoom(room: Room, account: Account, wantedSeat?: number): { status: number; body: unknown } {
+// rawBuyIn — сколько монет берёт за стол (buyIn.ts); нет — весь баланс.
+function joinRoom(
+  room: Room,
+  account: Account,
+  wantedSeat?: number,
+  rawBuyIn?: unknown,
+): { status: number; body: unknown } {
   if (room.players.some((p) => p.id === account.id)) {
     return { status: 200, body: publicRoom(room, account.id) };
   }
@@ -3384,11 +3408,13 @@ function joinRoom(room: Room, account: Account, wantedSeat?: number): { status: 
   if (busyIn) {
     return { status: 409, body: { error: 'already in another room', roomId: busyIn.id } };
   }
-  // Войти можно, только если денег не меньше минимума комнаты (RULES.md §9.1a).
-  if (account.balance < room.settings.minBalance) {
+  // Войти можно, только если денег не меньше минимума комнаты (RULES.md §9.1a);
+  // за стол — от минимума до всего баланса.
+  const buyIn = checkBuyIn(rawBuyIn, account.balance, room.settings.minBalance);
+  if (!buyIn.ok) {
     return {
-      status: 403,
-      body: { error: 'not enough coins to enter', minBalance: room.settings.minBalance, balance: account.balance },
+      status: buyIn.status,
+      body: { error: buyIn.error, minBalance: room.settings.minBalance, balance: account.balance },
     };
   }
 
@@ -3397,8 +3423,9 @@ function joinRoom(room: Room, account: Account, wantedSeat?: number): { status: 
     name: account.name,
     ready: true,
     joinedAt: Date.now(),
-    balance: account.balance,
-    startBalance: account.balance,
+    balance: buyIn.amount,
+    reserve: account.balance - buyIn.amount,
+    startBalance: buyIn.amount,
     seat,
   });
   sortSeats(room);
@@ -3430,7 +3457,8 @@ function joinRoom(room: Room, account: Account, wantedSeat?: number): { status: 
 }
 
 // Открытые комнаты, куда можно сесть: лобби, есть место, хватает монет (19.09.2026).
-function openRoomsForAccount(account: Account) {
+// coins — с чем игрок сядет за стол (быстрая игра — выбранная сумма), по умолчанию весь баланс.
+function openRoomsForAccount(account: Account, coins = account.balance) {
   const now = Date.now();
   // За один стол с тем, кого я заблокировал или кто заблокировал меня, не сажаем (29.09.2026).
   const avoid = avoidIds(db, account.id);
@@ -3449,7 +3477,7 @@ function openRoomsForAccount(account: Account) {
       minBalance: r.settings.minBalance,
       createdAt: r.createdAt,
     })),
-    account.balance,
+    coins,
     account.id,
   );
 }
@@ -3480,9 +3508,12 @@ app.post('/rooms/quick', (req, res) => {
     return res.status(409).json({ error: 'already in another room', roomId: busyIn.id });
   }
 
-  for (const summary of openRoomsForAccount(account)) {
+  // Сумма за стол: сажаем только туда, где её хватает на минимум комнаты.
+  const rawBuyIn = req.body?.buyIn;
+  const wantBuyIn = rawBuyIn === undefined || rawBuyIn === null ? account.balance : Number(rawBuyIn);
+  for (const summary of openRoomsForAccount(account, wantBuyIn)) {
     const room = rooms.get(summary.id)!;
-    const joined = joinRoom(room, account);
+    const joined = joinRoom(room, account, undefined, rawBuyIn);
     if (joined.status === 200) {
       persistRoom(room);
       broadcastRoom(room.id).catch((e) => console.error(`[ROOM ${room.id}] broadcast failed:`, e));
@@ -3490,15 +3521,16 @@ app.post('/rooms/quick', (req, res) => {
     }
   }
 
-  if (account.balance < QUICK_ROOM.minBalance) {
-    return res.status(403).json({
-      error: 'not enough coins to enter',
+  const buyIn = checkBuyIn(rawBuyIn, account.balance, QUICK_ROOM.minBalance);
+  if (!buyIn.ok) {
+    return res.status(buyIn.status).json({
+      error: buyIn.error,
       minBalance: QUICK_ROOM.minBalance,
       balance: account.balance,
     });
   }
   const { capacity, ...settings } = QUICK_ROOM;
-  const room = makeRoom(account, capacity, settings, true);
+  const room = makeRoom(account, capacity, settings, true, buyIn.amount);
   return res.status(201).json(publicRoom(room, account.id));
 });
 
@@ -3521,7 +3553,7 @@ app.post('/rooms/:id/join', (req, res) => {
   }
 
   const wanted = req.body?.seat === undefined ? undefined : Number(req.body.seat);
-  const joined = joinRoom(room, me(res), Number.isInteger(wanted) ? wanted : undefined);
+  const joined = joinRoom(room, me(res), Number.isInteger(wanted) ? wanted : undefined, req.body?.buyIn);
   return res.status(joined.status).json(joined.body);
 });
 

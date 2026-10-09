@@ -74,10 +74,18 @@ async function main() {
   for (let i = 1; i <= 3; i++) bots.push(await account(`Бот ${i}`));
 
   section('живые обновления по сокету (этап 8)');
+  // Сумма за стол (09.10.2026): от минимума комнаты до всего баланса.
+  const roomBody = { capacity: 4, ante: 100, emptyLimit: 5, konThreshold: 10, minBalance: 1000 };
+  check('за стол меньше минимума — 400',
+    (await post('/rooms', serik.token, { ...roomBody, buyIn: 500 })).body.error, 'bad buyIn');
+  check('за стол больше, чем есть, — 400',
+    (await post('/rooms', serik.token, { ...roomBody, buyIn: 30_100 })).body.error, 'bad buyIn');
   const created = await post('/rooms', serik.token, {
     playerId: bots[0].id, name: 'Самозванец', // должны игнорироваться
-    capacity: 4, ante: 100, emptyLimit: 5, konThreshold: 10, minBalance: 1000,
+    ...roomBody, buyIn: 10_000,
   });
+  check('взял за стол 10 000 — за столом 10 000, вне стола 20 000',
+    [created.body.players?.[0]?.balance, (await request('GET', '/me', serik.token)).body.balance], [10_000, 20_000]);
   const roomId = created.body.id;
   check('без выбора запаса на отлучку — 1 минута (08.10.2026)', created.body.settings?.absenceMinutes, 1);
   check('запас на отлучку только 1…5 минут — 400',
@@ -129,8 +137,9 @@ async function main() {
     (peek.body.game?.hand ?? []).map((c: any) => c.id).sort().join(), myIds);
 
   const kon = serikWatch.state.last?.game?.kon ?? 0;
-  const afterAnte = (await request('GET', '/me', serik.token)).body.balance;
-  check('взнос списан и записан в аккаунт', [kon, afterAnte], [400, 29_900]);
+  const afterAnte = (await request('GET', '/me', serik.token)).body;
+  check('взнос списан со стола, общий баланс не тронут',
+    [kon, afterAnte.tableBalance, afterAnte.balance], [400, 9_900, 20_000]);
 
   const before = serikWatch.state.count;
   await post(`/rooms/${roomId}/bid`, serik.token, { bid: 'ПАС' }); // скорее всего не его ход — отказ
@@ -190,10 +199,11 @@ async function main() {
   await post('/gifts', b.token, { toCode: (await request('GET', '/me', serik.token)).body.code, amount: 300 });
   await post('/me/daily-bonus', serik.token);
   const serikAfter = (await request('GET', `/rooms/${roomId}`, serik.token)).body.players.find((p: any) => p.id === serik.id);
-  check('подарок и бонус игроку за столом дошли до баланса в комнате',
-    serikAfter.balance - serikBefore.balance, 1_300);
-  check('и не считаются выигрышем за столом', serikAfter.startBalance - serikBefore.startBalance, 1_300);
-  check('баланс аккаунта совпадает с комнатой', (await request('GET', '/me', serik.token)).body.balance, serikAfter.balance);
+  // С 09.10.2026 за столом играешь только тем, что взял: бонус и подарок — в общий баланс.
+  check('подарок и бонус игроку за столом на стол не попали',
+    [serikAfter.balance - serikBefore.balance, serikAfter.startBalance - serikBefore.startBalance], [0, 0]);
+  const serikMe = (await request('GET', '/me', serik.token)).body;
+  check('они в общем балансе, вне стола', [serikMe.balance, serikMe.tableBalance], [21_300, serikAfter.balance]);
 
   section('профиль и друзья (этап 9.4)');
   const profile = (await request('GET', '/me/profile', serik.token)).body;

@@ -39,14 +39,19 @@ void openLobby(BuildContext context, String roomId, {bool replace = false}) {
 // всплывал бы поверх только что открытого лобби.
 bool _quickGameBusy = false;
 
+// Минимум комнаты «Быстрой игры» — как QUICK_ROOM.minBalance в backend/src/openRooms.ts.
+const quickRoomMinBalance = 1000;
+
 Future<void> quickGame(BuildContext context) async {
   if (_quickGameBusy) return;
   _quickGameBusy = true;
   try {
+    final buyIn = await askBuyIn(context, minBalance: quickRoomMinBalance);
+    if (buyIn == null) return;
     final response = await apiRequest(http.post(
       Uri.parse('$apiBase/rooms/quick'),
       headers: authHeaders(),
-      body: jsonEncode({}),
+      body: jsonEncode({'buyIn': buyIn}),
     ));
     final error = roomEntryError(response);
     if (error != null) throw Exception(error);
@@ -104,14 +109,16 @@ class _OpenRoomsScreenState extends State<OpenRoomsScreen> {
     }
   }
 
-  Future<void> join(String roomId) async {
+  Future<void> join(String roomId, int minBalance) async {
     if (joining) return;
     setState(() => joining = true);
     try {
+      final buyIn = await askBuyIn(context, minBalance: minBalance);
+      if (buyIn == null) return;
       final response = await apiRequest(http.post(
         Uri.parse('$apiBase/rooms/$roomId/join'),
         headers: authHeaders(),
-        body: jsonEncode({}),
+        body: jsonEncode({'buyIn': buyIn}),
       ));
       final problem = roomEntryError(response);
       if (problem != null) throw Exception(problem);
@@ -178,7 +185,7 @@ class _OpenRoomsScreenState extends State<OpenRoomsScreen> {
                     ),
                     isThreeLine: true,
                     trailing: FilledButton(
-                      onPressed: joining ? null : () => join(r['id'].toString()),
+                      onPressed: joining ? null : () => join(r['id'].toString(), v('minBalance')),
                       child: const Text('ВОЙТИ'),
                     ),
                   ),

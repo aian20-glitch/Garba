@@ -48,6 +48,7 @@
 | `serverBots.ts` | **Новый** (27.09.2026). Боты сервера — кнопка «ДОБАВИТЬ БОТОВ»: что бот делает в каком состоянии, монеты, имена. Чистые функции. |
 | `moderation.ts` | **Новый** (29.09.2026, Apple 1.2). Жалобы, блокировка игроков, фильтр мата в именах. Таблицы `blocks`, `reports`. |
 | `telegram.ts` | **Новый** (07.10.2026). Telegram Mini App: проверка подписи initData, имя из профиля, `startapp`-параметр, отправка Bot API. Чистые функции (кроме `sendTelegram`). |
+| `buyIn.ts` | **Новый** (09.10.2026). Сумма за стол (§9.1b): проверка выбранной суммы. Чистые функции. |
 | `special.ts` | **Новый** (этап 7). Спецкарты: какая карта, очередь, множители, итог борьбы, первый ход. |
 | `rules.ts` | **Используются** `canPlayCard`, `trickWinner` (этап 3) и `isGarba` (этап 6) — сверены с RULES.md. `specialKind`, `canDeclareMain` — ещё не проверены. |
 
@@ -336,6 +337,12 @@ POST /rooms                      { capacity, ante, emptyLimit, konThreshold, min
                                  (с этапа 4 обязательны)
                                  409 { error: 'already in another room', roomId } — см. ниже
                                  403 not enough coins to enter — баланс аккаунта меньше minBalance
+                                 buyIn — сколько взять за стол (RULES.md §9.1b, 09.10.2026): minBalance…баланс;
+                                 то же поле у /rooms/:id/join и /rooms/quick; нет — весь баланс (старые
+                                 приложения, боты); 400 bad buyIn. За столом players[].balance — сумма за
+                                 столом, остальное — players[].reserve (наружу не отдаётся); в аккаунт пишется
+                                 balance + reserve; бонус и подарок за столом — в reserve (buyIn.ts, changeCoins).
+                                 /me и /me/profile: balance — вне стола, tableBalance — за столом или null
 GET  /rooms/open                 → { rooms: [{ id, capacity, players, creatorName, settings }] } — открытые
                                  лобби со свободным местом, куда хватает монет; почти полные сверху
 POST /rooms/quick                {} → комната: сесть в самую заполненную открытую, нет — создать

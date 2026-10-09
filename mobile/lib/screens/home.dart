@@ -11,7 +11,9 @@ class HomeScreen extends StatefulWidget {
 class _HomeScreenState extends State<HomeScreen> with RouteAware {
   // Всё с сервера (GET /me): баланс, незаконченная комната, код игрока,
   // ежедневный бонус (ТЗ §3), дарил ли сегодня (ТЗ §5).
+  // balance — монеты вне стола; tableBalance — сколько взято за стол, пока сижу в комнате.
   int? balance;
+  int? tableBalance;
   String? roomId;
   String code = '';
   int dailyStreak = 0;
@@ -86,6 +88,7 @@ class _HomeScreenState extends State<HomeScreen> with RouteAware {
       final daily = Map<String, dynamic>.from(me['daily'] as Map);
       setState(() {
         balance = (me['balance'] as num).toInt();
+        tableBalance = (me['tableBalance'] as num?)?.toInt();
         roomId = me['roomId']?.toString();
         code = me['code'].toString();
         dailyStreak = (daily['streak'] as num).toInt();
@@ -279,6 +282,14 @@ class _HomeScreenState extends State<HomeScreen> with RouteAware {
                             ),
                           ),
                         ),
+                        if (tableBalance != null) ...[
+                          const SizedBox(height: 6),
+                          Text(
+                            'За столом ${fmtCoins(tableBalance!)} — играете только ими',
+                            textAlign: TextAlign.center,
+                            style: const TextStyle(color: Colors.white70),
+                          ),
+                        ],
                         const SizedBox(height: 14),
                       ],
                       // По две плитки в ряд (просьба владельца, 19.09.2026): короче экран,
