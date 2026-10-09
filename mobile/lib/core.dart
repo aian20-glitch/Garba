@@ -50,15 +50,23 @@ const _specialNames = <String, String>{
 String specialName(String kind) => _specialNames[kind] ?? kind;
 
 // 12500 → «12 500».
+// Монеты коротко (просьба владельца, 09.10.2026): 900, 11.9k, 1.25M.
+// Монеты ходят сотнями — одной цифры после точки обычно хватает; остаток
+// при делении кона бывает не круглым — тогда две.
 String fmtCoins(int value) {
   final negative = value < 0;
-  final digits = value.abs().toString();
-  final buf = StringBuffer();
-  for (var i = 0; i < digits.length; i++) {
-    if (i > 0 && (digits.length - i) % 3 == 0) buf.write(' ');
-    buf.write(digits[i]);
+  final v = value.abs();
+  String short(num x) {
+    var t = x.toStringAsFixed(x * 10 == (x * 10).roundToDouble() ? 1 : 2);
+    if (t.contains('.')) t = t.replaceFirst(RegExp(r'\.?0+$'), '');
+    return t;
   }
-  return negative ? '−$buf' : buf.toString();
+  final text = v < 1000
+      ? '$v'
+      : v < 1000000
+          ? '${short(v / 1000)}k'
+          : '${short(v / 1000000)}M';
+  return negative ? '−$text' : text;
 }
 
 // +500 / −500 для изменений баланса.

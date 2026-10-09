@@ -2209,6 +2209,11 @@ class _GameTableScreenState extends State<GameTableScreen> {
                   ],
                 ],
               ),
+              // Мои монеты: на столе, всего и рейтинг (09.10.2026).
+              if (myWalletBar(room!) case final bar?) ...[
+                const SizedBox(height: 2),
+                bar,
+              ],
               if (closing && !isRoomDone)
                 Padding(
                   padding: const EdgeInsets.only(top: 6),

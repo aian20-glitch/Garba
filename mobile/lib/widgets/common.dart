@@ -542,3 +542,70 @@ class _BuyInDialogState extends State<BuyInDialog> {
     );
   }
 }
+
+// Мои монеты и рейтинг за столом (просьба владельца, 09.10.2026): сколько взял за стол,
+// сколько всего (на столе + вне стола) и рейтинг — одной плашкой над столом.
+// null — я не сижу в этой комнате, плашки нет.
+Widget? myWalletBar(Map<String, dynamic> room) {
+  final players = (room['players'] as List?) ?? const [];
+  final me = players.cast<Map>().where((p) => p['id']?.toString() == Session.id).firstOrNull;
+  if (me == null) return null;
+  final onTable = (me['balance'] as num?)?.toInt() ?? 0;
+  final total = onTable + ((room['myReserve'] as num?)?.toInt() ?? 0);
+  return WalletBar(onTable: onTable, total: total, rating: me['rating']);
+}
+
+class WalletBar extends StatelessWidget {
+  final int onTable;
+  final int total;
+  final Object? rating;
+
+  const WalletBar({super.key, required this.onTable, required this.total, this.rating});
+
+  static const gold = Color(0xFFD4A94F);
+
+  Widget part(Widget icon, String value, String label) => Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          icon,
+          const SizedBox(width: 5),
+          Text(value, style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w900, color: Colors.white)),
+          const SizedBox(width: 4),
+          Text(label, style: const TextStyle(fontSize: 11, color: Colors.white60)),
+        ],
+      );
+
+  Widget divider() => Container(
+        width: 1,
+        height: 16,
+        margin: const EdgeInsets.symmetric(horizontal: 10),
+        color: gold.withValues(alpha: 0.35),
+      );
+
+  @override
+  Widget build(BuildContext context) {
+    return Center(
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 5),
+        decoration: BoxDecoration(
+          gradient: const LinearGradient(colors: [Color(0xFF1A2C3A), Color(0xFF0E1A24)]),
+          borderRadius: BorderRadius.circular(20),
+          border: Border.all(color: gold.withValues(alpha: 0.7)),
+        ),
+        child: FittedBox(
+          fit: BoxFit.scaleDown,
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              part(const CoinIcon(size: 16), fmtCoins(onTable), 'на столе'),
+              divider(),
+              part(const Icon(Icons.account_balance_wallet, size: 16, color: gold), fmtCoins(total), 'всего'),
+              divider(),
+              part(const Icon(Icons.star_rounded, size: 18, color: Color(0xFFFFC83D)), fmtRating(rating), 'рейтинг'),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}

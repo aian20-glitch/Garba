@@ -3226,6 +3226,8 @@ function publicRoom(room: Room, viewerId?: string) {
     reactions: reactionsFor(room, viewerId),
     // Статистика игроков за комнату (ТЗ §35) — для экрана «ИТОГИ ИГРЫ».
     stats: room.stats ?? null,
+    // Мои монеты вне стола (09.10.2026) — только смотрящему; всего = на столе + это.
+    myReserve: room.players.find((p) => p.id === viewerId)?.reserve ?? null,
     createdAt: room.createdAt,
     game,
   };

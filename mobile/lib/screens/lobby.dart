@@ -589,6 +589,11 @@ class _LobbyScreenState extends State<LobbyScreen> {
                   ),
                 );
               }),
+            // Мои монеты: на столе, всего и рейтинг (09.10.2026).
+            if (myWalletBar(room!) case final bar?) ...[
+              const SizedBox(height: 8),
+              bar,
+            ],
             // Открытая комната — видна всем; создатель открывает и закрывает до старта.
             if (isCreator)
               SwitchListTile(
