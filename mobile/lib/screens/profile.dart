@@ -212,13 +212,22 @@ class _ProfileScreenState extends State<ProfileScreen> {
                     ),
                     const CoinIcon(size: 21),
                     const SizedBox(width: 4),
+                    // Всего: вне стола + на столе (09.10.2026).
                     Text(
-                      fmtCoins((p['balance'] as num).toInt()),
+                      fmtCoins((p['balance'] as num).toInt() +
+                          ((p['tableBalance'] as num?)?.toInt() ?? 0)),
                       style: const TextStyle(
                           fontSize: 20, fontWeight: FontWeight.w700),
                     ),
                   ],
                 ),
+                if (p['tableBalance'] is num)
+                  Text(
+                    'На столе ${fmtCoins((p['tableBalance'] as num).toInt())} · '
+                    'вне стола ${fmtCoins((p['balance'] as num).toInt())}',
+                    textAlign: TextAlign.center,
+                    style: const TextStyle(color: Colors.white70),
+                  ),
                 Text('Друзей: ${p['friendsCount']}',
                     style: const TextStyle(color: Colors.white70)),
                 Text(

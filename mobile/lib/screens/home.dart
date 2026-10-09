@@ -190,8 +190,9 @@ class _HomeScreenState extends State<HomeScreen> with RouteAware {
                     children: [
                       const CoinIcon(size: 22),
                       const SizedBox(width: 4),
+                      // Всего монет: вне стола + на столе (09.10.2026).
                       Text(
-                        balance == null ? '…' : fmtCoins(balance!),
+                        balance == null ? '…' : fmtCoins(balance! + (tableBalance ?? 0)),
                         style: const TextStyle(fontSize: 20, fontWeight: FontWeight.w700),
                       ),
                     ],
@@ -285,7 +286,7 @@ class _HomeScreenState extends State<HomeScreen> with RouteAware {
                         if (tableBalance != null) ...[
                           const SizedBox(height: 6),
                           Text(
-                            'За столом ${fmtCoins(tableBalance!)} — играете только ими',
+                            'На столе ${fmtCoins(tableBalance!)} · вне стола ${fmtCoins(balance ?? 0)}',
                             textAlign: TextAlign.center,
                             style: const TextStyle(color: Colors.white70),
                           ),
