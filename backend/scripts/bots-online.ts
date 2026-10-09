@@ -77,6 +77,12 @@ function nextAction(bot: Bot, room: any): Action | null {
     return { path: `${at}/end-game`, body: { choice: 'yes' }, say: 'согласен закончить игру', delay: STEP_MS };
   }
 
+  // Игрок ушёл (§13c): боты согласны играть дальше — решает живой игрок.
+  if (g.shrinkVote) {
+    if (g.myShrinkVote || !(g.shrinkVote.voterIds ?? []).includes(bot.id)) return null;
+    return { path: `${at}/shrink-vote`, body: { choice: 'continue' }, say: 'играем дальше', delay: STEP_MS };
+  }
+
   switch (g.stage) {
     case 'dealer_found':
     case 'awaiting_deal':

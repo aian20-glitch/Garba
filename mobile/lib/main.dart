@@ -30,6 +30,7 @@ part 'screens/dealer_selection.dart';
 part 'screens/game_table.dart';
 part 'widgets/kazakh.dart';
 part 'widgets/deal_result.dart';
+part 'widgets/game_over.dart';
 part 'widgets/cards.dart';
 part 'widgets/common.dart';
 

@@ -520,3 +520,27 @@ class DeepLinks {
 
 // Рейтинг (ТЗ §38, RULES.md §16): среди друзей и среди всех игроков.
 String fmtRating(Object? value) => ((value as num?) ?? 0).toStringAsFixed(1);
+
+// Цвет рейтинга по уровню (выбор владельца, 09.10.2026): новичок с 4.0 — белый,
+// дальше зелёный, синий, фиолетовый, оранжевый и красный для лучших.
+Color ratingColor(Object? value) {
+  final r = ((value as num?) ?? 0).toDouble();
+  if (r >= 9) return const Color(0xFFFF4D4D); // красный — легенда
+  if (r >= 8) return const Color(0xFFFF9A3C); // оранжевый — мастер
+  if (r >= 7) return const Color(0xFFC07BFF); // фиолетовый — эксперт
+  if (r >= 6) return const Color(0xFF4FA8FF); // синий — опытный
+  if (r >= 5) return const Color(0xFF5BD46A); // зелёный — уверенный
+  if (r >= 3) return Colors.white; // белый — обычный, старт 4.0
+  return const Color(0xFF9E9E9E); // серый — ниже старта
+}
+
+// Место в общем рейтинге: сервер отдаёт `top` (1…10) только первой десятке.
+int? topPlace(Map p) => (p['top'] as num?)?.toInt();
+
+// Цвет метки «ТОП-N»: первое место — золото, второе — серебро, третье — бронза.
+Color topColor(int place) => switch (place) {
+      1 => const Color(0xFFFFD34D),
+      2 => const Color(0xFFD9DEE3),
+      3 => const Color(0xFFE09A5B),
+      _ => const Color(0xFF9FD8FF),
+    };

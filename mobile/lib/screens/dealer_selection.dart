@@ -117,7 +117,8 @@ class _DealerSelectionScreenState extends State<DealerSelectionScreen> {
         // же раздаче трижды вышла ИЗЖОГА, стадия сразу 'awaiting_deal' (пересдача),
         // и без этого все остались бы на экране раздающего.
         final stage = game['stage']?.toString();
-        if (stage != null && stage != 'dealer_found' && !moved) {
+        // Кто-то ушёл ещё до первой раздачи — отвечать «играем дальше?» нужно на столе (§13c).
+        if (stage != null && (stage != 'dealer_found' || game['shrinkVote'] is Map) && !moved) {
           moved = true;
           pollTimer?.cancel();
           revealTimer?.cancel();

@@ -208,8 +208,17 @@ class _HomeScreenState extends State<HomeScreen> with RouteAware {
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        Text(
-                          rating == null ? Session.name : '${Session.name} · ⭐ ${fmtRating(rating)}',
+                        Text.rich(
+                          TextSpan(
+                            text: Session.name,
+                            children: [
+                              if (rating != null)
+                                TextSpan(
+                                  text: ' · ⭐ ${fmtRating(rating)}',
+                                  style: TextStyle(color: ratingColor(rating), fontWeight: FontWeight.w900),
+                                ),
+                            ],
+                          ),
                           style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w700),
                         ),
                         if (code.isNotEmpty)

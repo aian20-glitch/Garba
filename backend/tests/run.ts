@@ -26,6 +26,7 @@ import './serverBots.test.js';
 import './moderation.test.js';
 import './telegram.test.js';
 import './buyIn.test.js';
+import './shrinkVote.test.js';
 import { summary } from './check.js';
 
 process.exit(summary() === 0 ? 0 : 1);

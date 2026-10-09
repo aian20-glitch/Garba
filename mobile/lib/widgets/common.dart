@@ -601,11 +601,108 @@ class WalletBar extends StatelessWidget {
               divider(),
               part(const Icon(Icons.account_balance_wallet, size: 16, color: gold), fmtCoins(total), 'всего'),
               divider(),
-              part(const Icon(Icons.star_rounded, size: 18, color: Color(0xFFFFC83D)), fmtRating(rating), 'рейтинг'),
+              Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  const Icon(Icons.star_rounded, size: 18, color: Color(0xFFFFC83D)),
+                  const SizedBox(width: 5),
+                  RatingText(rating, fontSize: 15, star: false),
+                  const SizedBox(width: 4),
+                  const Text('рейтинг', style: TextStyle(fontSize: 11, color: Colors.white60)),
+                ],
+              ),
             ],
           ),
         ),
       ),
     );
   }
+}
+
+// Рейтинг цветом по уровню: «⭐ 6.2» (09.10.2026, ratingColor в core.dart).
+class RatingText extends StatelessWidget {
+  final Object? rating;
+  final double fontSize;
+  final bool star;
+
+  const RatingText(this.rating, {super.key, this.fontSize = 14, this.star = true});
+
+  @override
+  Widget build(BuildContext context) {
+    return Text(
+      '${star ? '⭐ ' : ''}${fmtRating(rating)}',
+      maxLines: 1,
+      style: TextStyle(
+        fontSize: fontSize,
+        fontWeight: FontWeight.w900,
+        color: ratingColor(rating),
+      ),
+    );
+  }
+}
+
+// Метка «ТОП-3» у игрока из первой десятки общего рейтинга.
+class TopBadge extends StatelessWidget {
+  final int place;
+  final double fontSize;
+
+  const TopBadge(this.place, {super.key, this.fontSize = 9});
+
+  @override
+  Widget build(BuildContext context) {
+    final color = topColor(place);
+    return Container(
+      padding: EdgeInsets.symmetric(horizontal: fontSize * 0.5, vertical: 1),
+      decoration: BoxDecoration(
+        color: const Color(0xF0101820),
+        borderRadius: BorderRadius.circular(fontSize),
+        border: Border.all(color: color, width: 1.2),
+        boxShadow: [BoxShadow(color: color.withValues(alpha: 0.5), blurRadius: 6)],
+      ),
+      child: Text(
+        place <= 3 ? '👑 ТОП-$place' : 'ТОП-$place',
+        maxLines: 1,
+        style: TextStyle(fontSize: fontSize, fontWeight: FontWeight.w900, color: color),
+      ),
+    );
+  }
+}
+
+// «В этой игре ТОП-3 — Аян»: кто за столом из первой десятки, лучший первым.
+// null — таких нет.
+Widget? topPlayersBanner(List players) {
+  final tops = players
+      .cast<Map>()
+      .where((p) => topPlace(p) != null)
+      .toList()
+    ..sort((a, b) => topPlace(a)!.compareTo(topPlace(b)!));
+  if (tops.isEmpty) return null;
+  final best = topPlace(tops.first)!;
+  return Center(
+    child: Container(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+      decoration: BoxDecoration(
+        color: const Color(0xE0101820),
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: topColor(best)),
+      ),
+      child: Text.rich(
+        TextSpan(
+          style: const TextStyle(fontSize: 13, color: Colors.white),
+          children: [
+            const TextSpan(text: 'В этой игре '),
+            for (final (i, p) in tops.indexed) ...[
+              if (i > 0) const TextSpan(text: ', '),
+              TextSpan(
+                text: 'ТОП-${topPlace(p)}',
+                style: TextStyle(fontWeight: FontWeight.w900, color: topColor(topPlace(p)!)),
+              ),
+              TextSpan(text: ' — ${p['name']}', style: const TextStyle(fontWeight: FontWeight.w700)),
+            ],
+          ],
+        ),
+        textAlign: TextAlign.center,
+      ),
+    ),
+  );
 }

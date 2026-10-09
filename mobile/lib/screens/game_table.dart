@@ -44,6 +44,8 @@ class _GameTableScreenState extends State<GameTableScreen> {
   bool firstAnnounce = true;
   // Итог раздачи всплывает поверх стола; закрытый нажатием больше не показываем.
   String? dismissedResultKey;
+  // Окно итога всей игры закрыто нажатием — дальше итоги под столом.
+  bool gameOverClosed = false;
   // Раздача сыграна: сразу окно итога, через 2,5 секунды оно закрывается само —
   // дальше все смотрят на столе, у кого какие карты были. При ГАРБЕ сначала
   // 2,5 секунды показываются дама, король и туз козыря под барабан.
@@ -194,7 +196,10 @@ class _GameTableScreenState extends State<GameTableScreen> {
     // чтобы шёл обратный отсчёт.
     final gameRaw = data['game'];
     if (data['pause'] is Map ||
-        (gameRaw is Map && (gameRaw['endVote'] is Map || gameRaw['turnSecondsLeft'] != null))) {
+        (gameRaw is Map &&
+            (gameRaw['endVote'] is Map ||
+                gameRaw['shrinkVote'] is Map ||
+                gameRaw['turnSecondsLeft'] != null))) {
       pauseTicker ??= Timer.periodic(const Duration(seconds: 1), (_) {
         if (mounted) setState(() {});
       });
@@ -388,6 +393,19 @@ class _GameTableScreenState extends State<GameTableScreen> {
 
     if (firstAnnounce) {
       firstAnnounce = false;
+      // Открыл стол — объявляем, кто здесь из первой десятки рейтинга (09.10.2026).
+      final tops = ((data['players'] as List?) ?? const [])
+          .cast<Map>()
+          .where((p) => topPlace(p) != null)
+          .toList()
+        ..sort((a, b) => topPlace(a)!.compareTo(topPlace(b)!));
+      if (tops.isEmpty) return;
+      text = 'В этой игре\n${tops.map((p) => 'ТОП-${topPlace(p)} — ${p['name']}').join('\n')}';
+      final id = ++announcementSeq;
+      setState(() => announcement = (id: id, text: text!));
+      Timer(const Duration(milliseconds: 3200), () {
+        if (mounted && announcement?.id == id) setState(() => announcement = null);
+      });
       return;
     }
     if (newCard) GarbaSounds.move();
@@ -1101,6 +1119,10 @@ class _GameTableScreenState extends State<GameTableScreen> {
     final endVote = endVoteRaw is Map ? Map<String, dynamic>.from(endVoteRaw) : null;
     final myEndVote = game['myEndVote']?.toString();
     final canProposeEnd = game['myCanProposeEnd'] == true;
+    // Игрок ушёл — играть дальше без него или закрыть (RULES.md §13c).
+    final shrinkVoteRaw = game['shrinkVote'];
+    final shrinkVote = shrinkVoteRaw is Map ? Map<String, dynamic>.from(shrinkVoteRaw) : null;
+    final myShrinkVote = game['myShrinkVote']?.toString();
     final lastEndVoteRaw = game['lastEndVote'];
     final lastEndVote =
         lastEndVoteRaw is Map ? Map<String, dynamic>.from(lastEndVoteRaw) : null;
@@ -1692,12 +1714,21 @@ class _GameTableScreenState extends State<GameTableScreen> {
                       ),
                     ),
                   ),
-                  Text(
-                    ' ⭐${fmtRating(p['rating'])}',
-                    style: TextStyle(
-                      fontSize: 11,
-                      fontWeight: FontWeight.w800,
-                      color: isMain ? Colors.black87 : gold,
+                  // Рейтинг цветом по уровню; у главного — на тёмной подложке,
+                  // иначе цвет не виден на золоте.
+                  Container(
+                    margin: const EdgeInsets.only(left: 3),
+                    padding: EdgeInsets.symmetric(horizontal: isMain ? 3 : 0),
+                    decoration: isMain
+                        ? BoxDecoration(color: const Color(0xDD101820), borderRadius: BorderRadius.circular(4))
+                        : null,
+                    child: Text(
+                      fmtRating(p['rating']),
+                      style: TextStyle(
+                        fontSize: 11,
+                        fontWeight: FontWeight.w900,
+                        color: ratingColor(p['rating']),
+                      ),
                     ),
                   ),
                 ],
@@ -1789,6 +1820,14 @@ class _GameTableScreenState extends State<GameTableScreen> {
                     ),
                   ),
                 ),
+              ),
+            // Первая десятка общего рейтинга — метка «ТОП-N» под аватаркой.
+            if (topPlace(p) case final place?)
+              Positioned(
+                left: -30,
+                right: -30,
+                bottom: -7,
+                child: Center(child: TopBadge(place, fontSize: 8)),
               ),
             // Смайлик — прямо на аватарке, крупно.
             if (flyingEmoji[pId] != null)
@@ -2092,6 +2131,28 @@ class _GameTableScreenState extends State<GameTableScreen> {
     // Итог раздачи — поверх стола, чтобы не искать его под столом: кто что сказал,
     // выиграл или проиграл, сколько забрал из кона или положил в кон (RULES.md §11).
     Widget? resultPopup;
+    // Игра закончилась — окно: кто сколько выиграл за игру и какой рейтинг сделал.
+    // Лучшего выделяем по winnerIds от сервера (§36).
+    Widget? gameOverPopup;
+    if (isRoomDone && !gameOverClosed) {
+      gameOverPopup = GameOverPopup(
+        lines: [
+          for (final p in players)
+            (
+              id: p['id'].toString(),
+              name: p['name'].toString(),
+              diff: ((p['balance'] as num?)?.toInt() ?? 0) - ((p['startBalance'] as num?)?.toInt() ?? 0),
+              ratingStart: (p['ratingStart'] as num?)?.toDouble() ?? 0,
+              ratingEnd: (p['rating'] as num?)?.toDouble() ?? 0,
+            ),
+        ]..sort((a, b) => b.diff.compareTo(a.diff)),
+        winnerIds: ((game['winnerIds'] as List?) ?? const []).map((e) => e.toString()).toSet(),
+        myId: widget.currentPlayerId,
+        practice: room!['practice'] == true,
+        onClose: () => setState(() => gameOverClosed = true),
+      );
+    }
+
     final String? resultKey = isRoundDone && result.isNotEmpty
         ? 'r-$konBefore-$kon-${playedTricks.length}-'
             '${result.map((r) => '${r['playerId']}${r['delta']}').join()}'
@@ -2382,6 +2443,7 @@ class _GameTableScreenState extends State<GameTableScreen> {
                       ),
                     ),
                   if (resultPopup != null) Positioned.fill(child: resultPopup),
+                  if (gameOverPopup != null) Positioned.fill(child: gameOverPopup),
                   if (isRoundDone && garbaReveal != null)
                     Positioned.fill(
                       child: GarbaReveal(
@@ -2514,6 +2576,64 @@ class _GameTableScreenState extends State<GameTableScreen> {
                     fontWeight: FontWeight.w800,
                   ),
                 )
+              else if (shrinkVote != null)
+                Container(
+                  padding: const EdgeInsets.all(10),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFF13232E),
+                    borderRadius: BorderRadius.circular(12),
+                    border: Border.all(color: const Color(0xFFD4A94F)),
+                  ),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      Text(
+                        '${shrinkVote['leftName']} ушёл. Играем дальше без него — '
+                        'вас ${shrinkVote['players']}?',
+                        textAlign: TextAlign.center,
+                        style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w900),
+                      ),
+                      Text(
+                        'Нужно согласие всех: '
+                        '${(shrinkVote['yesIds'] as List).length} из '
+                        '${(shrinkVote['voterIds'] as List).length} · '
+                        '${countdown({'secondsLeft': shrinkVote['secondsLeft']})}. '
+                        'Не ответил — комната закроется.',
+                        textAlign: TextAlign.center,
+                        style: const TextStyle(fontSize: 12, color: Colors.white70),
+                      ),
+                      const SizedBox(height: 8),
+                      if (myShrinkVote == null)
+                        Row(
+                          children: [
+                            Expanded(
+                              child: FilledButton(
+                                onPressed: sendingSpecial
+                                    ? null
+                                    : () => sendSpecial('shrink-vote', {'choice': 'continue'}),
+                                child: const Text('ИГРАЕМ ДАЛЬШЕ'),
+                              ),
+                            ),
+                            const SizedBox(width: 8),
+                            Expanded(
+                              child: OutlinedButton(
+                                onPressed: sendingSpecial
+                                    ? null
+                                    : () => sendSpecial('shrink-vote', {'choice': 'close'}),
+                                child: const Text('ЗАКРЫТЬ'),
+                              ),
+                            ),
+                          ],
+                        )
+                      else
+                        const Text(
+                          'Вы за то, чтобы играть дальше. Ждём остальных.',
+                          textAlign: TextAlign.center,
+                          style: TextStyle(color: Colors.white70),
+                        ),
+                    ],
+                  ),
+                )
               else if (isVote)
                 myVote == null
                     ? Row(
@@ -2542,7 +2662,7 @@ class _GameTableScreenState extends State<GameTableScreen> {
                       )
               else if (isRoomDone)
                 const SizedBox.shrink()
-              else if (stage == 'awaiting_deal' || isRoundDone)
+              else if (stage == 'awaiting_deal' || stage == 'dealer_found' || isRoundDone)
                 Column(
                   crossAxisAlignment: CrossAxisAlignment.stretch,
                   children: [

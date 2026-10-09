@@ -99,17 +99,22 @@ class _RatingListState extends State<RatingList> {
                     children: [
                       SizedBox(
                         width: 28,
-                        child: Text('${p['place']}', style: const TextStyle(fontWeight: FontWeight.w800)),
+                        child: Text(
+                          '${p['place']}',
+                          style: TextStyle(
+                            fontWeight: FontWeight.w800,
+                            color: widget.scope == 'all' && (p['place'] as num) <= 10
+                                ? topColor((p['place'] as num).toInt())
+                                : null,
+                          ),
+                        ),
                       ),
                       AvatarView(avatar: p['avatar']?.toString(), name: p['name'].toString()),
                     ],
                   ),
                 ),
                 title: Text(isMe ? '${p['name']} (вы)' : p['name'].toString()),
-                trailing: Text(
-                  '⭐ ${fmtRating(p['rating'])}',
-                  style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w900, color: Color(0xFFD4A94F)),
-                ),
+                trailing: RatingText(p['rating'], fontSize: 18),
                 onTap: isMe
                     ? null
                     : () => Navigator.push(

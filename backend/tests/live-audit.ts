@@ -109,6 +109,62 @@ async function goneMain() {
   check('и голосования нет', (await request('GET', `/rooms/${room.id}`, others[0].token)).body.game.endVote, null);
 }
 
+// Пять игроков за столом, все нажали «ГОТОВ» — игра началась.
+async function fiveAtTable(prefix: string) {
+  const players = [];
+  for (let i = 0; i < 5; i++) players.push(await account(`${prefix}${i}`));
+  const room = (await request('POST', '/rooms', players[0].token, { capacity: 5, ante: 100, emptyLimit: 5, konThreshold: 10, minBalance: 1000 })).body;
+  for (const p of players.slice(1)) await request('POST', `/rooms/${room.id}/join`, p.token);
+  for (const p of players) await request('POST', `/rooms/${room.id}/ready`, p.token);
+  return { players, roomId: room.id as string };
+}
+
+async function shrinkTable() {
+  section('игрок ушёл — играем дальше вчетвером, если согласны все (§13c, 09.10.2026)');
+  const { players, roomId } = await fiveAtTable('Ш');
+  let state = (await request('GET', `/rooms/${roomId}`, players[0].token)).body;
+  check('игра началась, ждём первой раздачи', state.game.stage, 'dealer_found');
+
+  // Уходит раздающий — раздавать будет следующий по кругу.
+  const seated = state.players.map((p: any) => p.id);
+  const leaver = players.find((p) => p.id === state.game.dealerId)!;
+  const nextDealer = seated[(seated.indexOf(leaver.id) + 1) % 5];
+  const rest = players.filter((p) => p !== leaver);
+  check('раздающий вышел между раздачами', (await request('POST', `/rooms/${roomId}/leave`, leaver.token)).status, 200);
+
+  state = (await request('GET', `/rooms/${roomId}`, rest[0].token)).body;
+  check('игра не закрылась — спрашиваем оставшихся',
+    [state.status, state.game.shrinkVote?.leftName, state.game.shrinkVote?.players], ['started', leaver.name, 4]);
+  check('раздаёт следующий по кругу', state.game.dealerId, nextDealer);
+  const dealer = rest.find((p) => p.id === nextDealer)!;
+  check('пока не решили — раздавать нельзя',
+    (await request('POST', `/rooms/${roomId}/dealer/continue`, dealer.token)).status, 409);
+
+  for (const p of rest.slice(0, 3)) await request('POST', `/rooms/${roomId}/shrink-vote`, p.token, { choice: 'continue' });
+  state = (await request('GET', `/rooms/${roomId}`, rest[0].token)).body;
+  check('трое из четырёх согласны — ждём четвёртого', state.game.shrinkVote?.yesIds.length, 3);
+  await request('POST', `/rooms/${roomId}/shrink-vote`, rest[3].token, { choice: 'continue' });
+  state = (await request('GET', `/rooms/${roomId}`, rest[0].token)).body;
+  check('все согласны — стол на 4, места 0…3',
+    [state.game.shrinkVote, state.capacity, state.players.map((p: any) => p.seat)], [null, 4, [0, 1, 2, 3]]);
+
+  check('новый раздающий раздаёт', (await request('POST', `/rooms/${roomId}/dealer/continue`, dealer.token)).status, 200);
+  state = (await request('GET', `/rooms/${roomId}`, rest[0].token)).body;
+  check('раздача вчетвером: у каждого 5 карт, РАЗ — всегда червы, кон 4 × 100',
+    [Object.values(state.game.handCounts).length, state.game.razSuit, state.game.baseKon],
+    [4, 'hearts', 400]);
+
+  section('игрок ушёл — одно «закрыть», и игра заканчивается (§13c)');
+  const second = await fiveAtTable('З');
+  await request('POST', `/rooms/${second.roomId}/leave`, second.players[1].token);
+  await request('POST', `/rooms/${second.roomId}/shrink-vote`, second.players[0].token, { choice: 'continue' });
+  await request('POST', `/rooms/${second.roomId}/shrink-vote`, second.players[2].token, { choice: 'close' });
+  state = (await request('GET', `/rooms/${second.roomId}`, second.players[0].token)).body;
+  check('комната закрыта, кон поделён', [state.status, state.game.closeReason], ['finished', 'player_left']);
+  check('ушедший голосовать не может — 403',
+    (await request('POST', `/rooms/${second.roomId}/shrink-vote`, second.players[1].token, { choice: 'continue' })).status, 403);
+}
+
 async function socketLimits() {
   section('сокеты под общим лимитом с адреса (28.09.2026)');
   const results: boolean[] = [];
@@ -147,6 +203,7 @@ async function main() {
   }
   await closedRoom();
   await goneMain();
+  await shrinkTable();
   await socketLimits();
 }
 

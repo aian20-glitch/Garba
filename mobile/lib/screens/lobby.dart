@@ -260,6 +260,13 @@ class _LobbyScreenState extends State<LobbyScreen> {
                   clipBehavior: Clip.none,
                   children: [
                     AvatarView(avatar: p['avatar']?.toString(), name: p['name'].toString(), radius: 21),
+                    if (topPlace(p) case final place?)
+                      Positioned(
+                        left: -30,
+                        right: -30,
+                        bottom: -8,
+                        child: Center(child: TopBadge(place, fontSize: 8)),
+                      ),
                     if (flyingEmoji[id] != null)
                       Positioned(
                         left: -5,
@@ -287,17 +294,23 @@ class _LobbyScreenState extends State<LobbyScreen> {
                       overflow: TextOverflow.ellipsis,
                       style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w900),
                     ),
-                    Text(
-                      ready == null
-                          ? '${id == creatorId ? 'Создатель · ' : ''}⭐ ${fmtRating(p['rating'])}'
-                          : ready
-                              ? 'готов'
-                              : 'ждём «ГОТОВ»',
-                      style: TextStyle(
-                        fontSize: 10,
-                        color: ready == true ? Colors.greenAccent : gold,
+                    if (ready == null)
+                      Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          if (id == creatorId)
+                            const Text('Создатель · ', style: TextStyle(fontSize: 10, color: gold)),
+                          RatingText(p['rating'], fontSize: 10),
+                        ],
+                      )
+                    else
+                      Text(
+                        ready ? 'готов' : 'ждём «ГОТОВ»',
+                        style: TextStyle(
+                          fontSize: 10,
+                          color: ready ? Colors.greenAccent : gold,
+                        ),
                       ),
-                    ),
                   ],
                 ),
               ),
@@ -589,6 +602,11 @@ class _LobbyScreenState extends State<LobbyScreen> {
                   ),
                 );
               }),
+            // «В этой игре ТОП-3 — Аян» — кто за столом из первой десятки (09.10.2026).
+            if (topPlayersBanner(players) case final banner?) ...[
+              const SizedBox(height: 6),
+              banner,
+            ],
             // Мои монеты: на столе, всего и рейтинг (09.10.2026).
             if (myWalletBar(room!) case final bar?) ...[
               const SizedBox(height: 8),

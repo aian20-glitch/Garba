@@ -230,12 +230,16 @@ class _ProfileScreenState extends State<ProfileScreen> {
                   ),
                 Text('Друзей: ${p['friendsCount']}',
                     style: const TextStyle(color: Colors.white70)),
-                Text(
-                  'Рейтинг: ⭐ ${fmtRating(p['rating'])}',
-                  style: const TextStyle(
-                      fontSize: 20,
-                      fontWeight: FontWeight.w900,
-                      color: Color(0xFFD4A94F)),
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    const Text('Рейтинг: ',
+                        style: TextStyle(
+                            fontSize: 20,
+                            fontWeight: FontWeight.w900,
+                            color: Color(0xFFD4A94F))),
+                    RatingText(p['rating'], fontSize: 20),
+                  ],
                 ),
                 const Divider(height: 32),
                 StatsView(stats: Map<String, dynamic>.from(p['stats'] as Map)),
@@ -851,12 +855,16 @@ class _PlayerScreenState extends State<PlayerScreen> {
                       ),
                     ],
                   ),
-                Text(
-                  'Рейтинг: ⭐ ${fmtRating(p['rating'])}',
-                  style: const TextStyle(
-                      fontSize: 20,
-                      fontWeight: FontWeight.w900,
-                      color: Color(0xFFD4A94F)),
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    const Text('Рейтинг: ',
+                        style: TextStyle(
+                            fontSize: 20,
+                            fontWeight: FontWeight.w900,
+                            color: Color(0xFFD4A94F))),
+                    RatingText(p['rating'], fontSize: 20),
+                  ],
                 ),
                 if (p['friendStatus'] == 'incoming')
                   const Padding(

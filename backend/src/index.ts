@@ -142,6 +142,14 @@ import { betweenDeals, seatFor, vacancyExpired, vacancySecondsLeft, type Vacancy
 import { privacyHtml, supportHtml, privacySections, PRIVACY_UPDATED } from './privacy.js';
 import { canProposeEnd, endVoteOutcome, END_VOTE_MS, type EndVote } from './endVote.js';
 import {
+  canKeepPlaying,
+  dealerAfterLeave,
+  renumberSeats,
+  shrinkVoteOutcome,
+  SHRINK_VOTE_MS,
+  type ShrinkVote,
+} from './shrinkVote.js';
+import {
   markReady,
   READY_MS,
   readyOutcome,
@@ -375,6 +383,10 @@ type GameState = {
     remainder: number;
     remainderTo: string | null;
   } | null;
+  // Игрок ушёл — оставшиеся решают: играть дальше без него или закрыть (§13c, 09.10.2026).
+  shrinkVote?: ShrinkVote | null;
+  // Последний раз стол стал меньше — с какого на какое число игроков (для надписи на столе).
+  lastShrink?: { from: number; to: number } | null;
   // Кто не вернулся за 5 минут — ему доля кона не положена (§13).
   leftPlayerIds?: string[];
   // Победитель комнаты (ТЗ §36): лучший итог по монетам; при ничьей — несколько.
@@ -1762,6 +1774,12 @@ function vacateSeat(room: Room, playerId: string, reason: 'left' | 'gone', close
   const r = ratingState(room, playerId);
   r.skill = Math.max(0, r.skill + leavePenalty(seatAlreadyEmpty));
 
+  // Раздавать должен был он — раздаёт следующий по кругу (§13c).
+  if (rest.length > 0) {
+    game.dealerId = dealerAfterLeave(room.players.map((p) => p.id), game.dealerId, playerId);
+    game.dealerName = rest.find((p) => p.id === game.dealerId)?.name ?? game.dealerName;
+  }
+
   // Его баланс и рейтинг уходят с ним: пишем в аккаунт сейчас — комната его больше
   // не сохраняет. На тренировке с ботами всё не настоящее — аккаунт не трогаем.
   if (!room.practice) {
@@ -1790,13 +1808,15 @@ function vacateSeat(room: Room, playerId: string, reason: 'left' | 'gone', close
 
   console.log(
     `[ROOM ${room.id}] ${player.name} ${reason === 'left' ? 'вышел из игры' : 'не вернулся за 5 минут'} — ` +
-      `кон ${game.lastLeave.kon} разделён: по ${perPlayer} — игра закончена`,
+      `кон ${game.lastLeave.kon} разделён: по ${perPlayer}`,
   );
   if (close) finishLeaving(room);
 }
 
-// Кто-то ушёл — игра заканчивается (решение владельца, 08.10.2026; с 24.09 место ждало
-// нового игрока 10 минут). Кон уже поделён, остальным — итог комнаты по §16.3.
+// Кто-то ушёл. Кон уже поделён. Осталось 4 и больше — спрашиваем всех: играть дальше
+// без него или закрыть (§13c, 09.10.2026). Меньше 4 — игра заканчивается, остальным —
+// итог комнаты по §16.3 (как с 08.10.2026). Комнаты со старым пустым местом (до 08.10)
+// закрываются, как раньше.
 function finishLeaving(room: Room) {
   if (room.status === 'finished') return;
   const game = room.game!;
@@ -1804,9 +1824,51 @@ function finishLeaving(room: Room) {
     game.stage = 'room_done';
     game.closeReason = 'player_left';
     room.status = 'finished';
-  } else {
-    closeWithSplit(room, 'player_left');
+    return;
   }
+  const humans = room.players.filter((p) => !room.botIds?.includes(p.id)).length;
+  if (!room.vacancies?.length && canKeepPlaying(room.players.length, humans)) {
+    // Если шло «закончить игру» — его заменяет этот вопрос; ушёл ещё кто-то во время
+    // голосования — спрашиваем заново, уже про новый состав.
+    game.endVote = null;
+    game.shrinkVote = { leftName: game.lastLeave?.name ?? '', yes: [], startedAt: Date.now() };
+    console.log(`[ROOM ${room.id}] спрашиваем: играть дальше вчетвером+ (${room.players.length}) или закрыть`);
+    return;
+  }
+  game.shrinkVote = null;
+  closeWithSplit(room, 'player_left');
+}
+
+// Подвести голосование «играть без ушедшего» (§13c): все люди «продолжаем» — стол
+// становится меньше; 30 секунд без ответа — закрываем.
+function settleShrinkVote(room: Room) {
+  const game = room.game;
+  const vote = game?.shrinkVote;
+  if (!game || !vote || room.status === 'finished') return;
+  const humanIds = room.players.map((p) => p.id).filter((id) => !room.botIds?.includes(id));
+  const outcome = shrinkVoteOutcome(vote, humanIds, Date.now());
+  if (outcome === 'pending') return;
+  game.shrinkVote = null;
+  if (outcome === 'close') {
+    console.log(`[ROOM ${room.id}] не все ответили «продолжаем» — игра закончена`);
+    closeWithSplit(room, 'player_left');
+    return;
+  }
+  shrinkTable(room);
+}
+
+// Играем дальше меньшим столом: места заново 0…n−1 в том же порядке, колода, РАЗ, ДВА,
+// ИЗЖОГА и базовый кон — по новому числу игроков (§3, §6, §9). Новый игрок на место
+// ушедшего не садится — стол просто меньше.
+function shrinkTable(room: Room) {
+  const game = room.game!;
+  const from = room.capacity;
+  const seats = renumberSeats(room.players.map((p) => p.seat ?? 0));
+  room.players.forEach((p, i) => (p.seat = seats[i]));
+  room.players.sort((a, b) => (a.seat ?? 0) - (b.seat ?? 0));
+  room.capacity = room.players.length;
+  game.lastShrink = { from, to: room.capacity };
+  console.log(`[ROOM ${room.id}] все согласны — играем дальше: ${from} → ${room.capacity} игроков`);
 }
 
 // Пропал на 5 минут посреди раздачи: главный — сразу проигрыш (как сдался, §10.7),
@@ -1908,11 +1970,20 @@ setInterval(guarded('presence', sweepPresence), 1000);
 // Проверяем раз в секунду, иначе при раздающем-боте оно висело бы, пока кто-то не нажмёт.
 setInterval(guarded('end vote', () => {
   for (const room of rooms.values()) {
-    if (!room.game?.endVote) continue;
-    settleEndVote(room);
-    if (!room.game.endVote) {
-      persistRoom(room);
-      broadcastRoom(room.id).catch((e) => console.error(`[ROOM ${room.id}] broadcast failed:`, e));
+    if (room.game?.endVote) {
+      settleEndVote(room);
+      if (!room.game.endVote) {
+        persistRoom(room);
+        broadcastRoom(room.id).catch((e) => console.error(`[ROOM ${room.id}] broadcast failed:`, e));
+      }
+    }
+    // То же для «играть без ушедшего» (§13c): 30 секунд без ответа — закрываем.
+    if (room.game?.shrinkVote) {
+      settleShrinkVote(room);
+      if (!room.game.shrinkVote) {
+        persistRoom(room);
+        broadcastRoom(room.id).catch((e) => console.error(`[ROOM ${room.id}] broadcast failed:`, e));
+      }
     }
   }
 }), 1000);
@@ -1945,6 +2016,8 @@ app.use('/rooms/:id', (req, res, next) => {
   // Ждём только замену (все за столом на месте) — закончить игру по согласию можно.
   const onlyVacancy = absentIds(room).length === 0;
   if (req.method === 'POST' && req.path === '/end-game' && onlyVacancy) return next();
+  // «Играть без ушедшего» — отвечают и на паузе: молчание всё равно закроет игру (§13c).
+  if (req.method === 'POST' && req.path === '/shrink-vote') return next();
   if (req.method === 'POST' && !LOBBY_ACTIONS.includes(req.path) && isPaused(room)) {
     return res.status(409).json({ error: 'game paused', pause: publicPause(room) });
   }
@@ -2036,8 +2109,8 @@ function awaitedMoves(room: Room): { key: string; moves: TimedMove[] } | null {
     case 'dealer_found':
     case 'awaiting_deal':
     case 'round_done':
-      // Пока голосуют «закончить игру», раздавать нельзя — ждём итога (§12.3).
-      if (g.endVote) return null;
+      // Пока голосуют «закончить игру» или «играть без ушедшего», раздавать нельзя (§12.3, §13c).
+      if (g.endVote || g.shrinkVote) return null;
       return {
         key: `deal:${g.stage}:${g.dealerId}:${g.kon}:${g.emptyStreak}`,
         moves: [{ playerId: g.dealerId, path: 'dealer/continue', body: {} }],
@@ -2255,6 +2328,21 @@ function liveRating(room: Room, playerId: string): number {
   return ratingOf(r.skill, r.startDeals + statsOf(room, playerId).deals);
 }
 
+// Первая десятка общего рейтинга (09.10.2026): за столом и в лобби у таких игроков — «ТОП-N».
+// Таблица считается по всем аккаунтам, а publicRoom зовётся на каждую рассылку — поэтому
+// храним готовые места 30 секунд.
+const TOP_PLACES = 10;
+let topCache: { at: number; places: Map<string, number> } | null = null;
+function topPlaceOf(playerId: string): number | null {
+  const now = Date.now();
+  if (!topCache || now - topCache.at > 30_000) {
+    const places = new Map<string, number>();
+    ratedPlayers(db).slice(0, TOP_PLACES).forEach((p, i) => places.set(p.id, i + 1));
+    topCache = { at: now, places };
+  }
+  return topCache.places.get(playerId) ?? null;
+}
+
 // Рейтинг игрока вне стола — из базы.
 function accountRating(playerId: string): number {
   const account = getAccount(db, playerId);
@@ -2457,6 +2545,7 @@ function closeWithSplit(
   game.stage = 'room_done';
   game.closeReason = reason;
   game.endVote = null;
+  game.shrinkVote = null;
   markWinners(room);
   game.activeBidderId = null;
   game.turnPlayerId = null;
@@ -3157,11 +3246,27 @@ function publicRoom(room: Room, viewerId?: string) {
         viewerId !== undefined &&
         canProposeEnd({
           stage: room.game.stage,
-          voteActive: !!room.game.endVote,
+          voteActive: !!room.game.endVote || !!room.game.shrinkVote,
           proposedIds: room.game.endProposedIds ?? [],
           playerId: viewerId,
         }),
       lastEndVote: room.game.lastEndVote ?? null,
+      // Игрок ушёл — играть дальше без него или закрыть (§13c). Голосуют только люди.
+      shrinkVote: room.game.shrinkVote
+        ? {
+            leftName: room.game.shrinkVote.leftName,
+            players: room.players.length,
+            yesIds: room.game.shrinkVote.yes,
+            voterIds: room.players.map((p) => p.id).filter((id) => !room.botIds?.includes(id)),
+            secondsLeft: Math.max(
+              0,
+              Math.ceil((room.game.shrinkVote.startedAt + SHRINK_VOTE_MS - Date.now()) / 1000),
+            ),
+          }
+        : null,
+      myShrinkVote:
+        room.game.shrinkVote && viewerId && room.game.shrinkVote.yes.includes(viewerId) ? 'continue' : null,
+      lastShrink: room.game.lastShrink ?? null,
       // Время на ход (§13a): сколько секунд осталось тому, кого ждём; кого ждём.
       turnSecondsLeft: turnSecondsLeft(turnClockOf(room), Date.now(), turnMsOf(room)),
       // Сколько ещё идёт анимация раздачи (вскрытия на туза): открыл стол позже —
@@ -3216,6 +3321,8 @@ function publicRoom(room: Room, viewerId?: string) {
         ratingStart: shownRating(
           atTable ? ratingOf(atTable.startSkill, atTable.startDeals) : accountRating(p.id),
         ),
+        // Место в общем рейтинге, если игрок в первой десятке, иначе null.
+        top: topPlaceOf(p.id),
       };
     }),
     status: room.status,
@@ -3968,11 +4075,16 @@ app.post('/rooms/:id/dealer/continue', (req, res) => {
 
   // Идёт голосование «закончить игру» — раздавать нельзя, пока не решится (§12.3).
   settleEndVote(room);
+  settleShrinkVote(room);
   if (room.game.stage === 'room_done') {
     return res.status(409).json({ error: 'room finished', stage: room.game.stage });
   }
   if (room.game.endVote) {
     return res.status(409).json({ error: 'end vote in progress' });
+  }
+  // Игрок ушёл — пока не решили, играть ли без него, раздавать нельзя (§13c).
+  if (room.game.shrinkVote) {
+    return res.status(409).json({ error: 'shrink vote in progress' });
   }
 
   beginBidding(room);
@@ -4264,7 +4376,7 @@ app.post('/rooms/:id/end-game', (req, res) => {
     // Голосования нет — это предложение закончить.
     const allowed = canProposeEnd({
       stage: game.stage,
-      voteActive: false,
+      voteActive: !!game.shrinkVote,
       proposedIds: game.endProposedIds ?? [],
       playerId: id,
     });
@@ -4284,6 +4396,37 @@ app.post('/rooms/:id/end-game', (req, res) => {
   }
   settleEndVote(room);
 
+  return res.json(publicRoom(room, id));
+});
+
+// Игрок ушёл — ответ оставшихся (§13c): choice — continue | close. Одно «закрыть» —
+// игра заканчивается сразу; все люди «продолжаем» — играем меньшим столом.
+app.post('/rooms/:id/shrink-vote', (req, res) => {
+  const room = rooms.get(req.params.id);
+  if (!room || !room.game) {
+    return res.status(404).json({ error: 'room/game not found' });
+  }
+  const game = room.game;
+  const id = String(req.body?.playerId);
+  const choice = req.body?.choice;
+  if (!room.players.some((p) => p.id === id)) {
+    return res.status(403).json({ error: 'player is not in this room' });
+  }
+  if (choice !== 'continue' && choice !== 'close') {
+    return res.status(400).json({ error: 'choice must be continue or close' });
+  }
+  settleShrinkVote(room);
+  if (!game.shrinkVote) {
+    return res.status(409).json({ error: 'no shrink vote now' });
+  }
+  if (choice === 'close') {
+    game.shrinkVote = null;
+    console.log(`[ROOM ${room.id}] ${me(res).name} — закрыть: игра закончена`);
+    closeWithSplit(room, 'player_left');
+  } else {
+    if (!game.shrinkVote.yes.includes(id)) game.shrinkVote.yes.push(id);
+    settleShrinkVote(room);
+  }
   return res.json(publicRoom(room, id));
 });
 
