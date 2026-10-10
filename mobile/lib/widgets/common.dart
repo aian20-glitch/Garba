@@ -183,80 +183,123 @@ class HomeTile extends StatelessWidget {
 
 // Смайлики (RULES.md §14, с 25.09.2026 — в любой момент): кнопка у стола открывает набор,
 // выбранный смайлик всплывает на аватарке отправившего у всех за столом.
+// С 10.10.2026 фразы — отдельной кнопкой 💬 над смайликами; смайлики — всегда 6 в ряд,
+// фразы — 2 в ряд, чтобы на любом телефоне набор выглядел одинаково.
 class EmojiButton extends StatelessWidget {
   final void Function(String emoji) onSend;
 
   const EmojiButton({super.key, required this.onSend});
 
-  @override
-  Widget build(BuildContext context) {
-    return GestureDetector(
-      onTap: () => showModalBottomSheet<void>(
-        context: context,
-        backgroundColor: const Color(0xFF13232E),
-        isScrollControlled: true,
-        builder: (sheet) => SafeArea(
-          child: SingleChildScrollView(
-            padding: const EdgeInsets.fromLTRB(12, 16, 12, 12),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
+  static const _gold = Color(0xFFD4A94F);
+
+  void _open(BuildContext context, Widget Function(BuildContext sheet) body) {
+    showModalBottomSheet<void>(
+      context: context,
+      backgroundColor: const Color(0xFF13232E),
+      isScrollControlled: true,
+      builder: (sheet) => SafeArea(
+        child: SingleChildScrollView(
+          padding: const EdgeInsets.fromLTRB(12, 16, 12, 12),
+          child: body(sheet),
+        ),
+      ),
+    );
+  }
+
+  // Таблица: ровно [columns] в ряд, ячейки равной ширины.
+  static Widget _grid(int columns, double gap, List<Widget> items) {
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        for (var i = 0; i < items.length; i += columns)
+          Padding(
+            padding: EdgeInsets.only(top: i == 0 ? 0 : gap),
+            child: Row(
               children: [
-                Wrap(
-                  alignment: WrapAlignment.center,
-                  spacing: 6,
-                  runSpacing: 6,
-                  children: [
-                    for (final emoji in tableReactions)
-                      InkWell(
-                        borderRadius: BorderRadius.circular(28),
-                        onTap: () {
-                          Navigator.pop(sheet);
-                          onSend(emoji);
-                        },
-                        child: Padding(
-                          padding: const EdgeInsets.all(8),
-                          child: Text(emoji, style: const TextStyle(fontSize: 34)),
-                        ),
-                      ),
-                  ],
-                ),
-                const Divider(height: 24, color: Colors.white24),
-                // Готовые фразы (09.10.2026).
-                Wrap(
-                  alignment: WrapAlignment.center,
-                  spacing: 8,
-                  runSpacing: 8,
-                  children: [
-                    for (final phrase in tablePhrases)
-                      ActionChip(
-                        label: Text(phrase, style: const TextStyle(fontWeight: FontWeight.w700)),
-                        backgroundColor: const Color(0xFF1C3442),
-                        side: const BorderSide(color: Color(0xFFD4A94F)),
-                        shape: const StadiumBorder(),
-                        onPressed: () {
-                          Navigator.pop(sheet);
-                          onSend(phrase);
-                        },
-                      ),
-                  ],
-                ),
+                for (var j = i; j < i + columns; j++) ...[
+                  if (j > i) SizedBox(width: gap),
+                  Expanded(child: j < items.length ? items[j] : const SizedBox()),
+                ],
               ],
             ),
           ),
+      ],
+    );
+  }
+
+  void _openEmojis(BuildContext context) => _open(
+        context,
+        (sheet) => _grid(6, 4, [
+          for (final emoji in tableReactions)
+            InkWell(
+              borderRadius: BorderRadius.circular(24),
+              onTap: () {
+                Navigator.pop(sheet);
+                onSend(emoji);
+              },
+              child: Padding(
+                padding: const EdgeInsets.symmetric(vertical: 8),
+                child: Center(
+                  child: FittedBox(child: Text(emoji, style: const TextStyle(fontSize: 28))),
+                ),
+              ),
+            ),
+        ]),
+      );
+
+  void _openPhrases(BuildContext context) => _open(
+        context,
+        (sheet) => _grid(2, 8, [
+          for (final phrase in tablePhrases)
+            InkWell(
+              borderRadius: BorderRadius.circular(22),
+              onTap: () {
+                Navigator.pop(sheet);
+                onSend(phrase);
+              },
+              child: Container(
+                height: 44,
+                alignment: Alignment.center,
+                padding: const EdgeInsets.symmetric(horizontal: 10),
+                decoration: BoxDecoration(
+                  color: const Color(0xFF1C3442),
+                  borderRadius: BorderRadius.circular(22),
+                  border: Border.all(color: _gold),
+                ),
+                child: FittedBox(
+                  fit: BoxFit.scaleDown,
+                  child: Text(phrase, style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w700)),
+                ),
+              ),
+            ),
+        ]),
+      );
+
+  static Widget _circle(String icon, VoidCallback onTap) => GestureDetector(
+        onTap: onTap,
+        child: Container(
+          width: 46,
+          height: 46,
+          alignment: Alignment.center,
+          decoration: BoxDecoration(
+            shape: BoxShape.circle,
+            color: const Color(0xE60B1620),
+            border: Border.all(color: _gold, width: 1.5),
+            boxShadow: const [BoxShadow(color: Colors.black45, blurRadius: 8)],
+          ),
+          child: Text(icon, style: const TextStyle(fontSize: 22)),
         ),
-      ),
-      child: Container(
-        width: 46,
-        height: 46,
-        alignment: Alignment.center,
-        decoration: BoxDecoration(
-          shape: BoxShape.circle,
-          color: const Color(0xE60B1620),
-          border: Border.all(color: const Color(0xFFD4A94F), width: 1.5),
-          boxShadow: const [BoxShadow(color: Colors.black45, blurRadius: 8)],
-        ),
-        child: const Text('😊', style: TextStyle(fontSize: 24)),
-      ),
+      );
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        _circle('💬', () => _openPhrases(context)),
+        const SizedBox(height: 8),
+        _circle('😊', () => _openEmojis(context)),
+      ],
     );
   }
 }

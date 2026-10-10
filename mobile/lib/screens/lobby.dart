@@ -304,13 +304,16 @@ class _LobbyScreenState extends State<LobbyScreen> {
                       style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w900),
                     ),
                     if (ready == null)
-                      Row(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          if (id == creatorId)
-                            const Text('Создатель · ', style: TextStyle(fontSize: 10, color: gold)),
-                          RatingText(p['rating'], fontSize: 10),
-                        ],
+                      FittedBox(
+                        fit: BoxFit.scaleDown,
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            if (id == creatorId)
+                              const Text('Создатель · ', style: TextStyle(fontSize: 10, color: gold)),
+                            RatingText(p['rating'], fontSize: 10),
+                          ],
+                        ),
                       )
                     else
                       Text(
