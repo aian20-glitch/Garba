@@ -575,7 +575,8 @@ pause: null | { players: [{ id, name, secondsLeft }] }   — на уровне �
 `version` на уровне комнаты растёт с каждым `persistRoom` — приложение отбрасывает состояние
 старее показанного (`isStaleRoom` в `core.dart`). Закрытые комнаты выгружаются из памяти через
 30 минут (дальше `GET /rooms/:id` — 404, итоги в базе).
-5 минут — **общий запас на всю игру** и на `offline`, и на `away` (`absenceStep` в `presence.ts`):
+5 минут — **общий запас на всю игру** и на `offline`, и на `away` (`absenceStep` в `presence.ts`;
+с 10.10.2026 отлучка короче 30 с — `FREE_ABSENCE_MS` — запас не тратит, в журнале `socket closed: имя (причина)`):
 потрачено — `game.absenceUsedMs` (в базе), текущий отрезок — в памяти; `pause.players[].secondsLeft`
 — остаток запаса.
 

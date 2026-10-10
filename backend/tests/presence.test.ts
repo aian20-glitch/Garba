@@ -118,6 +118,28 @@ check('у Даны свой нетронутый запас', a.msLeft.Дана,
 const b = absenceStep(seats, ['Дана'], {}, { Дана: 5 * MIN }, 0, 5 * MIN);
 check('запас кончился раньше — следующий уход сразу закрывает', b.expired, ['Дана']);
 
+section('короткая отлучка запас не тратит (10.10.2026)');
+{
+  // Комната 53859, Maga: запас 1 минута, свернул Telegram 6 раз — 9, 4, 29, 2, 12 и 4 секунды.
+  // Раньше на шестой раз игра закрылась. Теперь ни одна из отлучек не короче 30 с не считается.
+  let m = absenceStep(['Maga'], [], {}, {}, 0, MIN);
+  let t = 0;
+  for (const sec of [9, 4, 29, 2, 12, 4]) {
+    t += 60_000;
+    m = absenceStep(['Maga'], ['Maga'], m.since, m.usedMs, t, MIN);
+    m = absenceStep(['Maga'], ['Maga'], m.since, m.usedMs, t + sec * 1000, MIN);
+    check(`отлучка ${sec} с — игра не закрыта`, m.expired, []);
+    m = absenceStep(['Maga'], [], m.since, m.usedMs, t + sec * 1000, MIN);
+  }
+  check('шесть коротких отлучек — запас целый', m.msLeft.Maga, MIN);
+  m = absenceStep(['Maga'], ['Maga'], m.since, m.usedMs, 1_000_000, MIN);
+  m = absenceStep(['Maga'], [], m.since, m.usedMs, 1_040_000, MIN);
+  check('отлучка 40 с — списана целиком', m.msLeft.Maga, 20_000);
+  m = absenceStep(['Maga'], ['Maga'], m.since, m.usedMs, 2_000_000, MIN);
+  m = absenceStep(['Maga'], ['Maga'], m.since, m.usedMs, 2_020_000, MIN);
+  check('осталось 20 с — 20 с отлучки закрывают игру', m.expired, ['Maga']);
+}
+
 section('запас на отлучку выбирает создатель: 1…5 минут (08.10.2026)');
 check('3 минуты', absenceMsFor(3), 180_000);
 check('1 минута', absenceMsFor(1), 60_000);

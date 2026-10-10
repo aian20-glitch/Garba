@@ -90,6 +90,11 @@ export function secondsLeft(disconnectedAt: number, now: number, timeoutMs: numb
 //   absentIds — кто сейчас отсутствует (нет связи или «ушёл»);
 //   since — с какого момента идёт текущее отсутствие (живёт в памяти);
 //   usedMs — сколько запаса уже потрачено за игру (хранится в комнате).
+// Короткая отлучка запас не тратит (решение владельца, 10.10.2026): свернул Telegram,
+// ответил в чат и вернулся быстрее чем за 30 секунд — игра просто постояла на паузе.
+// Иначе 3–5 таких сворачиваний съедали минуту запаса, и игру закрывало у всех.
+export const FREE_ABSENCE_MS = 30_000;
+
 export type AbsenceStep = {
   since: Record<string, number>;
   usedMs: Record<string, number>;
@@ -104,6 +109,7 @@ export function absenceStep(
   usedMs: Record<string, number>,
   now: number,
   budgetMs: number,
+  freeMs = FREE_ABSENCE_MS,
 ): AbsenceStep {
   const nextSince = { ...since };
   const nextUsed = { ...usedMs };
@@ -114,8 +120,9 @@ export function absenceStep(
   for (const id of playerIds) {
     if (absent.has(id) && nextSince[id] === undefined) nextSince[id] = now;
     if (!absent.has(id) && nextSince[id] !== undefined) {
-      // Вернулся — отсутствие списывается с запаса.
-      nextUsed[id] = (nextUsed[id] ?? 0) + (now - nextSince[id]);
+      // Вернулся — отсутствие списывается с запаса, если оно было не короткое.
+      const away = now - nextSince[id];
+      if (away >= freeMs) nextUsed[id] = (nextUsed[id] ?? 0) + away;
       delete nextSince[id];
     }
     const current = nextSince[id] !== undefined ? now - nextSince[id] : 0;

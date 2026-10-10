@@ -369,7 +369,7 @@ type GameState = {
   // Кто-то опустился ниже базового кона — доигрываем, пока кон не заберут (§12.1).
   closing: boolean;
   // Почему закрылась комната: кон забрали (§12.1), кон никто не может взять
-  // и его поделили поровну (§12.2) или игрок отключился и не вернулся за 5 минут (§13).
+  // и его поделили поровну (§12.2) или игрок отключился и не вернулся (кончился запас на отлучку) (§13).
   // seat_empty — место пустовало 10 минут, никто не сел (24.09.2026).
   closeReason: 'kon_taken' | 'nobody_can_play' | 'player_left' | 'agreed_end' | 'seat_empty' | null;
   // Пропали на 5 минут посреди раздачи: за них доигрывает таймер, после раздачи —
@@ -389,7 +389,7 @@ type GameState = {
   shrinkVote?: ShrinkVote | null;
   // Последний раз стол стал меньше — с какого на какое число игроков (для надписи на столе).
   lastShrink?: { from: number; to: number } | null;
-  // Кто не вернулся за 5 минут — ему доля кона не положена (§13).
+  // Кто не вернулся (кончился запас на отлучку) — ему доля кона не положена (§13).
   leftPlayerIds?: string[];
   // Победитель комнаты (ТЗ §36): лучший итог по монетам; при ничьей — несколько.
   winnerIds?: string[];
@@ -487,12 +487,20 @@ app.use(express.json());
 // одним адресом. Свой компьютер (боты, проверки, ходы по таймеру) — без лимита.
 const REQUEST_LIMIT = [{ max: Number(process.env.GARBA_REQS_PER_10S ?? 200), windowMs: 10_000 }];
 const requestsByIp = new Map<string, number[]>();
+let limitLoggedAt = 0;
 app.use((req, res, next) => {
   const ip = req.ip ?? 'unknown';
   if (['127.0.0.1', '::1', '::ffff:127.0.0.1'].includes(ip)) return next();
   const check = rateCheck(requestsByIp.get(ip) ?? [], Date.now(), REQUEST_LIMIT);
   requestsByIp.set(ip, check.times);
-  if (!check.allowed) return res.status(429).json({ error: 'too many requests, slow down' });
+  if (!check.allowed) {
+    // Адрес не пишем (политика конфиденциальности) — только сам факт и путь, не чаще раза в 10 с.
+    if (Date.now() - limitLoggedAt > 10_000) {
+      limitLoggedAt = Date.now();
+      console.warn(`[LIMIT] too many requests: ${req.method} ${req.path}`);
+    }
+    return res.status(429).json({ error: 'too many requests, slow down' });
+  }
   next();
 });
 // Старые адреса забываем — иначе карта росла бы вечно.
@@ -1597,10 +1605,19 @@ const WATCH_LIMIT = [{ max: 10, windowMs: 10_000 }];
 io.on('connection', (socket) => {
   const ip = socketIp(socket.request);
   socketsByIp.set(ip, (socketsByIp.get(ip) ?? 0) + 1);
-  socket.on('disconnect', () => {
+  socket.on('disconnect', (reason) => {
     const left = (socketsByIp.get(ip) ?? 1) - 1;
     if (left > 0) socketsByIp.set(ip, left);
     else socketsByIp.delete(ip);
+    // Почему рвётся связь посреди игры (10.10.2026): «transport close» / «ping timeout» —
+    // телефон свернул игру или пропала сеть; «client namespace disconnect» — сменился экран.
+    const playerId = socket.data.playerId;
+    if (typeof playerId !== 'string') return;
+    for (const room of rooms.values()) {
+      if (room.status !== 'started' || !room.players.some((p) => p.id === playerId)) continue;
+      const name = room.players.find((p) => p.id === playerId)?.name;
+      console.log(`[ROOM ${room.id}] socket closed: ${name} (${reason})`);
+    }
   });
 
   socket.on('watch', (payload: { roomId?: unknown; token?: unknown }) => {
@@ -1812,7 +1829,7 @@ function vacateSeat(room: Room, playerId: string, reason: 'left' | 'gone', close
   absentSince.set(room.id, drop(absentSince.get(room.id)) ?? {});
 
   console.log(
-    `[ROOM ${room.id}] ${player.name} ${reason === 'left' ? 'вышел из игры' : 'не вернулся за 5 минут'} — ` +
+    `[ROOM ${room.id}] ${player.name} ${reason === 'left' ? 'вышел из игры' : 'не вернулся (кончился запас на отлучку)'} — ` +
       `кон ${game.lastLeave.kon} разделён: по ${perPlayer}`,
   );
   if (close) finishLeaving(room);
@@ -1883,7 +1900,7 @@ function markGone(room: Room, playerId: string) {
   if (game.goneIds?.includes(playerId)) return;
   game.goneIds = [...(game.goneIds ?? []), playerId];
   const name = room.players.find((p) => p.id === playerId)?.name;
-  console.log(`[ROOM ${room.id}] ${name} не вернулся за 5 минут — доигрываем раздачу за него`);
+  console.log(`[ROOM ${room.id}] ${name} не вернулся (кончился запас на отлучку) — доигрываем раздачу за него`);
   if (concedeAllowed(game, playerId)) concede(room, playerId);
 }
 
