@@ -23,7 +23,27 @@ export type TelegramLaunch = {
   user: TelegramUser;
   authDate: number;
   startParam: string | null;
+  // Ссылка на аватарку из профиля Telegram (10.10.2026) или null — фото нет или скрыто.
+  photoUrl: string | null;
 };
+
+// Аватарка из Telegram (10.10.2026, решение владельца): само фото мы не скачиваем и не храним,
+// только ссылку — картинку телефон берёт прямо у Telegram. Пускаем лишь ссылки вида
+// https://t.me/i/userpic/..., чтобы через подписанные данные нельзя было подсунуть чужой адрес.
+export function telegramPhotoUrl(raw: unknown): string | null {
+  if (typeof raw !== 'string' || raw.length > 512) return null;
+  let url: URL;
+  try {
+    url = new URL(raw);
+  } catch {
+    return null;
+  }
+  if (url.protocol !== 'https:' || url.hostname !== 't.me' || url.port || url.username || url.password) {
+    return null;
+  }
+  if (!/^\/i\/userpic\/\d+\/[A-Za-z0-9_\-.]+$/.test(url.pathname)) return null;
+  return `https://t.me${url.pathname}`;
+}
 
 export function initDataHash(fields: Map<string, string>, botToken: string): string {
   const checkString = [...fields.entries()]
@@ -74,6 +94,7 @@ export function verifyInitData(
     },
     authDate,
     startParam: fields.get('start_param') || null,
+    photoUrl: telegramPhotoUrl(raw.photo_url),
   };
 }
 

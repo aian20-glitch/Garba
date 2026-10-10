@@ -1,7 +1,7 @@
 // Проверки telegram.ts. Запуск всех проверок: npm test
 
 import { check, section } from './check.js';
-import { initDataHash, parseStartParam, suggestedName, verifyInitData } from '../src/telegram.js';
+import { initDataHash, parseStartParam, suggestedName, telegramPhotoUrl, verifyInitData } from '../src/telegram.js';
 
 const TOKEN = '123456:TEST-token';
 const NOW = 1_800_000_000;
@@ -42,3 +42,20 @@ check('комната', parseStartParam('room_12345'), { kind: 'room', value: '1
 check('приглашение', parseStartParam('invite_ab12cd'), { kind: 'invite', value: 'AB12CD' });
 check('мусор — нет', parseStartParam('room_12/../leave'), null);
 check('не строка — нет', parseStartParam(5), null);
+
+section('telegram: аватарка из профиля (10.10.2026)');
+{
+  const pic = 'https://t.me/i/userpic/320/abc_DEF-1.jpg';
+  const withPhoto = JSON.stringify({ id: 4242, first_name: 'Серик', photo_url: pic });
+  const launch = verifyInitData(signed({ auth_date: String(NOW), user: withPhoto }), TOKEN, NOW);
+  check('ссылка на фото из данных запуска', launch?.photoUrl, pic);
+  const noPhoto = verifyInitData(signed({ auth_date: String(NOW), user }), TOKEN, NOW);
+  check('фото скрыто — null', noPhoto?.photoUrl, null);
+}
+check('чужой сайт — нет', telegramPhotoUrl('https://evil.com/i/userpic/320/a.jpg'), null);
+check('похожий домен — нет', telegramPhotoUrl('https://t.me.evil.com/i/userpic/320/a.jpg'), null);
+check('http — нет', telegramPhotoUrl('http://t.me/i/userpic/320/a.jpg'), null);
+check('не userpic — нет', telegramPhotoUrl('https://t.me/some/other'), null);
+check('с логином в адресе — нет', telegramPhotoUrl('https://x@t.me/i/userpic/320/a.jpg'), null);
+check('хвост ?… отрезаем', telegramPhotoUrl('https://t.me/i/userpic/320/a.jpg?x=1'), 'https://t.me/i/userpic/320/a.jpg');
+check('не строка — нет', telegramPhotoUrl(5), null);

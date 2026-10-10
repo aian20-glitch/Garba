@@ -114,6 +114,8 @@ function migrateAccounts(db: DatabaseSync) {
   add('is_bot', 'INTEGER NOT NULL DEFAULT 0');
   // Аккаунт Telegram (игра как Mini App, 07.10.2026): id пользователя Telegram.
   add('telegram_id', 'INTEGER');
+  // Ссылка на аватарку из Telegram (10.10.2026) — не само фото. Обновляется при каждом входе.
+  add('telegram_photo', 'TEXT');
   // Бонус за приглашение платится после 3 комнат друга (19.09.2026). Кого пригласили
   // раньше, тем уже заплатили сразу при регистрации — помечаем оплаченными.
   if (!columns.has('referral_paid')) {
@@ -297,7 +299,7 @@ export function recoverAccount(
     // Восстановление выкидывает и все входы через Telegram — на случай, если телефон украли
     // вместе с Telegram: иначе вор снова вошёл бы через него. Привязать заново — кодом.
     db.prepare('DELETE FROM account_tokens WHERE account_id = ?').run(account.id);
-    db.prepare('UPDATE accounts SET telegram_id = NULL WHERE id = ?').run(account.id);
+    db.prepare('UPDATE accounts SET telegram_id = NULL, telegram_photo = NULL WHERE id = ?').run(account.id);
   });
   return { account, token, recoveryCode };
 }
@@ -331,12 +333,36 @@ export function telegramIdOf(db: DatabaseSync, accountId: string): number | null
   return row?.telegram_id ?? null;
 }
 
-// Привязать Telegram к аккаунту. Был привязан к другому — переезжает сюда.
-export function linkTelegram(db: DatabaseSync, accountId: string, telegramId: number) {
+// Привязать Telegram к аккаунту. Был привязан к другому — переезжает сюда (вместе с аватаркой).
+export function linkTelegram(
+  db: DatabaseSync,
+  accountId: string,
+  telegramId: number,
+  photoUrl: string | null = null,
+) {
   transaction(db, () => {
-    db.prepare('UPDATE accounts SET telegram_id = NULL WHERE telegram_id = ? AND id <> ?').run(telegramId, accountId);
-    db.prepare('UPDATE accounts SET telegram_id = ? WHERE id = ?').run(telegramId, accountId);
+    db.prepare(
+      'UPDATE accounts SET telegram_id = NULL, telegram_photo = NULL WHERE telegram_id = ? AND id <> ?',
+    ).run(telegramId, accountId);
+    db.prepare('UPDATE accounts SET telegram_id = ?, telegram_photo = ? WHERE id = ?').run(
+      telegramId,
+      photoUrl,
+      accountId,
+    );
   });
+}
+
+// Аватарка из Telegram: при каждом входе — свежая ссылка (сменил фото — сменится и у нас,
+// скрыл — пропадёт).
+export function setTelegramPhoto(db: DatabaseSync, accountId: string, photoUrl: string | null) {
+  db.prepare('UPDATE accounts SET telegram_photo = ? WHERE id = ?').run(photoUrl, accountId);
+}
+
+export function telegramPhotoOf(db: DatabaseSync, accountId: string): string | null {
+  const row = db.prepare('SELECT telegram_photo FROM accounts WHERE id = ?').get(accountId) as
+    | { telegram_photo: string | null }
+    | undefined;
+  return row?.telegram_photo ?? null;
 }
 
 // Новый дополнительный токен входа; лишние старые удаляются.

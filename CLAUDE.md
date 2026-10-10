@@ -465,6 +465,11 @@ GET  /i/:code                    страница-приглашение дру�
 `avatar` у всех `null`, `PUT /me/avatar` — 403 `avatars disabled`. В приложении выбор фото и пакет
 `image_picker` убраны (и доступ к галерее в Info.plist). Включить — `GARBA_AVATARS=1` на сервере и
 вернуть `pickAndUploadAvatar` из git (коммит «Убрать выбор фото»).
+**Аватарка из Telegram (10.10.2026, решение владельца):** при входе через Telegram сервер берёт
+`photo_url` из initData (только `https://t.me/i/userpic/...`, `telegramPhotoUrl` в `telegram.ts`) и
+хранит **только ссылку** — `accounts.telegram_photo`, обновляется при каждом входе (скрыл фото — null).
+`avatarOf` отдаёт её полной ссылкой, когда своих фото нет. Приложение (`AvatarView`) берёт картинку
+прямо у Telegram; в вебе t.me отвечает переадресацией без CORS — поэтому `WebHtmlElementStrategy.fallback`.
 Журнала запросов в Caddy нет — IP игроков не записываются. Поле `avatar` — адрес вида `/avatars/<id>?v=<время>` или `null`;
 есть в `/me`, `/me/profile`, `/players/:code`, `/friends` и у каждого игрока в
 `players[]` комнаты. Клиент добавляет к нему `apiBase`. 
