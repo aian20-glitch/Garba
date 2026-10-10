@@ -94,10 +94,14 @@ export function secondsLeft(disconnectedAt: number, now: number, timeoutMs: numb
 // ответил в чат и вернулся быстрее чем за 30 секунд — игра просто постояла на паузе.
 // Иначе 3–5 таких сворачиваний съедали минуту запаса, и игру закрывало у всех.
 export const FREE_ABSENCE_MS = 30_000;
+// Но бесплатных коротких отлучек — не больше 5 минут за игру на игрока: иначе можно выходить
+// на 29 секунд снова и снова и держать стол на паузе бесконечно. Сверх — списываются как обычно.
+export const FREE_ABSENCE_TOTAL_MS = 5 * 60_000;
 
 export type AbsenceStep = {
   since: Record<string, number>;
   usedMs: Record<string, number>;
+  freeUsedMs: Record<string, number>; // сколько бесплатных коротких отлучек уже было (хранится в комнате)
   expired: string[];
   msLeft: Record<string, number>;
 };
@@ -109,10 +113,13 @@ export function absenceStep(
   usedMs: Record<string, number>,
   now: number,
   budgetMs: number,
+  freeUsedMs: Record<string, number> = {},
   freeMs = FREE_ABSENCE_MS,
+  freeTotalMs = FREE_ABSENCE_TOTAL_MS,
 ): AbsenceStep {
   const nextSince = { ...since };
   const nextUsed = { ...usedMs };
+  const nextFree = { ...freeUsedMs };
   const expired: string[] = [];
   const msLeft: Record<string, number> = {};
   const absent = new Set(absentIds);
@@ -122,7 +129,9 @@ export function absenceStep(
     if (!absent.has(id) && nextSince[id] !== undefined) {
       // Вернулся — отсутствие списывается с запаса, если оно было не короткое.
       const away = now - nextSince[id];
-      if (away >= freeMs) nextUsed[id] = (nextUsed[id] ?? 0) + away;
+      const free = nextFree[id] ?? 0;
+      if (away < freeMs && free + away <= freeTotalMs) nextFree[id] = free + away;
+      else nextUsed[id] = (nextUsed[id] ?? 0) + away;
       delete nextSince[id];
     }
     const current = nextSince[id] !== undefined ? now - nextSince[id] : 0;
@@ -130,5 +139,5 @@ export function absenceStep(
     if (absent.has(id) && msLeft[id] <= 0) expired.push(id);
   }
 
-  return { since: nextSince, usedMs: nextUsed, expired, msLeft };
+  return { since: nextSince, usedMs: nextUsed, freeUsedMs: nextFree, expired, msLeft };
 }

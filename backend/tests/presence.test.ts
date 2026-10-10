@@ -138,6 +138,19 @@ section('короткая отлучка запас не тратит (10.10.202
   m = absenceStep(['Maga'], ['Maga'], m.since, m.usedMs, 2_000_000, MIN);
   m = absenceStep(['Maga'], ['Maga'], m.since, m.usedMs, 2_020_000, MIN);
   check('осталось 20 с — 20 с отлучки закрывают игру', m.expired, ['Maga']);
+
+  // Хитрец выходит на 29 секунд снова и снова: бесплатно — только 5 минут за игру.
+  let g = absenceStep(['Хитрец'], [], {}, {}, 0, MIN);
+  for (let i = 0; i < 11; i++) {
+    const t0 = 10_000_000 + i * 100_000;
+    g = absenceStep(['Хитрец'], ['Хитрец'], g.since, g.usedMs, t0, MIN, g.freeUsedMs);
+    g = absenceStep(['Хитрец'], [], g.since, g.usedMs, t0 + 29_000, MIN, g.freeUsedMs);
+  }
+  check('10 раз по 29 с — бесплатно (4:50 из 5 минут)', g.freeUsedMs.Хитрец, 290_000);
+  check('11-й раз — уже из запаса', g.msLeft.Хитрец, 31_000);
+  g = absenceStep(['Хитрец'], ['Хитрец'], g.since, g.usedMs, 20_000_000, MIN, g.freeUsedMs);
+  g = absenceStep(['Хитрец'], ['Хитрец'], g.since, g.usedMs, 20_031_000, MIN, g.freeUsedMs);
+  check('12-й раз — запас кончился, игра закрывается', g.expired, ['Хитрец']);
 }
 
 section('запас на отлучку выбирает создатель: 1…5 минут (08.10.2026)');

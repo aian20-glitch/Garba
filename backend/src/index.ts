@@ -366,6 +366,7 @@ type GameState = {
   awayAt?: Record<string, number>;
   // Запас 5 минут на отсутствие — на всю игру (§13, §13a): сколько уже потрачено.
   absenceUsedMs?: Record<string, number>;
+  absenceFreeMs?: Record<string, number>; // бесплатные короткие отлучки за игру (10.10.2026)
   // Кто-то опустился ниже базового кона — доигрываем, пока кон не заберут (§12.1).
   closing: boolean;
   // Почему закрылась комната: кон забрали (§12.1), кон никто не может взять
@@ -1748,6 +1749,7 @@ function absenceOf(room: Room, now: number) {
     room.game?.absenceUsedMs ?? {},
     now,
     absenceMsOf(room),
+    room.game?.absenceFreeMs ?? {},
   );
 }
 
@@ -1823,6 +1825,7 @@ function vacateSeat(room: Room, playerId: string, reason: 'left' | 'gone', close
   game.awayAt = drop(game.awayAt);
   game.missedTurns = drop(game.missedTurns);
   game.absenceUsedMs = drop(game.absenceUsedMs);
+  game.absenceFreeMs = drop(game.absenceFreeMs);
   game.goneIds = (game.goneIds ?? []).filter((id) => id !== playerId);
   const pres = presence.get(room.id);
   if (pres) presence.set(room.id, { lastSeen: drop(pres.lastSeen)!, disconnectedAt: drop(pres.disconnectedAt)! });
@@ -1946,8 +1949,10 @@ function sweepPresence() {
     const absence = absenceOf(room, now);
     absentSince.set(room.id, absence.since);
     const usedChanged =
-      JSON.stringify(absence.usedMs) !== JSON.stringify(room.game!.absenceUsedMs ?? {});
+      JSON.stringify(absence.usedMs) !== JSON.stringify(room.game!.absenceUsedMs ?? {}) ||
+      JSON.stringify(absence.freeUsedMs) !== JSON.stringify(room.game!.absenceFreeMs ?? {});
     room.game!.absenceUsedMs = absence.usedMs;
+    room.game!.absenceFreeMs = absence.freeUsedMs;
     const expired = absence.expired;
 
     // Пропавшие посреди раздачи: раздача сыграна — освобождаем места.
