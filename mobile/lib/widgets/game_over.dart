@@ -1,14 +1,24 @@
 // Окно итога всей игры: кто сколько выиграл и как изменился рейтинг (09.10.2026).
 part of '../main.dart';
 
-// Строка итога: монеты за игру и рейтинг до и после.
+// Строка итога: монеты за игру и рейтинг до и после; left — ушёл посреди игры.
 typedef GameOverLine = ({
   String id,
   String name,
   int diff,
   double ratingStart,
   double ratingEnd,
+  bool left,
 });
+
+// Все, кто играл в этой комнате: кто за столом и кто ушёл посреди игры (сервер помнит
+// его итог на момент ухода — departedPlayers, 11.10.2026). У ушедших — left: true.
+List<Map<String, dynamic>> playersForResults(Map<String, dynamic> room) => [
+      for (final p in (room['players'] as List?) ?? const [])
+        Map<String, dynamic>.from(p as Map),
+      for (final p in (room['departedPlayers'] as List?) ?? const [])
+        {...Map<String, dynamic>.from(p as Map), 'left': true},
+    ];
 
 // Всплывает поверх стола, когда комната закрылась. Строки — от большего выигрыша
 // к меньшему. Лучшего (§36) называет сервер в winnerIds — его строка золотая, с кубком.
@@ -94,6 +104,16 @@ class GameOverPopup extends StatelessWidget {
                     color: isWinner ? gold : Colors.white,
                   ),
                 ),
+                if (r.left)
+                  const Text(
+                    'ВЫШЕЛ ИЗ ИГРЫ',
+                    style: TextStyle(
+                      fontSize: 10,
+                      letterSpacing: 1,
+                      fontWeight: FontWeight.w900,
+                      color: Colors.white54,
+                    ),
+                  ),
                 if (isWinner)
                   const Text(
                     'ВЫИГРАЛ БОЛЬШЕ ВСЕХ',

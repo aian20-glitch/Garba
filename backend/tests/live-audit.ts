@@ -161,6 +161,13 @@ async function shrinkTable() {
   await request('POST', `/rooms/${second.roomId}/shrink-vote`, second.players[2].token, { choice: 'close' });
   state = (await request('GET', `/rooms/${second.roomId}`, second.players[0].token)).body;
   check('комната закрыта, кон поделён', [state.status, state.game.closeReason], ['finished', 'player_left']);
+  const gone = second.players[1];
+  check('в итогах игры ушедший тоже есть — все пятеро (11.10.2026)',
+    [state.players.length + state.departedPlayers.length,
+      state.departedPlayers.map((d: any) => [d.id, d.name, typeof d.startBalance, typeof d.balance, typeof d.rating])],
+    [5, [[gone.id, gone.name, 'number', 'number', 'number']]]);
+  check('ушедшему — штраф к рейтингу (§16.3a)',
+    state.departedPlayers[0].rating < state.departedPlayers[0].ratingStart, true);
   check('ушедший голосовать не может — 403',
     (await request('POST', `/rooms/${second.roomId}/shrink-vote`, second.players[1].token, { choice: 'continue' })).status, 403);
 }

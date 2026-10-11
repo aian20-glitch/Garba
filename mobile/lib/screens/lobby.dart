@@ -260,13 +260,6 @@ class _LobbyScreenState extends State<LobbyScreen> {
                   clipBehavior: Clip.none,
                   children: [
                     AvatarView(avatar: p['avatar']?.toString(), name: p['name'].toString(), radius: 21),
-                    if (topPlace(p) case final place?)
-                      Positioned(
-                        left: -30,
-                        right: -30,
-                        bottom: -8,
-                        child: Center(child: TopBadge(place, fontSize: 8)),
-                      ),
                     if (flyingEmoji[id] case final emoji? when !tablePhrases.contains(emoji))
                       Positioned(
                         left: -5,
@@ -301,7 +294,8 @@ class _LobbyScreenState extends State<LobbyScreen> {
                       p['name'].toString(),
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w900),
+                      // Имя цветом уровня рейтинга (11.10.2026).
+                      style: TextStyle(fontSize: 12, fontWeight: FontWeight.w900, color: ratingColor(p['rating'])),
                     ),
                     if (ready == null)
                       FittedBox(
@@ -614,8 +608,8 @@ class _LobbyScreenState extends State<LobbyScreen> {
                   ),
                 );
               }),
-            // «В этой игре ТОП-3 — Аян» — кто за столом из первой десятки (09.10.2026).
-            if (topPlayersBanner(players) case final banner?) ...[
+            // «За столом один игрок фиолетового уровня» (11.10.2026, вместо «ТОП-N»).
+            if (levelsBanner(players) case final banner?) ...[
               const SizedBox(height: 6),
               banner,
             ],

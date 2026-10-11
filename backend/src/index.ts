@@ -293,6 +293,17 @@ type AnteRecord = {
 // Завершённая взятка: какие карты легли и кто её забрал.
 type PlayedTrick = { cards: TrickCard[]; winnerId: string; winnerName: string };
 
+// Ушёл из игры посреди комнаты: с чем сел, с чем ушёл, рейтинг до и после (со штрафом).
+type DepartedPlayer = {
+  id: string;
+  name: string;
+  startBalance: number;
+  balance: number;
+  ratingStart: number;
+  rating: number;
+  bot: boolean;
+};
+
 type GameState = {
   stage: Stage;
   dealerId: string;
@@ -429,6 +440,8 @@ type Room = {
   vacancies?: (Vacancy & { wasDealer: boolean })[];
   // Кто ушёл из этой комнаты посреди игры — комната для него не «доиграна».
   departedIds?: string[];
+  // Итог ушедших на момент ухода (11.10.2026): в «ИТОГАХ ИГРЫ» видны все, кто играл.
+  departed?: DepartedPlayer[];
   // Лобби набралось — ждём «ГОТОВ» от всех (решение владельца, 23.09.2026).
   readyCheck?: ReadyCheck | null;
   // Кто вышел, не нажав «ГОТОВ» в прошлый раз, — чтобы его телефон сказал почему.
@@ -1812,6 +1825,20 @@ function vacateSeat(room: Room, playerId: string, reason: 'left' | 'gone', close
     setBalance(db, playerId, player.balance + (player.reserve ?? 0));
     setSkill(db, playerId, r.skill);
   }
+  // Для «ИТОГОВ ИГРЫ»: ушедший тоже играл — его строка остаётся (11.10.2026).
+  // На тренировке рейтинг не меняется — как и у сидящих, показываем тот, что в аккаунте.
+  room.departed = [
+    ...(room.departed ?? []).filter((d) => d.id !== playerId),
+    {
+      id: playerId,
+      name: player.name,
+      startBalance: player.startBalance,
+      balance: player.balance,
+      ratingStart: shownRating(room.practice ? accountRating(playerId) : ratingOf(r.startSkill, r.startDeals)),
+      rating: shownRating(room.practice ? accountRating(playerId) : liveRating(room, playerId)),
+      bot: room.botIds?.includes(playerId) ?? false,
+    },
+  ];
   // Вернётся за этот стол — рейтинг возьмём из аккаунта заново: он мог сыграть где-то ещё.
   delete room.rating?.[playerId];
   room.departedIds = [...(room.departedIds ?? []).filter((id) => id !== playerId), playerId];
@@ -3362,6 +3389,8 @@ function publicRoom(room: Room, viewerId?: string) {
     reactions: reactionsFor(room, viewerId),
     // Статистика игроков за комнату (ТЗ §35) — для экрана «ИТОГИ ИГРЫ».
     stats: room.stats ?? null,
+    // Кто ушёл посреди игры — в итогах тоже, с пометкой «вышел» (11.10.2026).
+    departedPlayers: room.departed ?? [],
     // Мои монеты вне стола (09.10.2026) — только смотрящему; всего = на столе + это.
     myReserve: room.players.find((p) => p.id === viewerId)?.reserve ?? null,
     createdAt: room.createdAt,
@@ -3573,6 +3602,7 @@ function joinRoom(
     const vacancy = room.vacancies!.find((v) => v.seat === seat)!;
     room.vacancies = room.vacancies!.filter((v) => v.seat !== seat);
     room.departedIds = (room.departedIds ?? []).filter((id) => id !== account.id);
+    room.departed = (room.departed ?? []).filter((d) => d.id !== account.id);
     room.stats ??= {};
     room.stats[account.id] ??= emptyStats();
     ratingState(room, account.id);

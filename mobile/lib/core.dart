@@ -554,13 +554,40 @@ Color ratingColor(Object? value) {
   return const Color(0xFF9E9E9E); // серый — ниже старта
 }
 
-// Место в общем рейтинге: сервер отдаёт `top` (1…10) только первой десятке.
-int? topPlace(Map p) => (p['top'] as num?)?.toInt();
-
-// Цвет метки «ТОП-N»: первое место — золото, второе — серебро, третье — бронза.
+// Цвет места на экране «РЕЙТИНГ»: первое — золото, второе — серебро, третье — бронза.
 Color topColor(int place) => switch (place) {
       1 => const Color(0xFFFFD34D),
       2 => const Color(0xFFD9DEE3),
       3 => const Color(0xFFE09A5B),
       _ => const Color(0xFF9FD8FF),
     };
+
+// Уровни рейтинга с цветом — для объявления «За столом: один игрок фиолетового
+// уровня» (просьба владельца, 11.10.2026, вместо меток «ТОП-N»). Пороги — как в ratingColor.
+const ratingLevels = [
+  (min: 9.0, name: 'красного'),
+  (min: 8.0, name: 'оранжевого'),
+  (min: 7.0, name: 'фиолетового'),
+  (min: 6.0, name: 'синего'),
+  (min: 5.0, name: 'зелёного'),
+];
+
+// Только самый высокий цветной уровень за столом и сколько на нём игроков:
+// есть красный — «один игрок красного уровня», остальные не называются
+// (просьба владельца, 11.10.2026). Белых и серых не считаем; нет цветных — пусто.
+List<({String text, Color color})> strongLevels(List players) {
+  for (final level in ratingLevels) {
+    final count = players.cast<Map>().where((p) => ((p['rating'] as num?) ?? 0) >= level.min).length;
+    if (count > 0) {
+      return [(text: '${playersCount(count)} ${level.name} уровня', color: ratingColor(level.min))];
+    }
+  }
+  return const [];
+}
+
+// «один игрок», «два игрока», «пять игроков» — за столом не больше семи.
+String playersCount(int n) {
+  const words = ['', 'один', 'два', 'три', 'четыре', 'пять', 'шесть', 'семь'];
+  final word = n < words.length ? words[n] : '$n';
+  return n == 1 ? '$word игрок' : n < 5 ? '$word игрока' : '$word игроков';
+}

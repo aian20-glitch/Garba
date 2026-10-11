@@ -32,7 +32,7 @@ class _GameTableScreenState extends State<GameTableScreen> {
   // последней показанной реакции — старые при входе в комнату не всплывают.
   final Map<String, String> flyingEmoji = {};
   // Объявление «Тимур — РАЗ!» крупно над столом на пару секунд: заявку легко пропустить.
-  ({int id, String text})? announcement;
+  ({int id, String text, List<({String text, Color color})>? levels})? announcement;
   int announcementSeq = 0;
   int seenBids = 0;
   String seenSpecial = '';
@@ -393,16 +393,13 @@ class _GameTableScreenState extends State<GameTableScreen> {
 
     if (firstAnnounce) {
       firstAnnounce = false;
-      // Открыл стол — объявляем, кто здесь из первой десятки рейтинга (09.10.2026).
-      final tops = ((data['players'] as List?) ?? const [])
-          .cast<Map>()
-          .where((p) => topPlace(p) != null)
-          .toList()
-        ..sort((a, b) => topPlace(a)!.compareTo(topPlace(b)!));
-      if (tops.isEmpty) return;
-      text = 'В этой игре\n${tops.map((p) => 'ТОП-${topPlace(p)} — ${p['name']}').join('\n')}';
+      // Открыл стол — объявляем, игроки каких цветных уровней рейтинга за столом:
+      // «один игрок фиолетового уровня» (просьба владельца, 11.10.2026).
+      final levels = strongLevels((data['players'] as List?) ?? const []);
+      if (levels.isEmpty) return;
+      text = 'За столом';
       final id = ++announcementSeq;
-      setState(() => announcement = (id: id, text: text!));
+      setState(() => announcement = (id: id, text: text!, levels: levels));
       Timer(const Duration(milliseconds: 3200), () {
         if (mounted && announcement?.id == id) setState(() => announcement = null);
       });
@@ -413,7 +410,7 @@ class _GameTableScreenState extends State<GameTableScreen> {
     if (riskSound != null) GarbaSounds.risk(riskSound);
     if (text == null) return;
     final id = ++announcementSeq;
-    setState(() => announcement = (id: id, text: text!));
+    setState(() => announcement = (id: id, text: text!, levels: null));
     Timer(const Duration(milliseconds: 2600), () {
       if (mounted && announcement?.id == id) setState(() => announcement = null);
     });
@@ -1184,7 +1181,7 @@ class _GameTableScreenState extends State<GameTableScreen> {
       // Победителя (§36) определяет сервер, статистику за комнату (§35) — тоже.
       final winnerIds = ((game['winnerIds'] as List?) ?? const []).map((e) => e.toString()).toSet();
       final roomStats = data['stats'] is Map ? Map<String, dynamic>.from(data['stats'] as Map) : const {};
-      final rows = players.map((p) {
+      final rows = playersForResults(data).map((p) {
         final start = (p['startBalance'] as num?)?.toInt() ?? 0;
         final end = (p['balance'] as num?)?.toInt() ?? 0;
         final id = p['id'].toString();
@@ -1198,6 +1195,7 @@ class _GameTableScreenState extends State<GameTableScreen> {
           stats: st,
           ratingStart: (p['ratingStart'] as num?)?.toDouble() ?? 0,
           ratingEnd: (p['rating'] as num?)?.toDouble() ?? 0,
+          left: p['left'] == true,
         );
       }).toList()
         ..sort((a, b) => b.diff.compareTo(a.diff));
@@ -1277,7 +1275,7 @@ class _GameTableScreenState extends State<GameTableScreen> {
                 children: [
                   Expanded(
                     child: Text(
-                      isWinner ? '🏆 ${r.name}' : r.name,
+                      isWinner ? '🏆 ${r.name}' : r.left ? '${r.name} · вышел' : r.name,
                       style: TextStyle(
                         fontWeight:
                             isWinner ? FontWeight.w900 : FontWeight.w500,
@@ -1710,7 +1708,8 @@ class _GameTableScreenState extends State<GameTableScreen> {
                       style: TextStyle(
                         fontSize: 12,
                         fontWeight: FontWeight.w900,
-                        color: isMain ? Colors.black : Colors.white,
+                        // Имя цветом уровня рейтинга (11.10.2026); у главного — чёрное на золоте.
+                        color: isMain ? Colors.black : ratingColor(p['rating']),
                       ),
                     ),
                   ),
@@ -1820,14 +1819,6 @@ class _GameTableScreenState extends State<GameTableScreen> {
                     ),
                   ),
                 ),
-              ),
-            // Первая десятка общего рейтинга — метка «ТОП-N» под аватаркой.
-            if (topPlace(p) case final place?)
-              Positioned(
-                left: -30,
-                right: -30,
-                bottom: -7,
-                child: Center(child: TopBadge(place, fontSize: 8)),
               ),
             // Смайлик — прямо на аватарке, крупно.
             if (flyingEmoji[pId] case final emoji? when !tablePhrases.contains(emoji))
@@ -2147,13 +2138,14 @@ class _GameTableScreenState extends State<GameTableScreen> {
     if (isRoomDone && !gameOverClosed) {
       gameOverPopup = GameOverPopup(
         lines: [
-          for (final p in players)
+          for (final p in playersForResults(room!))
             (
               id: p['id'].toString(),
               name: p['name'].toString(),
               diff: ((p['balance'] as num?)?.toInt() ?? 0) - ((p['startBalance'] as num?)?.toInt() ?? 0),
               ratingStart: (p['ratingStart'] as num?)?.toDouble() ?? 0,
               ratingEnd: (p['rating'] as num?)?.toDouble() ?? 0,
+              left: p['left'] == true,
             ),
         ]..sort((a, b) => b.diff.compareTo(a.diff)),
         winnerIds: ((game['winnerIds'] as List?) ?? const []).map((e) => e.toString()).toSet(),
@@ -2438,8 +2430,18 @@ class _GameTableScreenState extends State<GameTableScreen> {
                                   BoxShadow(color: Color(0x88D4A94F), blurRadius: 24),
                                 ],
                               ),
-                              child: Text(
-                                announcement!.text,
+                              child: Text.rich(
+                                TextSpan(
+                                  text: announcement!.text,
+                                  children: [
+                                    // Уровни за столом — каждый своим цветом, мельче заголовка.
+                                    for (final line in announcement!.levels ?? const <({String text, Color color})>[])
+                                      TextSpan(
+                                        text: '\n${line.text}',
+                                        style: TextStyle(fontSize: 22, color: line.color),
+                                      ),
+                                  ],
+                                ),
                                 textAlign: TextAlign.center,
                                 style: const TextStyle(
                                   fontSize: 30,

@@ -745,63 +745,27 @@ class RatingText extends StatelessWidget {
   }
 }
 
-// Метка «ТОП-3» у игрока из первой десятки общего рейтинга.
-class TopBadge extends StatelessWidget {
-  final int place;
-  final double fontSize;
-
-  const TopBadge(this.place, {super.key, this.fontSize = 9});
-
-  @override
-  Widget build(BuildContext context) {
-    final color = topColor(place);
-    return Container(
-      padding: EdgeInsets.symmetric(horizontal: fontSize * 0.5, vertical: 1),
-      decoration: BoxDecoration(
-        color: const Color(0xF0101820),
-        borderRadius: BorderRadius.circular(fontSize),
-        border: Border.all(color: color, width: 1.2),
-        boxShadow: [BoxShadow(color: color.withValues(alpha: 0.5), blurRadius: 6)],
-      ),
-      child: Text(
-        place <= 3 ? '👑 ТОП-$place' : 'ТОП-$place',
-        maxLines: 1,
-        style: TextStyle(fontSize: fontSize, fontWeight: FontWeight.w900, color: color),
-      ),
-    );
-  }
-}
-
-// «В этой игре ТОП-3 — Аян»: кто за столом из первой десятки, лучший первым.
-// null — таких нет.
-Widget? topPlayersBanner(List players) {
-  final tops = players
-      .cast<Map>()
-      .where((p) => topPlace(p) != null)
-      .toList()
-    ..sort((a, b) => topPlace(a)!.compareTo(topPlace(b)!));
-  if (tops.isEmpty) return null;
-  final best = topPlace(tops.first)!;
+// «За столом: один игрок фиолетового уровня» — в лобби, цветом уровня (11.10.2026).
+// null — цветных уровней за столом нет.
+Widget? levelsBanner(List players) {
+  final lines = strongLevels(players);
+  if (lines.isEmpty) return null;
   return Center(
     child: Container(
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
       decoration: BoxDecoration(
         color: const Color(0xE0101820),
         borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: topColor(best)),
+        border: Border.all(color: lines.first.color),
       ),
       child: Text.rich(
         TextSpan(
           style: const TextStyle(fontSize: 13, color: Colors.white),
           children: [
-            const TextSpan(text: 'В этой игре '),
-            for (final (i, p) in tops.indexed) ...[
+            const TextSpan(text: 'За столом '),
+            for (final (i, line) in lines.indexed) ...[
               if (i > 0) const TextSpan(text: ', '),
-              TextSpan(
-                text: 'ТОП-${topPlace(p)}',
-                style: TextStyle(fontWeight: FontWeight.w900, color: topColor(topPlace(p)!)),
-              ),
-              TextSpan(text: ' — ${p['name']}', style: const TextStyle(fontWeight: FontWeight.w700)),
+              TextSpan(text: line.text, style: TextStyle(fontWeight: FontWeight.w900, color: line.color)),
             ],
           ],
         ),
