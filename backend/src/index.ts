@@ -723,6 +723,13 @@ app.post('/accounts/telegram/login', (req, res) => {
   }
   setTelegramPhoto(db, account.id, launch.photoUrl);
   const token = issueExtraToken(db, account.id);
+  // Игра открылась заново посреди партии — значит, Telegram её перезапустил (11.10.2026):
+  // видно, как часто и на каком телефоне.
+  const room = activeRoomOf(account.id);
+  if (room?.status === 'started') {
+    const ua = String(req.headers['user-agent'] ?? '').slice(0, 160);
+    console.log(`[ROOM ${room.id}] ${account.name} открыл игру заново (${ua})`);
+  }
   return res.json({ ...account, token });
 });
 

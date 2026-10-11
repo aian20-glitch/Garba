@@ -949,9 +949,13 @@ class AvatarView extends StatelessWidget {
     final path = avatar;
     if (path == null) return placeholder;
     // Аватарка из Telegram (10.10.2026) — полная ссылка https://t.me/...; своё фото — путь
-    // на нашем сервере. Telegram отдаёт картинку через переадресацию без CORS, поэтому в
-    // браузере, если обычная загрузка не прошла, показываем её HTML-картинкой (fallback).
-    final url = path.startsWith('https://') ? path : '$apiBase$path';
+    // на нашем сервере. В браузере и в Telegram её не грузим (11.10.2026): t.me не даёт
+    // CORS, а HTML-картинка поверх Flutter (WebHtmlElementStrategy.fallback) — отдельный
+    // слой на каждого игрока; за столом из 5–7 человек Telegram на iPhone не хватало
+    // памяти, и игра перезапускалась каждую минуту. Остаётся буква.
+    final isTelegram = path.startsWith('https://');
+    if (isTelegram && kIsWeb) return placeholder;
+    final url = isTelegram ? path : '$apiBase$path';
     return SizedBox(
       width: radius * 2,
       height: radius * 2,
@@ -963,7 +967,6 @@ class AvatarView extends StatelessWidget {
             child: Image.network(
               url,
               fit: BoxFit.cover,
-              webHtmlElementStrategy: WebHtmlElementStrategy.fallback,
               errorBuilder: (context, error, stack) => const SizedBox.shrink(),
             ),
           ),

@@ -469,7 +469,10 @@ GET  /i/:code                    страница-приглашение дру�
 `photo_url` из initData (только `https://t.me/i/userpic/...`, `telegramPhotoUrl` в `telegram.ts`) и
 хранит **только ссылку** — `accounts.telegram_photo`, обновляется при каждом входе (скрыл фото — null).
 `avatarOf` отдаёт её полной ссылкой, когда своих фото нет. Приложение (`AvatarView`) берёт картинку
-прямо у Telegram; в вебе t.me отвечает переадресацией без CORS — поэтому `WebHtmlElementStrategy.fallback`.
+прямо у Telegram — **только на телефоне**. В вебе/Telegram (11.10.2026) — буква: t.me без CORS, а
+`WebHtmlElementStrategy.fallback` — HTML-слой на каждого игрока; за столом из 5–7 людей Telegram на
+iPhone перезапускал игру каждую минуту (в журнале — `открыл игру заново (User-Agent)`). Telegram к тому
+же отдаёт всем нашим игрокам не фото, а SVG с буквой.
 Журнала запросов в Caddy нет — IP игроков не записываются. Поле `avatar` — адрес вида `/avatars/<id>?v=<время>` или `null`;
 есть в `/me`, `/me/profile`, `/players/:code`, `/friends` и у каждого игрока в
 `players[]` комнаты. Клиент добавляет к нему `apiBase`. 
