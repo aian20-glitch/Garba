@@ -46,8 +46,6 @@ import {
   findAccountByTelegram,
   issueExtraToken,
   linkTelegram,
-  setTelegramPhoto,
-  telegramPhotoOf,
   telegramIdOf,
 } from './accounts.js';
 import {
@@ -721,7 +719,6 @@ app.post('/accounts/telegram/login', (req, res) => {
       inviteCode: start?.kind === 'invite' ? start.value : null,
     });
   }
-  setTelegramPhoto(db, account.id, launch.photoUrl);
   const token = issueExtraToken(db, account.id);
   // Игра открылась заново посреди партии — значит, Telegram её перезапустил (11.10.2026):
   // видно, как часто и на каком телефоне.
@@ -754,7 +751,7 @@ app.post('/accounts/telegram', (req, res) => {
 
   const { account, recoveryCode } = createAccount(db, name, inviter?.id ?? null);
   accountsByIp.set(ip, limit.times);
-  linkTelegram(db, account.id, launch.user.id, launch.photoUrl);
+  linkTelegram(db, account.id, launch.user.id);
   const token = issueExtraToken(db, account.id);
   console.log(`[ACCOUNT] created ${account.name} (${account.id}) via Telegram`);
   return res.status(201).json({ ...account, token, recoveryCode });
@@ -778,7 +775,7 @@ app.post('/accounts/telegram/link', (req, res) => {
   const account = playerCode ? checkRecoveryCode(db, playerCode, req.body?.recoveryCode) : null;
   if (!account) return res.status(401).json({ error: 'invalid recovery credentials' });
 
-  linkTelegram(db, account.id, launch.user.id, launch.photoUrl);
+  linkTelegram(db, account.id, launch.user.id);
   const recoveryCode = replaceRecoveryCode(db, account.id);
   const token = issueExtraToken(db, account.id);
   console.log(`[ACCOUNT] ${account.name} (${account.id}) linked Telegram`);
@@ -1097,11 +1094,9 @@ app.get('/i/:code', (req, res) => {
 // --- Аватар (ТЗ §2, этап 9.5) ---
 // Фото выключены (26.09.2026, решение владельца): пока без юриста не храним фото игроков.
 // Включить — GARBA_AVATARS=1 (и avatarsEnabled в lib/core.dart). Выключены — у всех null.
-// С 10.10.2026 у игроков из Telegram — аватарка из профиля Telegram: полная ссылка
-// https://t.me/i/userpic/..., само фото на сервере не лежит (решение владельца).
 const AVATARS_ON = process.env.GARBA_AVATARS === '1';
 function avatarOf(accountId: string): string | null {
-  return (AVATARS_ON ? avatarPath(db, accountId) : null) ?? telegramPhotoOf(db, accountId);
+  return AVATARS_ON ? avatarPath(db, accountId) : null;
 }
 
 // Телефон присылает уже уменьшенную картинку как есть (не JSON). Тип картинки сервер

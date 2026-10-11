@@ -939,39 +939,13 @@ class AvatarView extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final letter = name.isEmpty ? '?' : name.characters.first.toUpperCase();
-    final placeholder = CircleAvatar(
+    return CircleAvatar(
       radius: radius,
       backgroundColor: const Color(0xFF2A3B45),
+      foregroundImage: avatar == null ? null : NetworkImage('$apiBase$avatar'),
       child: Text(letter,
           style:
               TextStyle(fontSize: radius * 0.9, fontWeight: FontWeight.w800)),
-    );
-    final path = avatar;
-    if (path == null) return placeholder;
-    // Аватарка из Telegram (10.10.2026) — полная ссылка https://t.me/...; своё фото — путь
-    // на нашем сервере. В браузере и в Telegram её не грузим (11.10.2026): t.me не даёт
-    // CORS, а HTML-картинка поверх Flutter (WebHtmlElementStrategy.fallback) — отдельный
-    // слой на каждого игрока; за столом из 5–7 человек Telegram на iPhone не хватало
-    // памяти, и игра перезапускалась каждую минуту. Остаётся буква.
-    final isTelegram = path.startsWith('https://');
-    if (isTelegram && kIsWeb) return placeholder;
-    final url = isTelegram ? path : '$apiBase$path';
-    return SizedBox(
-      width: radius * 2,
-      height: radius * 2,
-      child: Stack(
-        fit: StackFit.expand,
-        children: [
-          placeholder,
-          ClipOval(
-            child: Image.network(
-              url,
-              fit: BoxFit.cover,
-              errorBuilder: (context, error, stack) => const SizedBox.shrink(),
-            ),
-          ),
-        ],
-      ),
     );
   }
 }
