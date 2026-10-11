@@ -1922,6 +1922,11 @@ function shrinkTable(room: Room) {
   room.players.sort((a, b) => (a.seat ?? 0) - (b.seat ?? 0));
   room.capacity = room.players.length;
   game.lastShrink = { from, to: room.capacity };
+  // «Последний кон» (§12.1) кончился: кон поделили при уходе. Обедневший мог уйти сам,
+  // а базовый кон стал меньше — смотрим заново по новому столу (11.10.2026: впятером
+  // Кайрат обеднел и вышел, вчетвером комната закрылась после первого же взятого кона).
+  game.closing = false;
+  updateClosing(room);
   console.log(`[ROOM ${room.id}] все согласны — играем дальше: ${from} → ${room.capacity} игроков`);
 }
 

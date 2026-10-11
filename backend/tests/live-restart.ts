@@ -6,6 +6,7 @@
 
 import { spawn, type ChildProcess } from 'node:child_process';
 import { rmSync } from 'node:fs';
+import { DatabaseSync } from 'node:sqlite';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { io, type Socket } from 'socket.io-client';
@@ -198,6 +199,49 @@ async function main() {
   check('создатель Асан не нажал — создателем стал Болат', lobbyAfter.creatorId, bolat.id);
   check('не нажавшие знают, почему вышли', lobbyAfter.readyDroppedIds, [asan.id, gulnar.id]);
   check('вышедший свободен — может зайти в другую комнату', (await request('GET', '/me', asan.token)).body.roomId, null);
+
+  // Случай с сервера 11.10.2026: впятером один обеднел (ниже базового кона 500) — «доигрываем
+  // последний кон» (§12.1); он ушёл, остальные решили играть вчетвером, а комната закрылась
+  // после первого же взятого кона. Кон при уходе поделён, базовый кон теперь 400 — смотрим заново.
+  section('обедневший ушёл, играем вчетвером — «последний кон» снят (§12.1, §13c)');
+  const five: Me[] = [];
+  for (const name of ['Ерлан', 'Жанар', 'Кайрат', 'Лаура', 'Мурат']) {
+    five.push((await request('POST', '/accounts', undefined, { name })).body);
+  }
+  const poor = five[2];
+  const almost = five[3];
+  const table = (await request('POST', '/rooms', five[0].token, {
+    capacity: 5, ante: 100, emptyLimit: 5, konThreshold: 10, minBalance: 1000,
+  })).body;
+  for (const p of five.slice(1)) await request('POST', `/rooms/${table.id}/join`, p.token);
+  const fiveSockets = five.map((p) => sit(table.id, p.token));
+  await wait(500);
+  for (const p of five) await request('POST', `/rooms/${table.id}/ready`, p.token);
+  await wait(500); // комната пишется в базу после ответа
+
+  // Деньги за столом правим прямо в базе: Кайрат — 200, Лаура — 450 (ниже 5 × 100, но не 4 × 100).
+  await stopServer();
+  const db = new DatabaseSync(DB_FILE);
+  const saved = JSON.parse((db.prepare('SELECT data FROM rooms WHERE id = ?').get(table.id) as any).data);
+  for (const p of saved.players) {
+    if (p.id === poor.id) p.balance = 200;
+    if (p.id === almost.id) p.balance = 450;
+  }
+  saved.game.closing = true;
+  db.prepare('UPDATE rooms SET data = ? WHERE id = ?').run(JSON.stringify(saved), table.id);
+  db.close();
+  await startServer();
+  await wait(2_500); // сокеты переподключаются сами
+
+  let five0 = (await request('GET', `/rooms/${table.id}`, five[0].token)).body;
+  check('впятером: обедневший есть — доигрываем последний кон', [five0.game.stage, five0.game.closing], ['dealer_found', true]);
+  check('Кайрат вышел между раздачами', (await request('POST', `/rooms/${table.id}/leave`, poor.token)).status, 200);
+  const stay = five.filter((p) => p !== poor);
+  for (const p of stay) await request('POST', `/rooms/${table.id}/shrink-vote`, p.token, { choice: 'continue' });
+  five0 = (await request('GET', `/rooms/${table.id}`, five[0].token)).body;
+  check('вчетвером у всех ≥ 400 — игра не «последняя», комната живёт',
+    [five0.status, five0.capacity, five0.game.closing], ['started', 4, false]);
+  for (const s of fiveSockets) s.close();
 }
 
 main()
