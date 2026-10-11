@@ -24,6 +24,11 @@ class _GameTableScreenState extends State<GameTableScreen> {
   bool voting = false;
   bool choosingKonTrump = false;
   bool sendingSpecial = false;
+  // Кнопки «ВЗЯТЬ ×N» появились только что — первые мгновения нажатия не принимаем:
+  // палец мог уже лететь по экрану и случайно попасть в ×5 (11.10.2026).
+  String? specialTurnKey;
+  DateTime specialTurnAt = DateTime.now();
+  static const specialTapGuard = Duration(milliseconds: 800);
   // Пауза из-за отключения (RULES.md §13): когда пришло последнее состояние паузы —
   // от него на экране идёт обратный отсчёт, раз в секунду.
   DateTime pauseReceivedAt = DateTime.now();
@@ -687,6 +692,36 @@ class _GameTableScreenState extends State<GameTableScreen> {
     }
   }
 
+  // Взять спецкарту за множитель. От ×3 сначала спрашиваем — сколько положит в кон
+  // при проигрыше (кон × множитель, §7.4a): ×5 часто нажимали случайно (11.10.2026).
+  Future<void> takeSpecial(int risk, int kon, bool blind) async {
+    if (DateTime.now().difference(specialTurnAt) < specialTapGuard) return;
+    if (risk >= 3) {
+      final ok = await showDialog<bool>(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          title: Text('Взять за ×$risk?'),
+          content: Text(
+            'Проиграете — положите в кон ${fmtCoins(kon * risk)} '
+            '(кон ${fmtCoins(kon)} × $risk).',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(ctx, false),
+              child: const Text('ОТМЕНА'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.pop(ctx, true),
+              child: Text(blind ? 'ВЗЯТЬ ВСЛЕПУЮ ×$risk' : 'ВЗЯТЬ ×$risk'),
+            ),
+          ],
+        ),
+      );
+      if (ok != true || !mounted) return;
+    }
+    await sendSpecial('special', {'action': 'take', 'risk': risk});
+  }
+
   // Главный сдаётся — признаёт поражение в раздаче (RULES.md §10.7). Сначала спрашиваем.
   // twoMains — главных двое: сдавшийся доигрывает как обычный противник.
   Future<void> confirmConcede(int loss, bool twoMains) async {
@@ -1028,6 +1063,15 @@ class _GameTableScreenState extends State<GameTableScreen> {
     final mySpecialRisks = ((game['mySpecialRisks'] as List?) ?? const [])
         .map((e) => (e as num).toInt())
         .toList();
+    // Очередь в борьбе за спецкарту пришла заново (новая раздача, кто-то перебил) —
+    // запоминаем когда: первые мгновения кнопки «ВЗЯТЬ» не срабатывают.
+    if (isSpecial && mySpecialRisks.isNotEmpty) {
+      final key = '${game['dealNumber']}:${special['phase']}:${special['holderId']}:${special['risk']}';
+      if (key != specialTurnKey) {
+        specialTurnKey = key;
+        specialTurnAt = DateTime.now();
+      }
+    }
     final myDiscardOptions = ((game['myDiscardOptions'] as List?) ?? const [])
         .map((e) => e.toString())
         .toSet();
@@ -2807,10 +2851,7 @@ class _GameTableScreenState extends State<GameTableScreen> {
                             (r) => FilledButton(
                               onPressed: sendingSpecial || paused
                                   ? null
-                                  : () => sendSpecial(
-                                        'special',
-                                        {'action': 'take', 'risk': r},
-                                      ),
+                                  : () => takeSpecial(r, serverKon, special['phase'] == 'blind'),
                               child: Text(
                                 special['phase'] == 'blind'
                                     ? 'ВЗЯТЬ ВСЛЕПУЮ ×$r'
