@@ -85,7 +85,10 @@ class GarbaTitle extends StatelessWidget {
 // слоёв тёплого золота. Орнамент остаётся достаточно тихим, чтобы карты и
 // плашки игроков читались поверх него.
 class KazakhTablePainter extends CustomPainter {
-  const KazakhTablePainter();
+  const KazakhTablePainter({this.cloth});
+
+  // Сукно из магазина (§17) — картинка вместо небесного «Көк»; null — «Көк», как у всех.
+  final ui.Image? cloth;
 
   static const gold = Color(0xFFE6B74F);
   static const brightGold = Color(0xFFFFD87A);
@@ -157,16 +160,45 @@ class KazakhTablePainter extends CustomPainter {
         ).createShader(outerRect),
     );
 
-    canvas.drawRRect(
-      felt,
-      Paint()
-        ..shader = const RadialGradient(
-          center: Alignment(0, -0.18),
-          radius: 1.05,
-          colors: [Color(0xFF0B6090), Color(0xFF06456C), Color(0xFF02263F)],
-          stops: [0, 0.62, 1],
-        ).createShader(feltRect),
-    );
+    if (cloth case final image?) {
+      canvas.save();
+      canvas.clipRRect(felt);
+      paintImage(
+        canvas: canvas,
+        rect: feltRect,
+        image: image,
+        // Растянуть по сукну: узор по краю картинки идёт вдоль бортика при любой высоте стола.
+        fit: BoxFit.fill,
+        filterQuality: FilterQuality.medium,
+      );
+      canvas.restore();
+    } else {
+      canvas.drawRRect(
+        felt,
+        Paint()
+          ..shader = const RadialGradient(
+            center: Alignment(0, -0.18),
+            radius: 1.05,
+            colors: [Color(0xFF0B6090), Color(0xFF06456C), Color(0xFF02263F)],
+            stops: [0, 0.62, 1],
+          ).createShader(feltRect),
+      );
+
+      // Едва заметная фактура сукна.
+      canvas.save();
+      canvas.clipRRect(felt);
+      final texture = Paint()
+        ..color = Colors.white.withValues(alpha: 0.018)
+        ..strokeWidth = 0.7;
+      for (var y = feltRect.top; y < feltRect.bottom; y += 9) {
+        canvas.drawLine(
+          Offset(feltRect.left, y),
+          Offset(feltRect.right, y + 20),
+          texture,
+        );
+      }
+      canvas.restore();
+    }
     canvas.drawRRect(
       felt,
       Paint()
@@ -174,21 +206,6 @@ class KazakhTablePainter extends CustomPainter {
         ..strokeWidth = 2
         ..color = brightGold.withValues(alpha: 0.82),
     );
-
-    // Едва заметная фактура сукна.
-    canvas.save();
-    canvas.clipRRect(felt);
-    final texture = Paint()
-      ..color = Colors.white.withValues(alpha: 0.018)
-      ..strokeWidth = 0.7;
-    for (var y = feltRect.top; y < feltRect.bottom; y += 9) {
-      canvas.drawLine(
-        Offset(feltRect.left, y),
-        Offset(feltRect.right, y + 20),
-        texture,
-      );
-    }
-    canvas.restore();
 
     // Акцентные орнаменты по прямым бокам рамки.
     for (final fraction in [0.27, 0.5, 0.73]) {
@@ -218,5 +235,5 @@ class KazakhTablePainter extends CustomPainter {
   }
 
   @override
-  bool shouldRepaint(covariant KazakhTablePainter oldDelegate) => false;
+  bool shouldRepaint(covariant KazakhTablePainter oldDelegate) => oldDelegate.cloth != cloth;
 }

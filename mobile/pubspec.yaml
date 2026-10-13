@@ -1,7 +1,7 @@
 name: garba_mobile
 description: GARBA mobile MVP
 publish_to: "none"
-version: 1.0.0+8
+version: 1.0.0+9
 
 environment:
   sdk: ">=3.4.0 <4.0.0"
@@ -27,6 +27,7 @@ flutter:
   assets:
     - assets/branding/card_back.png
     - assets/branding/court_cards.png
+    - assets/shop/
     - assets/sounds/ready.wav
     - assets/sounds/card.mp3
     - assets/sounds/garba.wav

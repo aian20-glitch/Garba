@@ -96,6 +96,10 @@ class _StartScreenState extends State<StartScreen> {
         return;
       }
       expectStatus(response, const [200]);
+      // Сукно и наборы смайликов из магазина (§17) нужны и столу, открытому по ссылке.
+      try {
+        ShopState.apply((jsonDecode(response.body) as Map)['shop']);
+      } catch (_) {}
       openHome();
     } catch (e) {
       // Сеть недоступна — токен НЕ стираем, просто предлагаем повторить.
@@ -247,8 +251,10 @@ class _StartScreenState extends State<StartScreen> {
     await prefs.remove('debug.room');
     navigatorKey.currentState?.push(
       MaterialPageRoute(
-          builder: (_) =>
-              LobbyScreen(roomCode: room, currentPlayerId: Session.id)),
+          // «shop» — открыть магазин (проверка на симуляторе без нажатий).
+          builder: (_) => room == 'shop'
+              ? const ShopScreen()
+              : LobbyScreen(roomCode: room, currentPlayerId: Session.id)),
     );
   }
 

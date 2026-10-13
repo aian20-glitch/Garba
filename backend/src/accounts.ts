@@ -15,6 +15,7 @@ import { makePlayerCode } from './bonus.js';
 import { ensureAvatarTable } from './avatars.js';
 import { START_SKILL } from './rating.js';
 import { deleteModerationData, ensureModerationTables } from './moderation.js';
+import { deleteShopData, ensureShopTables } from './shop.js';
 
 export type Account = {
   id: string;
@@ -93,6 +94,7 @@ export function openDb(file: string): DatabaseSync {
   ensureRoomTable(db); // комнаты — этап 9.2
   ensureAvatarTable(db); // аватары — этап 9.5
   ensureModerationTables(db); // жалобы и блокировка — 29.09.2026
+  ensureShopTables(db); // магазин — 13.10.2026
   return db;
 }
 
@@ -545,6 +547,7 @@ export function deleteAccountData(db: DatabaseSync, id: string) {
   db.prepare('DELETE FROM avatars WHERE account_id = ?').run(id);
   db.prepare('DELETE FROM account_tokens WHERE account_id = ?').run(id);
   deleteModerationData(db, id);
+  deleteShopData(db, id);
   db.prepare('DELETE FROM room_stats WHERE player_id = ?').run(id);
   db.prepare('UPDATE accounts SET invited_by = NULL WHERE invited_by = ?').run(id);
 

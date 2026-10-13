@@ -227,30 +227,89 @@ class EmojiButton extends StatelessWidget {
     );
   }
 
+  // Заголовок купленного набора в окне.
+  static Widget _packTitle(String text) => Padding(
+        padding: const EdgeInsets.only(top: 14, bottom: 6),
+        child: Text(text,
+            style: const TextStyle(color: _gold, fontSize: 12, fontWeight: FontWeight.w900, letterSpacing: 1.2)),
+      );
+
+  // Не купленные наборы — одной строкой: где их взять.
+  static Widget _shopHint(List<String> names) => Padding(
+        padding: const EdgeInsets.only(top: 14),
+        child: Text(
+          '🔒 ${names.join(', ')} — в МАГАЗИНЕ на главном экране',
+          textAlign: TextAlign.center,
+          style: const TextStyle(color: Colors.white54, fontSize: 13),
+        ),
+      );
+
+  Widget _emojiCell(BuildContext sheet, String emoji) => InkWell(
+        borderRadius: BorderRadius.circular(24),
+        onTap: () {
+          Navigator.pop(sheet);
+          onSend(emoji);
+        },
+        child: Padding(
+          padding: const EdgeInsets.symmetric(vertical: 8),
+          child: Center(
+            child: FittedBox(child: Text(emoji, style: const TextStyle(fontSize: 28))),
+          ),
+        ),
+      );
+
   void _openEmojis(BuildContext context) => _open(
         context,
-        (sheet) => _grid(6, 4, [
-          for (final emoji in tableReactions)
-            InkWell(
-              borderRadius: BorderRadius.circular(24),
-              onTap: () {
-                Navigator.pop(sheet);
-                onSend(emoji);
-              },
-              child: Padding(
-                padding: const EdgeInsets.symmetric(vertical: 8),
-                child: Center(
-                  child: FittedBox(child: Text(emoji, style: const TextStyle(fontSize: 28))),
-                ),
-              ),
-            ),
-        ]),
+        (sheet) => Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            _grid(6, 4, [for (final emoji in tableReactions) _emojiCell(sheet, emoji)]),
+            if (ShopState.has('pack_troll')) ...[
+              _packTitle('ТРОЛЛЬ'),
+              _grid(6, 4, [for (final emoji in packTroll) _emojiCell(sheet, emoji)]),
+            ],
+            if (ShopState.has('pack_mazak')) ...[
+              _packTitle('НАСМЕШКА'),
+              _grid(3, 6, [
+                for (final entry in stickerAssets.entries)
+                  InkWell(
+                    borderRadius: BorderRadius.circular(16),
+                    onTap: () {
+                      Navigator.pop(sheet);
+                      onSend(entry.key);
+                    },
+                    child: Image.asset(shopAsset(entry.value), height: 76),
+                  ),
+              ]),
+            ],
+            if (!ShopState.has('pack_troll') || !ShopState.has('pack_mazak'))
+              _shopHint([
+                if (!ShopState.has('pack_troll')) 'Тролль',
+                if (!ShopState.has('pack_mazak')) 'стикеры «Насмешка»',
+              ]),
+          ],
+        ),
       );
 
   void _openPhrases(BuildContext context) => _open(
         context,
-        (sheet) => _grid(2, 8, [
-          for (final phrase in tablePhrases)
+        (sheet) => Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            _phraseGrid(sheet, tablePhrases, const Color(0xFF1C3442)),
+            if (ShopState.has('pack_podkol')) ...[
+              _packTitle('ПОДКОЛ'),
+              _phraseGrid(sheet, packPodkol, const Color(0xFF4A1620)),
+            ] else
+              _shopHint(['Фразы-подколы']),
+          ],
+        ),
+      );
+
+  Widget _phraseGrid(BuildContext sheet, List<String> phrases, Color color) => _grid(2, 8, [
+          for (final phrase in phrases)
             InkWell(
               borderRadius: BorderRadius.circular(22),
               onTap: () {
@@ -262,7 +321,7 @@ class EmojiButton extends StatelessWidget {
                 alignment: Alignment.center,
                 padding: const EdgeInsets.symmetric(horizontal: 10),
                 decoration: BoxDecoration(
-                  color: const Color(0xFF1C3442),
+                  color: color,
                   borderRadius: BorderRadius.circular(22),
                   border: Border.all(color: _gold),
                 ),
@@ -272,8 +331,7 @@ class EmojiButton extends StatelessWidget {
                 ),
               ),
             ),
-        ]),
-      );
+        ]);
 
   static Widget _circle(String icon, VoidCallback onTap) => GestureDetector(
         onTap: onTap,
@@ -348,16 +406,26 @@ class AvatarEmoji extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    // Стикер «Насмешка» из магазина (§17) — картинкой художника, крупнее аватарки.
+    final sticker = stickerAssets[emoji];
     return TweenAnimationBuilder<double>(
       tween: Tween(begin: 0.2, end: 1),
       duration: const Duration(milliseconds: 500),
       curve: Curves.elasticOut,
       builder: (_, scale, child) => Transform.scale(scale: scale, child: child),
-      child: Container(
-        alignment: Alignment.center,
-        decoration: const BoxDecoration(shape: BoxShape.circle, color: Color(0xCC0B1620)),
-        child: Text(emoji, style: TextStyle(fontSize: size)),
-      ),
+      child: sticker != null
+          ? OverflowBox(
+              // Стикер растёт вверх от аватарки — имя под ней остаётся видно.
+              alignment: Alignment.bottomCenter,
+              maxWidth: size * 2.6,
+              maxHeight: size * 2.6,
+              child: Image.asset(shopAsset(sticker), width: size * 2.6, height: size * 2.6),
+            )
+          : Container(
+              alignment: Alignment.center,
+              decoration: const BoxDecoration(shape: BoxShape.circle, color: Color(0xCC0B1620)),
+              child: Text(emoji, style: TextStyle(fontSize: size)),
+            ),
     );
   }
 }
@@ -459,7 +527,7 @@ class _FriendInviteSheetState extends State<FriendInviteSheet> {
                           final here = busyRoom == widget.roomCode;
                           final busy = busyRoom != null && !here;
                           return ListTile(
-                            leading: AvatarView(avatar: f['avatar']?.toString(), name: f['name'].toString(), radius: 20),
+                            leading: AvatarView(avatar: f['avatar']?.toString(), name: f['name'].toString(), radius: 20, frame: f['frame']?.toString()),
                             title: Text(f['name'].toString(), style: const TextStyle(fontWeight: FontWeight.w800)),
                             subtitle: Text(here ? 'уже за этим столом' : busy ? 'сейчас в другой игре' : '⭐ ${fmtRating(f['rating'])}'),
                             trailing: FilledButton(

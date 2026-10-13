@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'dart:io' show Platform, SocketException;
 import 'package:flutter/foundation.dart' show kDebugMode, kIsWeb, kReleaseMode;
 import 'dart:math' as math;
+import 'dart:ui' as ui;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:http/http.dart' as http;
@@ -33,6 +34,8 @@ part 'widgets/deal_result.dart';
 part 'widgets/game_over.dart';
 part 'widgets/cards.dart';
 part 'widgets/common.dart';
+part 'widgets/shop_look.dart';
+part 'screens/shop.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();

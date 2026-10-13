@@ -292,11 +292,14 @@ class SmallCard extends StatelessWidget {
 class PlayerCardFan extends StatelessWidget {
   final List<Map<String, dynamic>> revealedCards;
   final int cardCount;
+  // Рубашка игрока из магазина (§17) — её видят все за столом.
+  final String? back;
 
   const PlayerCardFan({
     super.key,
     required this.revealedCards,
     this.cardCount = 5,
+    this.back,
   });
 
   @override
@@ -318,6 +321,7 @@ class PlayerCardFan extends StatelessWidget {
                   card: index < revealedCards.length
                       ? revealedCards[index]
                       : null,
+                  back: back,
                 ),
               ),
             ),
@@ -329,9 +333,11 @@ class PlayerCardFan extends StatelessWidget {
 
 // Небольшая колода в центре стола во время вскрытия и раздачи.
 class TableDeckView extends StatelessWidget {
-  const TableDeckView({super.key, this.width = 38});
+  const TableDeckView({super.key, this.width = 38, this.back});
 
   final double width;
+  // Колода раздающего — его рубашкой из магазина (§17).
+  final String? back;
 
   @override
   Widget build(BuildContext context) {
@@ -357,8 +363,7 @@ class TableDeckView extends StatelessWidget {
                 ),
                 child: ClipRRect(
                   borderRadius: BorderRadius.circular(4),
-                  child: Image.asset('assets/branding/card_back.png',
-                      fit: BoxFit.cover),
+                  child: Image.asset(cardBackAsset(back), fit: BoxFit.cover),
                 ),
               ),
             ),
@@ -370,8 +375,9 @@ class TableDeckView extends StatelessWidget {
 
 class _FanCard extends StatelessWidget {
   final Map<String, dynamic>? card;
+  final String? back;
 
-  const _FanCard({this.card});
+  const _FanCard({this.card, this.back});
 
   @override
   Widget build(BuildContext context) {
@@ -395,7 +401,7 @@ class _FanCard extends StatelessWidget {
         borderRadius: BorderRadius.circular(3),
         child: card == null
             ? Image.asset(
-                'assets/branding/card_back.png',
+                cardBackAsset(back),
                 fit: BoxFit.cover,
               )
             : Container(

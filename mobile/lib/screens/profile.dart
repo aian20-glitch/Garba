@@ -190,7 +190,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
                 // Выбор фото из галереи — в истории git (коммит до «Убрать выбор фото»).
                 Center(
                   child: AvatarView(
-                      avatar: null, name: p['name'].toString(), radius: 56),
+                      avatar: null, name: p['name'].toString(), radius: 56, frame: p['frame']?.toString()),
                 ),
                 const SizedBox(height: 12),
                 Text(
@@ -582,7 +582,8 @@ class _FriendsScreenState extends State<FriendsScreen> {
                               return ListTile(
                                 leading: AvatarView(
                                     avatar: f['avatar']?.toString(),
-                                    name: f['name'].toString()),
+                                    name: f['name'].toString(),
+                                    frame: f['frame']?.toString()),
                                 title: Text(f['name'].toString()),
                                 subtitle: Text(
                                   '⭐ ${fmtRating(f['rating'])} · код ${f['code']} · партий ${stats['deals']} · побед ${stats['wins']}'
@@ -832,7 +833,8 @@ class _PlayerScreenState extends State<PlayerScreen> {
                     child: AvatarView(
                         avatar: p['avatar']?.toString(),
                         name: p['name'].toString(),
-                        radius: 56)),
+                        radius: 56,
+                        frame: p['frame']?.toString())),
                 const SizedBox(height: 12),
                 Text(
                   p['name'].toString(),
@@ -928,24 +930,30 @@ class _PlayerScreenState extends State<PlayerScreen> {
 
 // Аватар игрока (этап 9.5): фото с сервера или первая буква имени.
 // avatar — адрес от сервера вида /avatars/<id>?v=<версия> или null.
+// frame — рамка из магазина (§17), её видят все; null — без рамки.
 class AvatarView extends StatelessWidget {
   final String? avatar;
   final String name;
   final double radius;
+  final String? frame;
 
   const AvatarView(
-      {super.key, required this.avatar, required this.name, this.radius = 20});
+      {super.key, required this.avatar, required this.name, this.radius = 20, this.frame});
 
   @override
   Widget build(BuildContext context) {
     final letter = name.isEmpty ? '?' : name.characters.first.toUpperCase();
-    return CircleAvatar(
-      radius: radius,
-      backgroundColor: const Color(0xFF2A3B45),
-      foregroundImage: avatar == null ? null : NetworkImage('$apiBase$avatar'),
-      child: Text(letter,
-          style:
-              TextStyle(fontSize: radius * 0.9, fontWeight: FontWeight.w800)),
+    return framed(
+      CircleAvatar(
+        radius: radius,
+        backgroundColor: const Color(0xFF2A3B45),
+        foregroundImage: avatar == null ? null : NetworkImage('$apiBase$avatar'),
+        child: Text(letter,
+            style:
+                TextStyle(fontSize: radius * 0.9, fontWeight: FontWeight.w800)),
+      ),
+      diameter: radius * 2,
+      frame: frame,
     );
   }
 }

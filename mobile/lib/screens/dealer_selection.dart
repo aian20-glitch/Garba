@@ -219,25 +219,29 @@ class _DealerSelectionScreenState extends State<DealerSelectionScreen> {
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
-              Container(
-                padding: const EdgeInsets.all(2),
-                decoration: BoxDecoration(
-                  shape: BoxShape.circle,
-                  color: const Color(0xFF0B1620),
-                  border: Border.all(
-                    color: player['id'].toString() ==
-                                game['dealerId'].toString() &&
-                            cardsReturned
-                        ? Colors.greenAccent
-                        : const Color(0xFFD4A94F),
-                    width: 2.5,
+              framed(
+                Container(
+                  padding: const EdgeInsets.all(2),
+                  decoration: BoxDecoration(
+                    shape: BoxShape.circle,
+                    color: const Color(0xFF0B1620),
+                    border: Border.all(
+                      color: player['id'].toString() ==
+                                  game['dealerId'].toString() &&
+                              cardsReturned
+                          ? Colors.greenAccent
+                          : const Color(0xFFD4A94F),
+                      width: 2.5,
+                    ),
+                  ),
+                  child: AvatarView(
+                    avatar: player['avatar']?.toString(),
+                    name: player['name'].toString(),
+                    radius: 18,
                   ),
                 ),
-                child: AvatarView(
-                  avatar: player['avatar']?.toString(),
-                  name: player['name'].toString(),
-                  radius: 18,
-                ),
+                diameter: 45,
+                frame: player['frame']?.toString(),
               ),
               Container(
                 width: 92,
@@ -342,7 +346,7 @@ class _DealerSelectionScreenState extends State<DealerSelectionScreen> {
                       return Stack(
                         children: [
                           const Positioned.fill(
-                            child: CustomPaint(painter: KazakhTablePainter()),
+                            child: KazakhTable(),
                           ),
                           Align(
                             alignment: Alignment.center,

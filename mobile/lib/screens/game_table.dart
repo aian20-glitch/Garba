@@ -61,6 +61,9 @@ class _GameTableScreenState extends State<GameTableScreen> {
   ({String name, String suit})? garbaReveal;
   int lastReactionId = 0;
   bool firstReactions = true;
+  // Эффект победы из магазина (§17): главный выиграл раздачу — над его аватаркой.
+  final Map<String, ({String effect, String key})> winEffects = {};
+  final List<Timer> winEffectTimers = [];
   bool sendingReaction = false;
   // Сервер сразу присылает готовые руки, но за живым столом карты появляются
   // по одной. Эти поля хранят только визуальный прогресс раздачи; правила и
@@ -148,6 +151,28 @@ class _GameTableScreenState extends State<GameTableScreen> {
         .map((r) => Map<String, dynamic>.from(r as Map))
         .toList();
     final mine = results.where((r) => r['playerId'].toString() == widget.currentPlayerId);
+    // Выигравшие главные с эффектом из магазина — эффект над аватаркой, видят все.
+    // Начинается, когда окно итога закрылось само (после ГАРБЫ — ещё позже): под окном
+    // его никто бы не увидел.
+    final effectAt = garba != null && trump != null ? showFor * 2 : showFor;
+    for (final r in results.where((r) => r['won'] == true)) {
+      final id = r['playerId'].toString();
+      final effect = ((data['players'] as List?) ?? const [])
+          .map((p) => Map<String, dynamic>.from(p as Map))
+          .where((p) => p['id'].toString() == id)
+          .firstOrNull?['winEffect']
+          ?.toString();
+      if (effect == null) continue;
+      final key = '$roundKey:$id';
+      winEffectTimers.add(Timer(effectAt, () {
+        if (!mounted) return;
+        setState(() => winEffects[id] = (effect: effect, key: key));
+      }));
+      winEffectTimers.add(Timer(effectAt + WinEffect.duration, () {
+        if (!mounted || winEffects[id]?.key != key) return;
+        setState(() => winEffects.remove(id));
+      }));
+    }
     if (garba == null && results.isNotEmpty) {
       GarbaSounds.result(mine.isNotEmpty ? mine.first['won'] == true : results.any((r) => r['won'] == true));
     }
@@ -501,6 +526,9 @@ class _GameTableScreenState extends State<GameTableScreen> {
     dealStartTimer?.cancel();
     dealStepTimer?.cancel();
     threeIzzhogaTimer?.cancel();
+    for (final t in winEffectTimers) {
+      t.cancel();
+    }
     link.dispose();
     super.dispose();
   }
@@ -949,6 +977,12 @@ class _GameTableScreenState extends State<GameTableScreen> {
     final game = Map<String, dynamic>.from(data['game'] as Map);
     final stage = game['stage'].toString();
     final dealerId = game['dealerId'].toString();
+    // Колода в центре — рубашкой раздающего (магазин, §17).
+    final dealerBack = ((data['players'] as List?) ?? const [])
+        .map((p) => Map<String, dynamic>.from(p as Map))
+        .where((p) => p['id'].toString() == dealerId)
+        .firstOrNull?['cardBack']
+        ?.toString();
     // Раздающий вышел — раздавать будет тот, кто сядет на его место (RULES.md §13b).
     final dealerSeated = ((data['players'] as List?) ?? const [])
         .any((p) => (p as Map)['id'].toString() == dealerId);
@@ -1864,8 +1898,14 @@ class _GameTableScreenState extends State<GameTableScreen> {
                   ),
                 ),
               ),
+            if (winEffects[pId] case final fx?)
+              Positioned(
+                left: -42,
+                top: -52,
+                child: WinEffect(key: ValueKey(fx.key), effect: fx.effect, size: 130),
+              ),
             // Смайлик — прямо на аватарке, крупно.
-            if (flyingEmoji[pId] case final emoji? when !tablePhrases.contains(emoji))
+            if (flyingEmoji[pId] case final emoji? when !isPhrase(emoji))
               Positioned(
                 left: -6,
                 top: -6,
@@ -1874,7 +1914,7 @@ class _GameTableScreenState extends State<GameTableScreen> {
                 child: AvatarEmoji(key: ValueKey('${pId}_${emoji}_$lastReactionId'), emoji: emoji),
               ),
             // Фраза — облачком над аватаркой.
-            if (flyingEmoji[pId] case final phrase? when tablePhrases.contains(phrase))
+            if (flyingEmoji[pId] case final phrase? when isPhrase(phrase))
               Positioned(
                 left: -70,
                 right: -70,
@@ -1913,9 +1953,26 @@ class _GameTableScreenState extends State<GameTableScreen> {
                           child: PlayerCardFan(
                             revealedCards: revealedCards,
                             cardCount: shownCardCount,
+                            back: p['cardBack']?.toString(),
                           ),
                         ),
                       ),
+                    // Рамка из магазина (§17) — под табличкой имени, чтобы не закрывала его,
+                    // и вокруг кольца хода: кольцо остаётся видно в дырке рамки.
+                    if (frameHole[p['frame']] case final hole?)
+                      () {
+                        final ring = 38.0 + (isMain ? 7 : 5);
+                        final size = ring / hole * 0.97;
+                        return Positioned(
+                          top: 13 + ring / 2 - size / 2,
+                          left: seatWidth / 2 - size / 2,
+                          width: size,
+                          height: size,
+                          child: IgnorePointer(
+                            child: Image.asset(shopAsset(p['frame'].toString()), fit: BoxFit.contain),
+                          ),
+                        );
+                      }(),
                     Positioned(top: 48, child: namePlate),
                     Positioned(top: 13, child: avatarBadge),
                   ],
@@ -1993,7 +2050,7 @@ class _GameTableScreenState extends State<GameTableScreen> {
           crossAxisAlignment: CrossAxisAlignment.center,
           children: [
             if (presentationBusy) ...[
-              const TableDeckView(width: 34),
+              TableDeckView(width: 34, back: dealerBack),
               const SizedBox(width: 7),
             ],
             TrumpOpeningView(
@@ -2039,7 +2096,7 @@ class _GameTableScreenState extends State<GameTableScreen> {
                   right: 0,
                   top: 2,
                   bottom: 2,
-                  child: CustomPaint(painter: KazakhTablePainter()),
+                  child: KazakhTable(),
                 ),
                 Align(
                   alignment: Alignment.center,
@@ -2083,7 +2140,7 @@ class _GameTableScreenState extends State<GameTableScreen> {
                           alignment: alignment,
                           child: child,
                         ),
-                        child: const TableDeckView(width: 24),
+                        child: TableDeckView(width: 24, back: dealerBack),
                       ),
                     ];
                   }(),

@@ -14,7 +14,7 @@
 ~/Garba/mobile/lib/main.dart     Flutter: подключения и запуск; код разложен по файлам (part):
 ~/Garba/mobile/lib/core.dart     адрес сервера, аккаунт (Session), RoomLink, ссылки, форматирование
 ~/Garba/mobile/lib/screens/      по файлу на экран (game_table.dart — игровой стол)
-~/Garba/mobile/lib/widgets/      карты, казахский орнамент, окно итога раздачи и игры, общие элементы
+~/Garba/mobile/lib/widgets/      карты, казахский орнамент, окно итога раздачи и игры, общие элементы, вещи магазина (shop_look.dart)
 ~/Garba/mobile/lib/tg/           Telegram Mini App: на телефоне заглушка, в веб-сборке — telegram-web-app.js
 ~/Garba/mobile/web/              веб-сборка (браузер и Telegram), сервер отдаёт её по /play/
 ```
@@ -50,6 +50,7 @@
 | `telegram.ts` | **Новый** (07.10.2026). Telegram Mini App: проверка подписи initData, имя из профиля, `startapp`-параметр, отправка Bot API. Чистые функции (кроме `sendTelegram`). |
 | `shrinkVote.ts` | **Новый** (09.10.2026). Игрок ушёл — играть дальше меньшим столом (§13c): кто голосует, итог, 30 с, новые места, раздающий. Чистые функции. |
 | `buyIn.ts` | **Новый** (09.10.2026). Сумма за стол (§9.1b): проверка выбранной суммы. Чистые функции. |
+| `shop.ts` | **Новый** (13.10.2026). Магазин (RULES.md §17): витрина и цены, наборы смайликов, что куплено и надето (таблицы `purchases`, `equipped`), продажи. Рисунки — в приложении. |
 | `special.ts` | **Новый** (этап 7). Спецкарты: какая карта, очередь, множители, итог борьбы, первый ход. |
 | `rules.ts` | **Используются** `canPlayCard`, `trickWinner` (этап 3) и `isGarba` (этап 6) — сверены с RULES.md. `specialKind`, `canDeclareMain` — ещё не проверены. |
 
@@ -96,6 +97,8 @@ cd ~/Garba/mobile && flutter analyze
 - `tests/live-restart.ts` — порт 3098, база во временном файле, таймеры укорочены (1 с / 3 с):
   комната переживает перезапуск сервера, отключение ставит паузу, возврат снимает,
   не вернулся — кон делится между оставшимися.
+- `tests/live-shop.ts` — порт 3094 (13.10.2026): магазин — купить, надеть, что видят за столом, наборы
+  смайликов только купившему, за столом не купить, продажи, удаление аккаунта;
 - `tests/live-audit.ts` — порт 3095 (28.09.2026, находки последнего аудита): закрытая комната не
   трогает аккаунты, пропавший главный проигрывает сразу, «закончить игру» — только за столом,
   лимит сокетов и частоты `watch`. (Ещё `tests/live-bots.ts` — порт 3096, боты сервера.)
@@ -176,7 +179,7 @@ xcodebuild -exportArchive -archivePath build/ios/archive/Runner.xcarchive \
 ```
 
 **Каждая новая сборка — новый номер** после `+` в `version:` в `pubspec.yaml` (1.0.0+2, +3…),
-иначе App Store Connect её не примет. Сейчас в `pubspec.yaml` — **1.0.0+8** (11.10.2026: подтверждение спецкарты от ×3; +7 — уровни рейтинга цветом, ушедшие в итогах игры, боты умнее; +6 — лобби на iPhone SE; +5 — жалобы и
+иначе App Store Connect её не примет. Сейчас в `pubspec.yaml` — **1.0.0+9** (13.10.2026: магазин; +8 — 11.10.2026: подтверждение спецкарты от ×3; +7 — уровни рейтинга цветом, ушедшие в итогах игры, боты умнее; +6 — лобби на iPhone SE; +5 — жалобы и
 блокировка по ответу Apple). **1.0.0 (6) выгружена 07.10.2026**; (5) — 29.09.2026, сервер с
 жалобами и блокировкой выложен в тот же день.
 
@@ -428,6 +431,24 @@ GET  /play/                      веб-сборка игры (GARBA_WEB_DIR); i
 бота — `deploy/telegram-bot`. Веб-сборку собирает `deploy.sh`: `flutter build web --base-href /play/
 --dart-define=TG_BOT=<бот>`. Проверка без настоящего Telegram: открыть /play/#tgWebAppData=<initData,
 подписанный тестовым токеном>&tgWebAppVersion=8.0 — telegram-web-app.js читает данные из адреса.
+
+— магазин (13.10.2026, RULES.md §17, shop.ts) — только внешний вид, монеты сгорают —
+GET  /shop                       → { items: [{ id, kind, price, name, title, owned, equipped }], look, balance,
+                                 roomId }   kind: frame | back | cloth | effect | pack; look — что надето:
+                                 { frame, back, cloth, effect } (id или null — как у всех)
+POST /shop/buy                   { itemId } → то же, что GET /shop; вещь сразу надевается (набор — нет);
+                                 404 unknown item; 409 already owned; 400 not enough coins { price, balance };
+                                 409 finish your game first { roomId } — за столом и в лобби нельзя, как дарить
+POST /shop/equip                 { slot, itemId | null } → то же; можно и за столом (рассылка комнате);
+                                 403 not owned; 400 bad slot | wrong slot | unknown item
+GET  /me                         → ещё shop: { owned: [...], look } — сукно и наборы нужны приложению за столом
+players[] комнаты                → frame, cardBack, winEffect (id или null); сукна нет — каждый видит своё.
+                                 frame — ещё в /me/profile, /players/:code, /rating, /friends
+POST /rooms/:id/react            смайлик из набора магазина без покупки — 403 buy it in the shop
+GET  /admin/shop                 → { sales: [{ itemId, name, count, coins }], burned } — только с этого компьютера
+Рисунки — mobile/assets/shop/*.webp (художник — Codex, исходники в mobile/design/shop, нарезка —
+tools/shop_art.py, он же печатает долю дырки у рамок → frameHole в widgets/shop_look.dart).
+Новую вещь добавлять в три места: SHOP_ITEMS (shop.ts), картинку, _knownItem в screens/shop.dart.
 
 — служебное, только с этого компьютера (23.09.2026) —
 POST /admin/coins                { code | id, amount }  → { name, amount, balance }; через moveCoins;
@@ -792,6 +813,9 @@ PowerShell 5.1 срезает кавычки в `-d`. Файл сохранён 
 
 ## 5. Что работает сейчас
 
+- с 13.10.2026: **магазин** (плитка на главном, RULES.md §17): рамки аватарки, рубашки карт (видны в веере
+  у соседей и на колоде раздающего), сукно стола (только у себя), эффект победы над аватаркой (после окна
+  итога раздачи), наборы «Тролль», «Подкол», стикеры «Насмешка» (названия — по-русски, решение владельца); рисовал художник (Codex, gpt-6-astra);
 - с 27–29.09.2026: «ДОБАВИТЬ БОТОВ · ТРЕНИРОВКА» в лобби (боты сервера), лобби закрывается само через
   10 минут; жалобы на игроков, блокировка и список заблокированных, фильтр мата в именах (Apple 1.2);
   жалобы разбирает владелец: `./deploy/reports.sh garba-vps`;

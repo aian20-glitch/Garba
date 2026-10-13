@@ -62,6 +62,19 @@ import { BOT_STEP_MS, botAction, botTopUp, freeBotName, type BotAction } from '.
 import { loadUnfinishedRooms, profileStats, ratedPlayers, roomIdTaken, saveRoom, writeRoom } from './roomDb.js';
 import { afterDeal, afterRoom, leavePenalty, ratingOf, shownRating, START_SKILL } from './rating.js';
 import { addReaction, isPlayerCode, isRoomCode, type ReactionEntry } from './reactions.js';
+import {
+  buyError,
+  equipError,
+  lookOf,
+  ownedItems,
+  recordPurchase,
+  setEquipped,
+  SHOP_ITEMS,
+  shopItem,
+  shopSales,
+  type Look,
+  type Slot,
+} from './shop.js';
 import { addDeal, addMoney, emptyStats, roomWinners, type PlayerStats } from './stats.js';
 import { avatarPath, detectImageType, loadAvatar, MAX_AVATAR_BYTES, saveAvatar } from './avatars.js';
 import {
@@ -921,6 +934,7 @@ function deleteAccountEverywhere(account: Account) {
     }
   }
   console.log(`[ACCOUNT] deleted ${account.name} (${account.id})`);
+  looks.delete(account.id);
   dropSocketsOf(account.id);
 }
 
@@ -964,6 +978,8 @@ app.get('/me', (req, res) => {
     hasRecoveryCode: hasRecoveryCode(db, account.id),
     // Друзья зовут в комнату (25.09.2026) — только те, куда ещё можно сесть.
     roomInvites: invitesFor(account.id),
+    // Магазин (§17): что куплено и что надето — сукно и наборы смайликов нужны приложению за столом.
+    shop: { owned: ownedItems(db, account.id), look: lookFor(account.id) },
   });
 });
 
@@ -1112,6 +1128,22 @@ function avatarOf(accountId: string): string | null {
   return AVATARS_ON ? avatarPath(db, accountId) : null;
 }
 
+// Что надето из магазина (§17). Состояние комнаты строится на каждую рассылку для каждого
+// смотрящего — поэтому держим в памяти, а меняется только в /shop/buy и /shop/equip.
+const looks = new Map<string, Look>();
+function lookFor(accountId: string): Look {
+  let look = looks.get(accountId);
+  if (!look) {
+    look = lookOf(db, accountId);
+    looks.set(accountId, look);
+  }
+  return look;
+}
+// Рамка аватарки — везде, где виден игрок: за столом, в лобби, в рейтинге, у друзей, в карточке.
+function frameOf(accountId: string): string | null {
+  return lookFor(accountId).frame;
+}
+
 // Телефон присылает уже уменьшенную картинку как есть (не JSON). Тип картинки сервер
 // определяет сам по её байтам — присланному Content-Type не верим.
 app.put(
@@ -1175,6 +1207,7 @@ app.get('/me/profile', (req, res) => {
     ...walletSplit(account),
     createdAt: account.createdAt,
     avatar: avatarOf(account.id),
+    frame: frameOf(account.id),
     rating: shownRating(accountRating(account.id)),
     stats: profileStats(db, account.id),
     friendsCount: listFriends(db, account.id).length,
@@ -1197,6 +1230,7 @@ app.get('/players/:code', (req, res) => {
     code: player.code,
     name: player.name,
     avatar: avatarOf(player.id),
+    frame: frameOf(player.id),
     // Монеты видны всем, как за столом (решение владельца, 08.10.2026).
     balance: player.balance,
     rating: shownRating(accountRating(player.id)),
@@ -1282,6 +1316,7 @@ app.get('/rating', (req, res) => {
     code: p.code,
     name: p.name,
     avatar: avatarOf(p.id),
+    frame: frameOf(p.id),
     rating: shownRating(p.rating),
     me: p.id === me.id,
   }));
@@ -1304,6 +1339,7 @@ app.get('/friends', (req, res) => {
       code: f.code,
       name: f.name,
       avatar: avatarOf(f.id),
+      frame: frameOf(f.id),
       rating: shownRating(accountRating(f.id)),
       stats: profileStats(db, f.id),
       // В какой комнате сейчас сидит — чтобы можно было зайти к другу.
@@ -1533,6 +1569,93 @@ app.post('/gifts', (req, res) => {
     to: { code: to.code, name: to.name },
     leftToday: giftLeftToday(giftedOn(db, from.id, today)),
   });
+});
+
+// --- Магазин (RULES.md §17, 13.10.2026; shop.ts) ---
+// Только внешний вид. Монеты за покупку сгорают, купленное — навсегда.
+
+// Витрина: все вещи с ценами, что куплено и что надето, сколько монет вне стола.
+function shopState(account: Account) {
+  const owned = ownedItems(db, account.id);
+  const look = lookFor(account.id);
+  return {
+    items: SHOP_ITEMS.map((item) => ({
+      ...item,
+      owned: owned.includes(item.id),
+      equipped: item.kind !== 'pack' && look[item.kind] === item.id,
+    })),
+    look,
+    balance: walletSplit(account).balance,
+    // Сидит за столом — купить нельзя, надеть можно.
+    roomId: activeRoomOf(account.id)?.id ?? null,
+  };
+}
+
+app.get('/shop', (req, res) => {
+  const account = accountOf(req);
+  if (!account) {
+    return res.status(401).json({ error: 'unauthorized' });
+  }
+  return res.json(shopState(account));
+});
+
+// Купить: монеты сгорают, вещь сразу надевается (набор — сразу в окне смайликов).
+// За столом нельзя, как и дарить: монеты за столом считаются в комнате.
+app.post('/shop/buy', (req, res) => {
+  const account = accountOf(req);
+  if (!account) {
+    return res.status(401).json({ error: 'unauthorized' });
+  }
+  const busyIn = activeRoomOf(account.id);
+  if (busyIn) {
+    return res.status(409).json({ error: 'finish your game first', roomId: busyIn.id });
+  }
+
+  const error = buyError(req.body?.itemId, account.balance, ownedItems(db, account.id));
+  if (error === 'unknown item') return res.status(404).json({ error });
+  if (error === 'already owned') return res.status(409).json({ error });
+  const item = shopItem(req.body?.itemId)!;
+  if (error === 'not enough coins') {
+    return res.status(400).json({ error, price: item.price, balance: account.balance });
+  }
+
+  moveCoins([{ accountId: account.id, delta: -item.price }], () => {
+    recordPurchase(db, account.id, item, Date.now());
+    if (item.kind !== 'pack') setEquipped(db, account.id, item.kind, item.id);
+  });
+  looks.delete(account.id);
+  console.log(`[SHOP] ${account.name}: купил ${item.name} (${item.id}) за ${item.price}`);
+
+  return res.json(shopState(getAccount(db, account.id)!));
+});
+
+// Надеть купленное или снять (itemId: null — вернуть бесплатное, как у всех). Можно и за столом:
+// остальные увидят новую рамку и рубашку сразу.
+app.post('/shop/equip', (req, res) => {
+  const account = accountOf(req);
+  if (!account) {
+    return res.status(401).json({ error: 'unauthorized' });
+  }
+  const slot = req.body?.slot;
+  const itemId = req.body?.itemId ?? null;
+  const error = equipError(slot, itemId, ownedItems(db, account.id));
+  if (error === 'not owned') return res.status(403).json({ error });
+  if (error) return res.status(400).json({ error });
+
+  setEquipped(db, account.id, slot as Slot, itemId);
+  looks.delete(account.id);
+
+  const room = activeRoomOf(account.id);
+  if (room) broadcastRoom(room.id).catch((e) => console.error(`[ROOM ${room.id}] broadcast failed:`, e));
+
+  return res.json(shopState(account));
+});
+
+// Продажи магазина — только с этого компьютера: что купили и сколько монет сгорело.
+app.get('/admin/shop', (req, res) => {
+  if (!localOnly(req)) return res.status(403).json({ error: 'local only' });
+  const sales = shopSales(db).map((s) => ({ ...s, name: shopItem(s.itemId)?.name ?? s.itemId }));
+  return res.json({ sales, burned: sales.reduce((sum, s) => sum + s.coins, 0) });
 });
 
 // Всё про комнаты — только с токеном. Кто делает запрос, сервер знает сам:
@@ -3378,6 +3501,11 @@ function publicRoom(room: Room, viewerId?: string) {
         code: codeOf(p.id),
         bot: room.botIds?.includes(p.id) ?? false,
         avatar: avatarOf(p.id),
+        // Магазин (§17): рамка, рубашка карт в его веере, эффект его победы. Сукно — личное,
+        // каждый видит своё (решение владельца), поэтому его здесь нет.
+        frame: lookFor(p.id).frame,
+        cardBack: lookFor(p.id).back,
+        winEffect: lookFor(p.id).effect,
         rating: shownRating(atTable ? liveRating(room, p.id) : accountRating(p.id)),
         ratingStart: shownRating(
           atTable ? ratingOf(atTable.startSkill, atTable.startDeals) : accountRating(p.id),
@@ -4600,12 +4728,22 @@ app.post('/rooms/:id/react', (req, res) => {
   }
 
   // Смайлики — в любой момент, и в лобби (решение владельца, 25.09.2026).
-  const result = addReaction(room.reactions ?? [], room.game?.stage ?? 'lobby', playerId, req.body?.emoji, Date.now());
+  const result = addReaction(
+    room.reactions ?? [],
+    room.game?.stage ?? 'lobby',
+    playerId,
+    req.body?.emoji,
+    Date.now(),
+    ownedItems(db, playerId), // наборы смайликов из магазина (§17)
+  );
   if (result === 'not now') {
     return res.status(409).json({ error: 'reactions only after a deal' });
   }
   if (result === 'unknown emoji') {
     return res.status(400).json({ error: 'unknown emoji' });
+  }
+  if (result === 'not owned') {
+    return res.status(403).json({ error: 'buy it in the shop' });
   }
   if (result === 'too fast') {
     return res.status(429).json({ error: 'too fast' });

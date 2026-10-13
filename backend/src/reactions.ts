@@ -3,6 +3,8 @@
 // Текстового чата нет — только готовые смайлики. С 25.09.2026 (решение владельца) —
 // в любой момент: в лобби, в торгах, в розыгрыше, после раздачи и после игры.
 
+import { packOf } from './shop.js';
+
 // Набор смайликов. Свои тексты слать нельзя — это был бы чат.
 export const REACTIONS = ['👍', '👏', '😂', '😎', '😮', '🤔', '😭', '😡', '🔥', '🤝', '🙈', '🎉'] as const;
 // Готовые фразы (09.10.2026, решение владельца): то, что чаще всего хочется сказать за столом.
@@ -21,7 +23,8 @@ export const PHRASES = [
   'Спасибо!',
   'Рахмет!',
 ] as const;
-export type Reaction = (typeof REACTIONS)[number] | (typeof PHRASES)[number];
+// Ещё смайлики, фразы и стикеры — из наборов магазина (§17, 13.10.2026), только купившему.
+export type Reaction = string;
 
 
 export const REACTION_COOLDOWN_MS = 2_000; // не чаще раза в 2 секунды от игрока
@@ -29,26 +32,32 @@ export const REACTIONS_KEPT = 20; // сколько последних реак�
 
 export type ReactionEntry = { id: number; playerId: string; emoji: Reaction; at: number };
 
-export type ReactionError = 'not now' | 'unknown emoji' | 'too fast';
+export type ReactionError = 'not now' | 'unknown emoji' | 'not owned' | 'too fast';
 
 export function isReaction(value: unknown): value is Reaction {
   return (
     typeof value === 'string' &&
-    ((REACTIONS as readonly string[]).includes(value) || (PHRASES as readonly string[]).includes(value))
+    ((REACTIONS as readonly string[]).includes(value) ||
+      (PHRASES as readonly string[]).includes(value) ||
+      packOf(value) !== null)
   );
 }
 
 // Добавить реакцию. Возвращает новый список или ошибку.
 // id растёт — по нему клиент понимает, какие реакции новые, и показывает их один раз.
+// ownedPacks — какие наборы магазина у игрока куплены (§17).
 export function addReaction(
   list: ReactionEntry[],
   stage: string,
   playerId: string,
   emoji: unknown,
   now: number,
+  ownedPacks: readonly string[] = [],
 ): ReactionEntry[] | ReactionError {
   void stage; // когда угодно (25.09.2026); стадия остаётся в подписи для журнала
   if (!isReaction(emoji)) return 'unknown emoji';
+  const pack = packOf(emoji);
+  if (pack && !ownedPacks.includes(pack)) return 'not owned';
 
   const last = [...list].reverse().find((r) => r.playerId === playerId);
   if (last && now - last.at < REACTION_COOLDOWN_MS) return 'too fast';

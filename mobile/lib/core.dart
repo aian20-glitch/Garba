@@ -93,7 +93,7 @@ const tablePhrases = [
 
 // Фраза живёт над аватаркой дольше смайлика — её надо успеть прочитать.
 Duration reactionShowTime(String emoji) =>
-    Duration(seconds: tablePhrases.contains(emoji) ? 4 : 3);
+    Duration(seconds: isPhrase(emoji) ? 4 : 3);
 
 bool isRedSuit(String suit) =>
     suit == 'hearts' || suit == 'diamonds' || suit == '♥' || suit == '♦';
@@ -362,6 +362,11 @@ const _apiErrorMessages = <String, String>{
   'name not allowed': 'Такое имя нельзя: без мата и оскорблений.',
   'blocked': 'Нельзя: один из вас заблокировал другого.',
   'already reported': 'Вы уже пожаловались на этого игрока — жалоба на проверке.',
+  // Магазин (§17, 13.10.2026).
+  'already owned': 'Это у вас уже есть.',
+  'not owned': 'Сначала купите это в магазине.',
+  'buy it in the shop': 'Этот набор продаётся в магазине.',
+  'unknown item': 'Такой вещи в магазине нет — обновите приложение.',
 };
 
 String userErrorMessage(Object error, {String fallback = 'Не удалось выполнить действие'}) {

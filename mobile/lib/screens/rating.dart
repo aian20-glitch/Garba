@@ -109,7 +109,7 @@ class _RatingListState extends State<RatingList> {
                           ),
                         ),
                       ),
-                      AvatarView(avatar: p['avatar']?.toString(), name: p['name'].toString()),
+                      AvatarView(avatar: p['avatar']?.toString(), name: p['name'].toString(), frame: p['frame']?.toString()),
                     ],
                   ),
                 ),

@@ -243,42 +243,47 @@ class _LobbyScreenState extends State<LobbyScreen> {
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
-              Container(
-                padding: const EdgeInsets.all(2),
-                decoration: BoxDecoration(
-                  shape: BoxShape.circle,
-                  border: Border.all(
-                    color: ready == null
-                        ? (id == widget.currentPlayerId ? gold : const Color(0xFF3A4A55))
-                        : ready
-                            ? Colors.greenAccent
-                            : Colors.white38,
-                    width: 2.5,
-                  ),
-                ),
-                child: Stack(
-                  clipBehavior: Clip.none,
-                  children: [
-                    AvatarView(avatar: p['avatar']?.toString(), name: p['name'].toString(), radius: 21),
-                    if (flyingEmoji[id] case final emoji? when !tablePhrases.contains(emoji))
-                      Positioned(
-                        left: -5,
-                        top: -5,
-                        right: -5,
-                        bottom: -5,
-                        child: AvatarEmoji(key: ValueKey('${id}_${emoji}_$lastReactionId'), emoji: emoji),
-                      ),
-                    if (flyingEmoji[id] case final phrase? when tablePhrases.contains(phrase))
-                      Positioned(
-                        left: -70,
-                        right: -70,
-                        top: -30,
-                        child: Center(
-                          child: PhraseBubble(key: ValueKey('${id}_${phrase}_$lastReactionId'), text: phrase),
+              // Рамка из магазина (§17) — вокруг кольца «готов», смайлики и фразы — поверх рамки.
+              Stack(
+                clipBehavior: Clip.none,
+                children: [
+                  framed(
+                    Container(
+                      padding: const EdgeInsets.all(2),
+                      decoration: BoxDecoration(
+                        shape: BoxShape.circle,
+                        border: Border.all(
+                          color: ready == null
+                              ? (id == widget.currentPlayerId ? gold : const Color(0xFF3A4A55))
+                              : ready
+                                  ? Colors.greenAccent
+                                  : Colors.white38,
+                          width: 2.5,
                         ),
                       ),
-                  ],
-                ),
+                      child: AvatarView(avatar: p['avatar']?.toString(), name: p['name'].toString(), radius: 21),
+                    ),
+                    diameter: 51,
+                    frame: p['frame']?.toString(),
+                  ),
+                  if (flyingEmoji[id] case final emoji? when !isPhrase(emoji))
+                    Positioned(
+                      left: -1,
+                      top: -1,
+                      right: -1,
+                      bottom: -1,
+                      child: AvatarEmoji(key: ValueKey('${id}_${emoji}_$lastReactionId'), emoji: emoji),
+                    ),
+                  if (flyingEmoji[id] case final phrase? when isPhrase(phrase))
+                    Positioned(
+                      left: -70,
+                      right: -70,
+                      top: -26,
+                      child: Center(
+                        child: PhraseBubble(key: ValueKey('${id}_${phrase}_$lastReactionId'), text: phrase),
+                      ),
+                    ),
+                ],
               ),
               const SizedBox(height: 3),
               Container(
@@ -332,7 +337,7 @@ class _LobbyScreenState extends State<LobbyScreen> {
         height: box.maxHeight,
         child: Stack(
           children: [
-            const Positioned.fill(child: CustomPaint(painter: KazakhTablePainter())),
+            const Positioned.fill(child: KazakhTable()),
             Align(
               alignment: const Alignment(0, -0.2),
               child: Column(

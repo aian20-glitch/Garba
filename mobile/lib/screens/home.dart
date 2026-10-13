@@ -86,6 +86,8 @@ class _HomeScreenState extends State<HomeScreen> with RouteAware {
       final me = jsonDecode(response.body) as Map<String, dynamic>;
       if (!mounted) return;
       final daily = Map<String, dynamic>.from(me['daily'] as Map);
+      // Что куплено и надето в магазине (§17): сукно стола и наборы смайликов.
+      ShopState.apply(me['shop']);
       setState(() {
         balance = (me['balance'] as num).toInt();
         tableBalance = (me['tableBalance'] as num?)?.toInt();
@@ -202,8 +204,10 @@ class _HomeScreenState extends State<HomeScreen> with RouteAware {
               const SizedBox(height: 8),
               Row(
                 children: [
-                  AvatarView(avatar: avatar, name: Session.name, radius: 24),
-                  const SizedBox(width: 12),
+                  // Рамка из магазина выходит за края аватарки — отступ, чтобы не прилипала к краю.
+                  if (ShopState.look['frame'] != null) const SizedBox(width: 10),
+                  AvatarView(avatar: avatar, name: Session.name, radius: 24, frame: ShopState.look['frame']),
+                  SizedBox(width: ShopState.look['frame'] != null ? 22 : 12),
                   Expanded(
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
@@ -302,6 +306,11 @@ class _HomeScreenState extends State<HomeScreen> with RouteAware {
                         ],
                         const SizedBox(height: 14),
                       ],
+                      // Магазин (§17, 13.10.2026) — во всю ширину: рамки, рубашки, сукно, смайлики.
+                      Padding(
+                        padding: const EdgeInsets.only(bottom: 12),
+                        child: ShopTile(onTap: () => go(const ShopScreen())),
+                      ),
                       // По две плитки в ряд (просьба владельца, 19.09.2026): короче экран,
                       // всё видно сразу. «Вернуться в комнату» — выше, во всю ширину.
                       tileRow(
