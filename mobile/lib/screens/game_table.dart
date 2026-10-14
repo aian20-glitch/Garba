@@ -977,12 +977,8 @@ class _GameTableScreenState extends State<GameTableScreen> {
     final game = Map<String, dynamic>.from(data['game'] as Map);
     final stage = game['stage'].toString();
     final dealerId = game['dealerId'].toString();
-    // Колода в центре — рубашкой раздающего (магазин, §17).
-    final dealerBack = ((data['players'] as List?) ?? const [])
-        .map((p) => Map<String, dynamic>.from(p as Map))
-        .where((p) => p['id'].toString() == dealerId)
-        .firstOrNull?['cardBack']
-        ?.toString();
+    // Все карты стола — рубашкой создателя комнаты (магазин, §17).
+    final tableBack = tableCardBack(data);
     // Раздающий вышел — раздавать будет тот, кто сядет на его место (RULES.md §13b).
     final dealerSeated = ((data['players'] as List?) ?? const [])
         .any((p) => (p as Map)['id'].toString() == dealerId);
@@ -1953,7 +1949,7 @@ class _GameTableScreenState extends State<GameTableScreen> {
                           child: PlayerCardFan(
                             revealedCards: revealedCards,
                             cardCount: shownCardCount,
-                            back: p['cardBack']?.toString(),
+                            back: tableBack,
                           ),
                         ),
                       ),
@@ -2050,7 +2046,7 @@ class _GameTableScreenState extends State<GameTableScreen> {
           crossAxisAlignment: CrossAxisAlignment.center,
           children: [
             if (presentationBusy) ...[
-              TableDeckView(width: 34, back: dealerBack),
+              TableDeckView(width: 34, back: tableBack),
               const SizedBox(width: 7),
             ],
             TrumpOpeningView(
@@ -2140,7 +2136,7 @@ class _GameTableScreenState extends State<GameTableScreen> {
                           alignment: alignment,
                           child: child,
                         ),
-                        child: TableDeckView(width: 24, back: dealerBack),
+                        child: TableDeckView(width: 24, back: tableBack),
                       ),
                     ];
                   }(),

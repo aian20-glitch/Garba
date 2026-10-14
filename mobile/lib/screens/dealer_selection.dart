@@ -393,7 +393,7 @@ class _DealerSelectionScreenState extends State<DealerSelectionScreen> {
                                       key: const ValueKey('dealer-deck'),
                                       mainAxisSize: MainAxisSize.min,
                                       children: [
-                                        const TableDeckView(width: 48),
+                                        TableDeckView(width: 48, back: tableCardBack(data)),
                                         const SizedBox(height: 6),
                                         Text(
                                           current == null

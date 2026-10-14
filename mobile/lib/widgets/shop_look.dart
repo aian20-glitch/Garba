@@ -68,6 +68,16 @@ class ShopState {
 String cardBackAsset(String? back) =>
     back != null && back.startsWith('back_') ? shopAsset(back) : 'assets/branding/card_back.png';
 
+// За столом все карты — рубашкой создателя комнаты (решение владельца, 14.10.2026, §17):
+// и колода, и веер у каждого игрока. Создатель ушёл — рубашка нового создателя.
+String? tableCardBack(Map<String, dynamic> room) {
+  final creatorId = room['creatorId']?.toString();
+  for (final p in (room['players'] as List?) ?? const []) {
+    if (p is Map && p['id'].toString() == creatorId) return p['cardBack']?.toString();
+  }
+  return null;
+}
+
 // Рамка поверх аватарки. Размер аватарки не меняется — рамка выходит за её края.
 Widget framed(Widget avatar, {required double diameter, required String? frame}) {
   final hole = frameHole[frame];
