@@ -46,11 +46,15 @@ export function openTrump(
       return { openCard: card, izzhoga, deck: rest };
     }
 
-    // «Вбивается в середину»: не наверх, чтобы не открыть её же следующей,
-    // и не в самый низ. Позиция от 1 до длина−1.
+    // «Вбивается в середину» — в среднюю треть колоды, и не выше, чем ещё будут
+    // открывать: иначе та же карта откроется второй раз (16.10.2026, игроки видели
+    // одну ИЗЖОГУ дважды из трёх).
     izzhoga.push(card);
-    const position = 1 + Math.floor(random() * Math.max(1, rest.length - 1));
-    rest.splice(position, 0, card);
+    const opensLeft = MAX_TRUMP_ATTEMPTS - attempt - 1;
+    const low = Math.max(opensLeft, Math.floor(rest.length / 3));
+    const high = Math.max(low, Math.ceil((rest.length * 2) / 3));
+    const position = low + Math.floor(random() * (high - low + 1));
+    rest.splice(Math.min(position, rest.length), 0, card);
   }
 
   // Три ИЗЖОГИ подряд — раздача отменяется (§5.2).

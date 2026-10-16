@@ -51,6 +51,11 @@ class _GameTableScreenState extends State<GameTableScreen> {
   String? dismissedResultKey;
   // Окно итога всей игры закрыто нажатием — дальше итоги под столом.
   bool gameOverClosed = false;
+  // Игра закончилась у всех на глазах — 3 секунды надпись «ИГРА ОКОНЧЕНА» и открытые
+  // карты на столе, потом окно итогов. Раньше окно иногда всплывало сразу (кон забрали —
+  // сервер переходит в room_done без round_done), а иногда после итога раздачи.
+  bool gameOverHeld = false;
+  Timer? gameOverTimer;
   // Раздача сыграна: сразу окно итога, через 2,5 секунды оно закрывается само —
   // дальше все смотрят на столе, у кого какие карты были. При ГАРБЕ сначала
   // 2,5 секунды показываются дама, король и туз козыря под барабан.
@@ -196,6 +201,18 @@ class _GameTableScreenState extends State<GameTableScreen> {
     }
   }
 
+  // Комната закрылась, пока стол был открыт, — придержать окно итогов игры.
+  // Открыли уже закрытую комнату — окно сразу, ждать нечего.
+  void holdGameOver(Map<String, dynamic> data) {
+    String? stageOf(Map<String, dynamic>? r) => (r?['game'] as Map?)?['stage']?.toString();
+    if (room == null || stageOf(data) != 'room_done' || stageOf(room) == 'room_done') return;
+    gameOverHeld = true;
+    gameOverTimer?.cancel();
+    gameOverTimer = Timer(const Duration(seconds: 3), () {
+      if (mounted) setState(() => gameOverHeld = false);
+    });
+  }
+
   // Свежее состояние комнаты — по сокету или по HTTP.
   void applyRoom(Map<String, dynamic> data) {
     if (!mounted) return;
@@ -205,6 +222,7 @@ class _GameTableScreenState extends State<GameTableScreen> {
     closeStaleDvaSheet(data);
     updateDealPresentation(data);
     holdRoundResult(data);
+    holdGameOver(data);
     setState(() {
       room = data;
       pauseReceivedAt = DateTime.now();
@@ -522,6 +540,7 @@ class _GameTableScreenState extends State<GameTableScreen> {
   void dispose() {
     timer?.cancel();
     resultHoldTimer?.cancel();
+    gameOverTimer?.cancel();
     pauseTicker?.cancel();
     dealStartTimer?.cancel();
     dealStepTimer?.cancel();
@@ -2232,7 +2251,7 @@ class _GameTableScreenState extends State<GameTableScreen> {
     // Игра закончилась — окно: кто сколько выиграл за игру и какой рейтинг сделал.
     // Лучшего выделяем по winnerIds от сервера (§36).
     Widget? gameOverPopup;
-    if (isRoomDone && !gameOverClosed) {
+    if (isRoomDone && !gameOverClosed && !gameOverHeld) {
       gameOverPopup = GameOverPopup(
         lines: [
           for (final p in playersForResults(room!))
@@ -2553,6 +2572,54 @@ class _GameTableScreenState extends State<GameTableScreen> {
                     ),
                   if (resultPopup != null) Positioned.fill(child: resultPopup),
                   if (gameOverPopup != null) Positioned.fill(child: gameOverPopup),
+                  if (isRoomDone && gameOverHeld)
+                    Positioned(
+                      top: 12,
+                      left: 0,
+                      right: 0,
+                      child: IgnorePointer(
+                        child: Center(
+                          child: TweenAnimationBuilder<double>(
+                            tween: Tween(begin: 0.3, end: 1),
+                            duration: const Duration(milliseconds: 700),
+                            curve: Curves.elasticOut,
+                            builder: (_, t, c) => Transform.scale(scale: t, child: c),
+                            child: Container(
+                              padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 10),
+                              decoration: BoxDecoration(
+                                color: const Color(0xEE0B1620),
+                                borderRadius: BorderRadius.circular(16),
+                                border: Border.all(color: const Color(0xFFD4A94F), width: 2),
+                                boxShadow: const [
+                                  BoxShadow(color: Color(0x88D4A94F), blurRadius: 24),
+                                ],
+                              ),
+                              child: const Text.rich(
+                                TextSpan(
+                                  text: 'ИГРА ОКОНЧЕНА',
+                                  children: [
+                                    TextSpan(
+                                      text: '\nсмотрим, у кого какие карты',
+                                      style: TextStyle(
+                                        fontSize: 14,
+                                        fontWeight: FontWeight.w600,
+                                        color: Colors.white70,
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                                textAlign: TextAlign.center,
+                                style: TextStyle(
+                                  fontSize: 26,
+                                  fontWeight: FontWeight.w900,
+                                  color: Color(0xFFD4A94F),
+                                ),
+                              ),
+                            ),
+                          ),
+                        ),
+                      ),
+                    ),
                   if (isRoundDone && garbaReveal != null)
                     Positioned.fill(
                       child: GarbaReveal(

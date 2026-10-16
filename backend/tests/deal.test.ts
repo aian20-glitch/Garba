@@ -58,6 +58,19 @@ for (let i = 0; i < 1000; i++) {
 }
 check('1000 раз: ИЗЖОГУ никогда не вбивают наверх колоды', reopened, 0);
 
+// Жалоба игроков 16.10.2026: при трёх ИЗЖОГАХ одна и та же карта открылась дважды.
+let repeated = 0;
+for (const random of [() => 0, () => 0.5, () => 0.999, Math.random]) {
+  for (let i = 0; i < 1000; i++) {
+    const r = openTrump(shuffle(createDeck(5)), 5, random);
+    if (new Set(ids(r.izzhoga)).size !== r.izzhoga.length) repeated++;
+  }
+}
+check('4000 раз: среди открытых ИЗЖОГ ни одна карта не повторяется', repeated, 0);
+const shallow = openTrump(deckWithTop(5, [c('spades', 'K'), c('clubs', 'J'), c('spades', 'A')]), 5, () => 0);
+check('даже при самом мелком «вбивании» ♠K не открывается третьей',
+  ids(shallow.izzhoga), ['spades-K', 'clubs-J', 'spades-A']);
+
 section('10 000 случайных раздач: колода всегда сходится');
 for (const capacity of [4, 5, 6, 7] as const) {
   let broken = 0;
