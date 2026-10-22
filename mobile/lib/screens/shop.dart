@@ -37,7 +37,7 @@ class ShopTile extends StatelessWidget {
                         style: TextStyle(
                             fontSize: 20, fontWeight: FontWeight.w900, color: Color(0xFFFFD87A), letterSpacing: 1)),
                     SizedBox(height: 2),
-                    Text('Рамки, рубашки, сукно, стикеры',
+                    Text('Рамки, рубашки, сукно, фразы',
                         style: TextStyle(fontSize: 13, color: Colors.white70)),
                   ],
                 ),
@@ -97,7 +97,8 @@ class _ShopScreenState extends State<ShopScreen> {
       frameHole.containsKey(id) ||
       id.startsWith('back_') ||
       id.startsWith('cloth_') ||
-      const ['win_shashu', 'win_stars', 'win_burkit', 'pack_troll', 'pack_podkol', 'pack_mazak'].contains(id);
+      phrasePacks.containsKey(id) ||
+      const ['win_shashu', 'win_stars', 'win_burkit', 'pack_troll', 'pack_mazak'].contains(id);
 
   void apply(Map<String, dynamic> data) {
     ShopState.apply(data);
@@ -171,7 +172,9 @@ class _ShopScreenState extends State<ShopScreen> {
       GarbaSounds.result(true);
       HapticFeedback.mediumImpact();
       return item['kind'] == 'pack'
-          ? '«${item['name']}» — ваш! Уже в окне смайликов за столом.'
+          ? phrasePacks.containsKey(item['id'])
+              ? '«${item['name']}» — ваш! Уже в окне фраз 💬 за столом.'
+              : '«${item['name']}» — ваш! Уже в окне смайликов за столом.'
           : '«${item['name']}» — ваше! Уже надето.';
     });
   }
@@ -278,13 +281,14 @@ class _ShopScreenState extends State<ShopScreen> {
             ),
           );
         }
-        if (id == 'pack_podkol') {
+        // Наборы фраз — сами фразы облачками: «Подкол», «Воин», «Воин 2».
+        if (phrasePacks[id] case final pack?) {
           return Wrap(
             alignment: WrapAlignment.center,
             spacing: 4,
             runSpacing: 4,
             children: [
-              for (final p in big ? packPodkol : packPodkol.take(3))
+              for (final p in big ? pack.phrases : pack.phrases.take(3))
                 Container(
                   padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
                   decoration: BoxDecoration(

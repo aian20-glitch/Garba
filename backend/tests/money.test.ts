@@ -9,6 +9,7 @@ import {
   collectAnte,
   konUnlockAt,
   lowestEntryFor,
+  entryAllowed,
   settleRound,
   someoneBelowBase,
   stakeFor,
@@ -142,6 +143,15 @@ check('взнос 1000 → минимум 10 000', lowestEntryFor(1000), 10000);
 let below = 0;
 for (let ante = 100; ante <= 1000; ante += 100) for (let n = 4; n <= 7; n++) if (lowestEntryFor(ante) < baseKon(n, ante)) below++;
 check('при любом взносе и составе минимум для входа не ниже базового кона', below, 0);
+
+section('своя сумма за стол (§9.1a, решение владельца, 22.10.2026)');
+check('25 000, 50 000, 100 000 — можно (раньше — не больше 10 000)',
+  [entryAllowed(25_000, 100), entryAllowed(50_000, 100), entryAllowed(100_000, 500)], [true, true, true]);
+check('любая сумма кратно 1 000 — тоже: 37 000, 1 000 000', [entryAllowed(37_000, 100), entryAllowed(1_000_000, 1000)], [true, true]);
+check('не кратно 1 000 — нельзя', entryAllowed(25_500, 100), false);
+check('меньше взноса × 10 — нельзя: взнос 1 000, сумма 5 000', entryAllowed(5_000, 1000), false);
+check('меньше 1 000, дробь, не число — нельзя', [entryAllowed(900, 100), entryAllowed(1500.5, 100), entryAllowed(NaN, 100)], [false, false, false]);
+check('прежние 1 000 … 10 000 по-прежнему можно', [1000, 5000, 10_000].map((v) => entryAllowed(v, 100)), [true, true, true]);
 
 
 section('всеобщий ПАС, на РАЗ нет ни у кого — не доливаем (§9.2a, решение владельца правил)');

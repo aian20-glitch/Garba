@@ -57,6 +57,17 @@ export function threeIzzhogaShowMs(izzhoga: number): number {
   return izzhoga * DEAL_IZZHOGA_MS + THREE_IZZHOGA_TAIL_MS;
 }
 
+// Раздача сыграна (§10.8, решение владельца 22.10.2026): 3 секунды все смотрят открытые карты
+// всех игроков — следующую раздачу раздать нельзя, окно итога ждёт. При ГАРБЕ (и ДВА с Q K A)
+// перед этим ещё 2,5 секунды открываются дама, король и туз (GarbaReveal). Те же числа —
+// в holdRoundResult (game_table.dart), менять вместе.
+export const OPEN_HANDS_MS = 3_000;
+export const GARBA_REVEAL_MS = 2_500;
+
+export function roundShowMs(garbaReveal: boolean): number {
+  return (garbaReveal ? GARBA_REVEAL_MS : 0) + OPEN_HANDS_MS;
+}
+
 // Раздача, которую сейчас показывают игрокам: key — номер раздачи, dealt — сколько карт
 // роздано каждому, shownAt — когда анимация закончится.
 export type DealShow = { key: string; dealt: number; shownAt: number };

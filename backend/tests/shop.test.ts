@@ -18,14 +18,24 @@ import {
 } from '../src/shop.js';
 
 section('магазин: витрина (§17)');
-check('21 вещь: 4 рамки, 4 рубашки, 4 сукна, 3 эффекта, 3 набора, титулов нет',
+check('20 вещей: 4 рамки, 4 рубашки, 4 сукна, 3 эффекта, 5 наборов, титулов нет',
   ['frame', 'back', 'cloth', 'effect', 'pack', 'title'].map((k) => SHOP_ITEMS.filter((i) => i.kind === k).length),
-  [4, 4, 4, 3, 3, 0]);
+  [4, 4, 4, 3, 5, 0]);
 check('цены владельца: рамки 8 000 / 15 000 / 40 000 / 250 000',
   SHOP_ITEMS.filter((i) => i.kind === 'frame').map((i) => i.price), [8_000, 15_000, 40_000, 250_000]);
 check('самое дорогое — сукно «Дворец» за 300 000', [...SHOP_ITEMS].sort((a, b) => b.price - a.price)[0].id, 'cloth_akorda');
 check('наборы: Тролль и Подкол — 100 000, Насмешка — 200 000 (решение владельца, 14.10.2026)',
-  SHOP_ITEMS.filter((i) => i.kind === 'pack').map((i) => i.price), [100_000, 100_000, 200_000]);
+  ['pack_troll', 'pack_podkol', 'pack_mazak'].map((id) => shopItem(id)?.price), [100_000, 100_000, 200_000]);
+check('фразы владельца (22.10.2026): «Воин» — его 4 фразы слово в слово',
+  PACK_CONTENT.pack_voin, ['Сдавайся', 'Тебе хана', 'Кто ты, воин?', 'Ля ты крыса']);
+check('«Воин 2» — 8 фраз, вдвое дороже «Воина»: 100 000 и 200 000',
+  [PACK_CONTENT.pack_voin2.length, shopItem('pack_voin')?.price, shopItem('pack_voin2')?.price], [8, 100_000, 200_000]);
+check('«Ля ты крыса» — из «Воина», «Здесь я хан!» — из «Воина 2»',
+  [packOf('Ля ты крыса'), packOf('Здесь я хан!')], ['pack_voin', 'pack_voin2']);
+check('не купил «Воина» — «Сдавайся» слать нельзя, купил — можно',
+  [addReaction([], 'playing', 'a', 'Сдавайся', 0), (addReaction([], 'playing', 'a', 'Сдавайся', 0, ['pack_voin']) as ReactionEntry[])[0].emoji],
+  ['not owned', 'Сдавайся']);
+check('купил «Воина» — фразы «Воина 2» всё равно нельзя', addReaction([], 'playing', 'a', 'Не по зубам', 0, ['pack_voin']), 'not owned');
 check('id вещей не повторяются', new Set(SHOP_ITEMS.map((i) => i.id)).size, SHOP_ITEMS.length);
 const packItems = Object.values(PACK_CONTENT).flat();
 check('смайлики наборов не совпадают с обычными и между собой',

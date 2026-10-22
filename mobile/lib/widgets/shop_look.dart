@@ -37,8 +37,29 @@ const stickerAssets = <String, String>{
   '💸': 'sticker_aqsha',
 };
 
+// Игровые фразы владельца (22.10.2026): «Воин» — его 4 фразы, «Воин 2» — ещё 8, вдвое дороже.
+const packVoin = ['Сдавайся', 'Тебе хана', 'Кто ты, воин?', 'Ля ты крыса'];
+const packVoin2 = [
+  'Ты чё, бессмертный?',
+  'Это фиаско, братан',
+  'Давай, до свидания!',
+  'Слабоумие и отвага',
+  'Не по зубам',
+  'Готовь монеты',
+  'Здесь я хан!',
+  'Беги, пока цел',
+];
+
+// Наборы фраз магазина: id → фразы, в том порядке, как они в окне фраз за столом.
+const phrasePacks = <String, ({String title, List<String> phrases, Color color})>{
+  'pack_podkol': (title: 'ПОДКОЛ', phrases: packPodkol, color: Color(0xFF4A1620)),
+  'pack_voin': (title: 'ВОИН', phrases: packVoin, color: Color(0xFF3A2410)),
+  'pack_voin2': (title: 'ВОИН 2', phrases: packVoin2, color: Color(0xFF2A1640)),
+};
+
 // Фраза (облачком над аватаркой) или смайлик (на аватарке).
-bool isPhrase(String reaction) => tablePhrases.contains(reaction) || packPodkol.contains(reaction);
+bool isPhrase(String reaction) =>
+    tablePhrases.contains(reaction) || phrasePacks.values.any((p) => p.phrases.contains(reaction));
 
 // Что из магазина у меня: куплено и надето. Приходит в GET /me и в ответах магазина.
 class ShopState {

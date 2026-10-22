@@ -21,6 +21,8 @@ check('раздаёт, только если раздающий он',
   [botAction(bot, { status: 'started', game: { stage: 'round_done', dealerId: bot } })?.path,
     botAction(bot, { status: 'started', game: { stage: 'round_done', dealerId: 'x' } })],
   ['dealer/continue', null]);
+check('кто-то просит докупить (§9.1c) — бот не голосует и не раздаёт, пока ждём ответа людей',
+  botAction(bot, { status: 'started', game: { stage: 'round_done', dealerId: bot, topUpVote: { requesterId: 'x' } } }), null);
 check('в торгах — только из разрешённого сервером',
   botAction(bot, { status: 'started', game: { stage: 'bidding', myAllowedBids: ['ПАС'], hand: [], razSuit: 'hearts' } })?.body,
   { bid: 'ПАС' });

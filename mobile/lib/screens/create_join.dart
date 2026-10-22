@@ -15,8 +15,11 @@ class _CreateRoomScreenState extends State<CreateRoomScreen> {
   int emptyLimit = 5;
   // КОН открывается, когда кон достигнет базового × konThreshold (RULES.md §6.7).
   int konThreshold = 10;
-  // Минимум денег для входа: 1 000…10 000, не меньше взноса × 10 (RULES.md §9.1a).
+  // Сумма за стол — минимум для входа: любая кратно 1 000, не меньше взноса × 10
+  // (RULES.md §9.1a; с 22.10.2026 не только 1 000…10 000, а и 25 000, 50 000, 100 000…).
   int minBalance = 1000;
+  static const maxEntry = 10000000; // как MAX_ENTRY в backend/src/money.ts
+  static const entryPresets = [1000, 5000, 10000, 25000, 50000, 100000];
   // Время на ход: 20 или 40 секунд (RULES.md §13a).
   int turnSeconds = 20;
   // Запас на отлучку за игру: 1…5 минут (RULES.md §13, 08.10.2026), по умолчанию 1.
@@ -33,6 +36,20 @@ class _CreateRoomScreenState extends State<CreateRoomScreen> {
       // Подняли взнос — минимум для входа подтягивается следом.
       if (minBalance < lowestEntry) minBalance = lowestEntry;
     });
+  }
+
+  // Своя сумма за стол: вписать любую, кратно 1 000. null — передумал.
+  Future<void> askCustomEntry() async {
+    final value = await showDialog<int>(
+      context: context,
+      builder: (_) => _CustomEntryDialog(
+        initial: entryPresets.contains(minBalance) ? null : minBalance,
+        lowest: lowestEntry,
+        ante: ante,
+        max: maxEntry,
+      ),
+    );
+    if (value != null && mounted) setState(() => minBalance = value);
   }
 
   Future<void> createRoom() async {
@@ -168,28 +185,37 @@ class _CreateRoomScreenState extends State<CreateRoomScreen> {
             ),
             const SizedBox(height: 24),
             const Text(
-              'Минимум монет для входа',
+              'Сумма за стол',
               style: TextStyle(fontSize: 20, fontWeight: FontWeight.w800),
             ),
             const SizedBox(height: 12),
             Wrap(
               spacing: 8,
               runSpacing: 8,
-              children: [1000, 2000, 3000, 4000, 5000, 6000, 7000, 8000, 9000, 10000]
-                  .map((n) {
-                // Меньше взноса × 10 выбрать нельзя — кнопка выключена.
-                final allowed = n >= lowestEntry;
-                return ChoiceChip(
-                  label: Text(fmtCoins(n)),
-                  selected: minBalance == n,
-                  onSelected: allowed ? (_) => setState(() => minBalance = n) : null,
-                );
-              }).toList(),
+              children: [
+                ...entryPresets.map((n) {
+                  // Меньше взноса × 10 выбрать нельзя — кнопка выключена.
+                  final allowed = n >= lowestEntry;
+                  return ChoiceChip(
+                    label: Text(fmtPrice(n)),
+                    selected: minBalance == n,
+                    onSelected: allowed ? (_) => setState(() => minBalance = n) : null,
+                  );
+                }),
+                // Любая своя сумма — вписать (решение владельца, 22.10.2026).
+                ChoiceChip(
+                  label: Text(entryPresets.contains(minBalance) ? 'СВОЯ СУММА' : fmtPrice(minBalance)),
+                  avatar: const Icon(Icons.edit, size: 16),
+                  selected: !entryPresets.contains(minBalance),
+                  onSelected: (_) => askCustomEntry(),
+                ),
+              ],
             ),
             const SizedBox(height: 6),
             Text(
-              'Кто меньше ${fmtCoins(minBalance)}, в комнату не войдёт. '
-              'При взносе $ante — не меньше ${fmtCoins(lowestEntry)}.',
+              'Игроки садятся за стол с ${fmtPrice(minBalance)} (можно взять и больше). '
+              'У кого меньше — в комнату не войдёт. '
+              'При взносе $ante — не меньше ${fmtPrice(lowestEntry)}.',
               style: const TextStyle(color: Colors.white60),
             ),
             const SizedBox(height: 24),
@@ -430,6 +456,81 @@ class _JoinRoomScreenState extends State<JoinRoomScreen> {
           ],
         ),
       ),
+    );
+  }
+}
+
+// Окно «Своя сумма за стол». Поле ввода живёт, пока живёт окно: окно закрывается с анимацией,
+// и всё это время поле ещё на экране — выбросить его контроллер сразу после закрытия значило
+// уронить экран (так и было, нашли на эмуляторе 22.10.2026).
+class _CustomEntryDialog extends StatefulWidget {
+  final int? initial; // уже вписанная своя сумма — или пусто
+  final int lowest; // не меньше взноса × 10
+  final int ante;
+  final int max;
+
+  const _CustomEntryDialog({required this.initial, required this.lowest, required this.ante, required this.max});
+
+  @override
+  State<_CustomEntryDialog> createState() => _CustomEntryDialogState();
+}
+
+class _CustomEntryDialogState extends State<_CustomEntryDialog> {
+  late final controller = TextEditingController(text: widget.initial?.toString() ?? '');
+  String? error;
+
+  @override
+  void dispose() {
+    controller.dispose();
+    super.dispose();
+  }
+
+  void submit() {
+    final v = int.tryParse(controller.text.replaceAll(RegExp(r'\s'), ''));
+    if (v == null || v % 1000 != 0) {
+      setState(() => error = 'Сумма — кратно 1 000');
+    } else if (v < widget.lowest) {
+      setState(() => error = 'При взносе ${widget.ante} — не меньше ${fmtPrice(widget.lowest)}');
+    } else if (v > widget.max) {
+      setState(() => error = 'Не больше ${fmtPrice(widget.max)}');
+    } else {
+      Navigator.pop(context, v);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: const Text('Своя сумма за стол'),
+      content: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          TextField(
+            controller: controller,
+            autofocus: true,
+            keyboardType: TextInputType.number,
+            inputFormatters: [FilteringTextInputFormatter.digitsOnly],
+            onSubmitted: (_) => submit(),
+            decoration: InputDecoration(
+              hintText: 'например, 25000',
+              suffixText: 'монет',
+              errorText: error,
+              border: const OutlineInputBorder(),
+            ),
+          ),
+          const SizedBox(height: 8),
+          Text(
+            'Кратно 1 000, не меньше ${fmtPrice(widget.lowest)}. С этой суммой игроки садятся за стол; '
+            'у кого меньше — в комнату не войдёт.',
+            style: const TextStyle(fontSize: 13, color: Colors.white60),
+          ),
+        ],
+      ),
+      actions: [
+        TextButton(onPressed: () => Navigator.pop(context), child: const Text('ОТМЕНА')),
+        FilledButton(onPressed: submit, child: const Text('ГОТОВО')),
+      ],
     );
   }
 }

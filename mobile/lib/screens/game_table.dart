@@ -42,6 +42,8 @@ class _GameTableScreenState extends State<GameTableScreen> {
   int seenBids = 0;
   String seenSpecial = '';
   String seenLeave = '';
+  String seenTopUp = '';
+  String seenShare = '';
   // Сколько карт уже сыграно в раздаче — новая карта на столе звучит (24.09.2026).
   String playedKey = '';
   int playedSeen = 0;
@@ -56,11 +58,15 @@ class _GameTableScreenState extends State<GameTableScreen> {
   // сервер переходит в room_done без round_done), а иногда после итога раздачи.
   bool gameOverHeld = false;
   Timer? gameOverTimer;
-  // Раздача сыграна: сразу окно итога, через 2,5 секунды оно закрывается само —
-  // дальше все смотрят на столе, у кого какие карты были. При ГАРБЕ сначала
-  // 2,5 секунды показываются дама, король и туз козыря под барабан.
+  // Раздача сыграна (RULES.md §10.8, решение владельца 22.10.2026): сначала 3 секунды все
+  // смотрят открытые карты всех игроков — надпись «РАЗДАЧА СЫГРАНА», раздать следующую
+  // нельзя; потом окно итога, через 2,5 секунды оно закрывается само — карты видны и дальше.
+  // При ГАРБЕ перед этим 2,5 секунды показываются дама, король и туз козыря под барабан.
   String? roundShownKey;
+  // Окно итога ещё ждёт: идёт показ ГАРБЫ или открытых карт.
   bool resultHeld = false;
+  // Идут 3 секунды открытых карт.
+  bool handsOnShow = false;
   bool resultAutoClosed = false;
   Timer? resultHoldTimer;
   ({String name, String suit})? garbaReveal;
@@ -128,6 +134,7 @@ class _GameTableScreenState extends State<GameTableScreen> {
     if (roundKey == null) {
       resultHoldTimer?.cancel();
       resultHeld = false;
+      handsOnShow = false;
       resultAutoClosed = false;
       garbaReveal = null;
       return;
@@ -135,7 +142,6 @@ class _GameTableScreenState extends State<GameTableScreen> {
     if (roundKey == roundShownKey) return;
     roundShownKey = roundKey;
     resultAutoClosed = false;
-    resultHeld = false;
     final garba = ((game!['result'] as List?) ?? const [])
         .map((r) => Map<String, dynamic>.from(r as Map))
         // ДВА с Q K A своей масти — та же анимация, что у ГАРБЫ (решение владельца,
@@ -143,12 +149,18 @@ class _GameTableScreenState extends State<GameTableScreen> {
         .where((r) => r['garba'] == true || (r['instant'] == true && r['declaration'] == 'ДВА'))
         .firstOrNull;
     final trump = game['trumpSuit']?.toString();
+    final reveal = garba != null && trump != null;
+    // Те же числа — roundShowMs в turnTimer.ts на сервере, менять вместе.
+    const revealFor = Duration(milliseconds: 2500);
+    const handsFor = Duration(seconds: 3);
     const showFor = Duration(milliseconds: 2500);
-    void autoClose() {
-      resultHoldTimer = Timer(showFor, () {
-        if (mounted) setState(() => resultAutoClosed = true);
-      });
-    }
+    // Сколько ещё смотреть карты — говорит сервер: открыл стол позже (вернулся, перезапустил
+    // приложение) — догоняем, а не показываем с начала; досмотрели — сразу окно итога.
+    final full = (reveal ? revealFor : Duration.zero) + handsFor;
+    final leftMs = (game['dealShowLeftMs'] as num?)?.toInt();
+    final left = leftMs == null
+        ? full
+        : Duration(milliseconds: leftMs.clamp(0, full.inMilliseconds));
 
     // Звук итога (не ГАРБА — у неё свой барабан): я главный — мой итог, нет — выиграл
     // ли хоть один главный.
@@ -157,9 +169,8 @@ class _GameTableScreenState extends State<GameTableScreen> {
         .toList();
     final mine = results.where((r) => r['playerId'].toString() == widget.currentPlayerId);
     // Выигравшие главные с эффектом из магазина — эффект над аватаркой, видят все.
-    // Начинается, когда окно итога закрылось само (после ГАРБЫ — ещё позже): под окном
-    // его никто бы не увидел.
-    final effectAt = garba != null && trump != null ? showFor * 2 : showFor;
+    // Начинается, когда окно итога закрылось само: под окном его никто бы не увидел.
+    final effectAt = left + showFor;
     for (final r in results.where((r) => r['won'] == true)) {
       final id = r['playerId'].toString();
       final effect = ((data['players'] as List?) ?? const [])
@@ -178,26 +189,43 @@ class _GameTableScreenState extends State<GameTableScreen> {
         setState(() => winEffects.remove(id));
       }));
     }
-    if (garba == null && results.isNotEmpty) {
-      GarbaSounds.result(mine.isNotEmpty ? mine.first['won'] == true : results.any((r) => r['won'] == true));
+    resultHoldTimer?.cancel();
+    // Окно итога: со звуком итога, через 2,5 секунды закрывается само.
+    void showResult() {
+      resultHeld = false;
+      handsOnShow = false;
+      garbaReveal = null;
+      if (garba == null && results.isNotEmpty) {
+        GarbaSounds.result(mine.isNotEmpty ? mine.first['won'] == true : results.any((r) => r['won'] == true));
+      }
+      resultHoldTimer = Timer(showFor, () {
+        if (mounted) setState(() => resultAutoClosed = true);
+      });
     }
 
-    resultHoldTimer?.cancel();
-    if (garba != null && trump != null) {
+    // Все смотрят открытые карты, потом — окно итога.
+    void showHands(Duration d) {
+      garbaReveal = null;
+      resultHeld = true;
+      handsOnShow = true;
+      resultHoldTimer = Timer(d, () {
+        if (mounted) setState(showResult);
+      });
+    }
+
+    if (left == Duration.zero) {
+      showResult();
+    } else if (reveal && left > handsFor) {
       garbaReveal = (name: garba['playerName'].toString(), suit: trump);
       resultHeld = true;
+      handsOnShow = false;
       GarbaSounds.garba();
       HapticFeedback.heavyImpact();
-      resultHoldTimer = Timer(showFor, () {
-        if (!mounted) return;
-        setState(() {
-          resultHeld = false;
-          garbaReveal = null;
-        });
-        autoClose();
+      resultHoldTimer = Timer(left - handsFor, () {
+        if (mounted) setState(() => showHands(handsFor));
       });
     } else {
-      autoClose();
+      showHands(left);
     }
   }
 
@@ -240,13 +268,14 @@ class _GameTableScreenState extends State<GameTableScreen> {
     if (myTurnNow && !wasMyTurn) HapticFeedback.mediumImpact();
     wasMyTurn = myTurnNow;
 
-    // Пока пауза или голосование «закончить игру» — перерисовываем раз в секунду,
-    // чтобы шёл обратный отсчёт.
+    // Пока пауза или голосование («закончить игру», «играть без ушедшего», «докупить») —
+    // перерисовываем раз в секунду, чтобы шёл обратный отсчёт.
     final gameRaw = data['game'];
     if (data['pause'] is Map ||
         (gameRaw is Map &&
             (gameRaw['endVote'] is Map ||
                 gameRaw['shrinkVote'] is Map ||
+                gameRaw['topUpVote'] is Map ||
                 gameRaw['turnSecondsLeft'] != null))) {
       pauseTicker ??= Timer.periodic(const Duration(seconds: 1), (_) {
         if (mounted) setState(() {});
@@ -439,6 +468,30 @@ class _GameTableScreenState extends State<GameTableScreen> {
     }
     seenLeave = leaveKey;
 
+    // Стол согласился — игрок докупил из кошелька (RULES.md §9.1c): видят все.
+    final topUp = game['lastTopUp'];
+    final topUpKey = topUp is Map
+        ? '${game['dealNumber']}-${topUp['playerId']}-${topUp['amount']}-${topUp['result']}'
+        : '';
+    if (topUp is Map && topUpKey != seenTopUp && topUp['result'] == 'approved') {
+      text = '${topUp['name']} докупил ${fmtCoins((topUp['amount'] as num).toInt())}';
+    }
+    seenTopUp = topUpKey;
+
+    // Выигравший отдал часть выигрыша другому игроку (RULES.md §11.8): видят все —
+    // «Серик выиграл 10k монет / и отдал 500 монет игроку Аян».
+    List<({String text, Color color})>? lines;
+    final share = game['winShare'];
+    final shareKey = share is Map
+        ? '${game['dealNumber']}-${share['fromId']}-${share['toId']}-${share['amount']}'
+        : '';
+    if (share is Map && shareKey != seenShare) {
+      final parts = winShareText(Map<String, dynamic>.from(share));
+      text = parts.won;
+      lines = [(text: parts.gave, color: Colors.white)];
+    }
+    seenShare = shareKey;
+
     if (firstAnnounce) {
       firstAnnounce = false;
       // Открыл стол — объявляем, игроки каких цветных уровней рейтинга за столом:
@@ -458,7 +511,7 @@ class _GameTableScreenState extends State<GameTableScreen> {
     if (riskSound != null) GarbaSounds.risk(riskSound);
     if (text == null) return;
     final id = ++announcementSeq;
-    setState(() => announcement = (id: id, text: text!, levels: null));
+    setState(() => announcement = (id: id, text: text!, levels: lines));
     Timer(const Duration(milliseconds: 2600), () {
       if (mounted && announcement?.id == id) setState(() => announcement = null);
     });
@@ -737,6 +790,33 @@ class _GameTableScreenState extends State<GameTableScreen> {
     } finally {
       if (mounted) setState(() => leaving = false);
     }
+  }
+
+  // Попросить докупить из кошелька (RULES.md §9.1c): сумма — в окне, согласие всех
+  // за столом спрашивает сервер.
+  Future<void> askTopUp({required int reserve, required int onTable, required int suggested}) async {
+    final amount = await showDialog<int>(
+      context: context,
+      builder: (_) => TopUpDialog(reserve: reserve, onTable: onTable, suggested: suggested),
+    );
+    if (amount == null || !mounted) return;
+    await sendSpecial('top-up', {'amount': amount});
+  }
+
+  // Отдать часть выигрыша (RULES.md §11.8): кому и сколько — в окне; сколько можно,
+  // решает сервер (myShareLimits).
+  Future<void> askShare({required int won, required int min, required int max}) async {
+    final players = [
+      for (final p in ((room?['players'] as List?) ?? const []).cast<Map>())
+        if (p['id'].toString() != widget.currentPlayerId)
+          (id: p['id'].toString(), name: p['name'].toString()),
+    ];
+    final choice = await showDialog<({String toId, int amount})>(
+      context: context,
+      builder: (_) => ShareDialog(won: won, min: min, max: max, players: players),
+    );
+    if (choice == null || !mounted) return;
+    await sendSpecial('share', {'toId': choice.toId, 'amount': choice.amount});
   }
 
   // Взять спецкарту за множитель. От ×3 сначала спрашиваем — сколько положит в кон
@@ -1216,6 +1296,20 @@ class _GameTableScreenState extends State<GameTableScreen> {
     final lastEndVoteRaw = game['lastEndVote'];
     final lastEndVote =
         lastEndVoteRaw is Map ? Map<String, dynamic>.from(lastEndVoteRaw) : null;
+    // Докупить из кошелька (RULES.md §9.1c): чья просьба идёт, мой ответ, могу ли попросить.
+    final topUpVoteRaw = game['topUpVote'];
+    final topUpVote = topUpVoteRaw is Map ? Map<String, dynamic>.from(topUpVoteRaw) : null;
+    final myTopUpVote = game['myTopUpVote']?.toString();
+    final canRequestTopUp = game['myCanRequestTopUp'] == true;
+    final lastTopUpRaw = game['lastTopUp'];
+    final lastTopUp = lastTopUpRaw is Map ? Map<String, dynamic>.from(lastTopUpRaw) : null;
+    final myReserve = (data['myReserve'] as num?)?.toInt() ?? 0;
+    final tableAmount = ((data['settings'] as Map?)?['minBalance'] as num?)?.toInt() ?? 1000;
+    // Часть выигрыша другому (RULES.md §11.8): сколько могу отдать я и кто кому уже отдал.
+    final shareLimitsRaw = game['myShareLimits'];
+    final myShareLimits = shareLimitsRaw is Map ? Map<String, dynamic>.from(shareLimitsRaw) : null;
+    final winShareRaw = game['winShare'];
+    final winShare = winShareRaw is Map ? Map<String, dynamic>.from(winShareRaw) : null;
 
     String countdown(Map<String, dynamic> p) {
       final left = ((p['secondsLeft'] as num?)?.toInt() ?? 0) - pauseElapsed;
@@ -2573,53 +2667,10 @@ class _GameTableScreenState extends State<GameTableScreen> {
                   if (resultPopup != null) Positioned.fill(child: resultPopup),
                   if (gameOverPopup != null) Positioned.fill(child: gameOverPopup),
                   if (isRoomDone && gameOverHeld)
-                    Positioned(
-                      top: 12,
-                      left: 0,
-                      right: 0,
-                      child: IgnorePointer(
-                        child: Center(
-                          child: TweenAnimationBuilder<double>(
-                            tween: Tween(begin: 0.3, end: 1),
-                            duration: const Duration(milliseconds: 700),
-                            curve: Curves.elasticOut,
-                            builder: (_, t, c) => Transform.scale(scale: t, child: c),
-                            child: Container(
-                              padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 10),
-                              decoration: BoxDecoration(
-                                color: const Color(0xEE0B1620),
-                                borderRadius: BorderRadius.circular(16),
-                                border: Border.all(color: const Color(0xFFD4A94F), width: 2),
-                                boxShadow: const [
-                                  BoxShadow(color: Color(0x88D4A94F), blurRadius: 24),
-                                ],
-                              ),
-                              child: const Text.rich(
-                                TextSpan(
-                                  text: 'ИГРА ОКОНЧЕНА',
-                                  children: [
-                                    TextSpan(
-                                      text: '\nсмотрим, у кого какие карты',
-                                      style: TextStyle(
-                                        fontSize: 14,
-                                        fontWeight: FontWeight.w600,
-                                        color: Colors.white70,
-                                      ),
-                                    ),
-                                  ],
-                                ),
-                                textAlign: TextAlign.center,
-                                style: TextStyle(
-                                  fontSize: 26,
-                                  fontWeight: FontWeight.w900,
-                                  color: Color(0xFFD4A94F),
-                                ),
-                              ),
-                            ),
-                          ),
-                        ),
-                      ),
-                    ),
+                    const _CardsOnShowBanner(title: 'ИГРА ОКОНЧЕНА'),
+                  // Раздача сыграна — 3 секунды все смотрят открытые карты (§10.8).
+                  if (isRoundDone && handsOnShow)
+                    const _CardsOnShowBanner(title: 'РАЗДАЧА СЫГРАНА'),
                   if (isRoundDone && garbaReveal != null)
                     Positioned.fill(
                       child: GarbaReveal(
@@ -2910,20 +2961,154 @@ class _GameTableScreenState extends State<GameTableScreen> {
                           style: const TextStyle(color: Colors.white60, fontSize: 13),
                         ),
                       ),
+                    // Кто-то просит докупить из кошелька — отвечают все остальные (§9.1c).
+                    if (topUpVote != null)
+                      Builder(builder: (_) {
+                        final voterIds = ((topUpVote['voterIds'] as List?) ?? const [])
+                            .map((e) => e.toString())
+                            .toSet();
+                        final iVote = voterIds.contains(widget.currentPlayerId);
+                        final mine = topUpVote['requesterId'].toString() == widget.currentPlayerId;
+                        return Container(
+                          margin: const EdgeInsets.only(bottom: 8),
+                          padding: const EdgeInsets.all(10),
+                          decoration: BoxDecoration(
+                            color: const Color(0xFF13232E),
+                            borderRadius: BorderRadius.circular(12),
+                            border: Border.all(color: const Color(0xFFD4A94F)),
+                          ),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.stretch,
+                            children: [
+                              Text(
+                                '${mine ? 'Вы просите' : '${topUpVote['requesterName']} просит'} докупить '
+                                '${fmtCoins((topUpVote['amount'] as num).toInt())} из кошелька',
+                                textAlign: TextAlign.center,
+                                style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w900),
+                              ),
+                              Text(
+                                'Нужно согласие всех: '
+                                '${(topUpVote['yesIds'] as List).length} из ${voterIds.length} · '
+                                '${countdown({'secondsLeft': topUpVote['secondsLeft']})}. '
+                                'Хоть один против — докупки не будет.',
+                                textAlign: TextAlign.center,
+                                style: const TextStyle(fontSize: 12, color: Colors.white70),
+                              ),
+                              const SizedBox(height: 8),
+                              if (iVote && myTopUpVote == null)
+                                Row(
+                                  children: [
+                                    Expanded(
+                                      child: FilledButton(
+                                        onPressed: sendingSpecial
+                                            ? null
+                                            : () => sendSpecial('top-up-vote', {'choice': 'yes'}),
+                                        child: const Text('ЗА'),
+                                      ),
+                                    ),
+                                    const SizedBox(width: 8),
+                                    Expanded(
+                                      child: OutlinedButton(
+                                        onPressed: sendingSpecial
+                                            ? null
+                                            : () => sendSpecial('top-up-vote', {'choice': 'no'}),
+                                        child: const Text('ПРОТИВ'),
+                                      ),
+                                    ),
+                                  ],
+                                )
+                              else
+                                Text(
+                                  mine ? 'Ждём ответа остальных.' : 'Вы согласны. Ждём остальных.',
+                                  textAlign: TextAlign.center,
+                                  style: const TextStyle(color: Colors.white70),
+                                ),
+                            ],
+                          ),
+                        );
+                      }),
+                    if (topUpVote == null && lastTopUp != null)
+                      Padding(
+                        padding: const EdgeInsets.only(bottom: 6),
+                        child: Text(
+                          lastTopUp['result'] == 'approved'
+                              ? '${lastTopUp['name']} докупил ${fmtCoins((lastTopUp['amount'] as num).toInt())} из кошелька'
+                              : lastTopUp['result'] == 'expired'
+                                  ? 'Не все ответили — ${lastTopUp['name']} не докупил'
+                                  : lastTopUp['byName'] != null
+                                      ? '${lastTopUp['byName']} против — ${lastTopUp['name']} не докупил'
+                                      : 'Докупка не состоялась',
+                          textAlign: TextAlign.center,
+                          style: TextStyle(
+                            color: lastTopUp['result'] == 'approved' ? Colors.greenAccent : Colors.white60,
+                            fontSize: 13,
+                          ),
+                        ),
+                      ),
+                    // Выигравший отдал часть выигрыша (§11.8) — видно до следующей раздачи.
+                    if (winShare != null)
+                      Padding(
+                        padding: const EdgeInsets.only(bottom: 6),
+                        child: Text(
+                          '${winShareText(winShare).won} ${winShareText(winShare).gave}',
+                          textAlign: TextAlign.center,
+                          style: const TextStyle(color: Color(0xFFE6B74F), fontSize: 13),
+                        ),
+                      ),
+                    // Раздача только что сыграна — сначала все смотрят карты (§10.8):
+                    // сервер в эти секунды тоже не даёт раздать.
                     FilledButton(
-                      onPressed: isDealer && !dealing && !paused && endVote == null
+                      onPressed: isDealer &&
+                              !dealing &&
+                              !paused &&
+                              endVote == null &&
+                              topUpVote == null &&
+                              !(isRoundDone && resultHeld)
                           ? dealCards
                           : null,
                       child: Text(
                         dealing
                             ? 'РАЗДАЁМ...'
-                            : isDealer
-                                ? (isRoundDone
-                                    ? 'РАЗДАТЬ СЛЕДУЮЩУЮ'
-                                    : 'РАЗДАТЬ КАРТЫ')
-                                : 'РАЗДАЁТ $dealerName',
+                            : isRoundDone && resultHeld
+                                ? 'СМОТРИМ КАРТЫ…'
+                                : isDealer
+                                    ? (isRoundDone
+                                        ? 'РАЗДАТЬ СЛЕДУЮЩУЮ'
+                                        : 'РАЗДАТЬ КАРТЫ')
+                                    : 'РАЗДАЁТ $dealerName',
                       ),
                     ),
+                    // Выиграл РАЗ или ДВА — можно отдать часть выигрыша до следующей раздачи (§11.8).
+                    if (myShareLimits != null)
+                      TextButton.icon(
+                        onPressed: sendingSpecial || paused
+                            ? null
+                            : () => askShare(
+                                  won: (result
+                                          .where((r) => r['playerId'].toString() == widget.currentPlayerId)
+                                          .firstOrNull?['delta'] as num?)
+                                          ?.toInt() ??
+                                      0,
+                                  min: (myShareLimits['min'] as num).toInt(),
+                                  max: (myShareLimits['max'] as num).toInt(),
+                                ),
+                        icon: const Icon(Icons.volunteer_activism, size: 18),
+                        label: Text('ОТДАТЬ ЧАСТЬ ВЫИГРЫША · до ${fmtCoins((myShareLimits['max'] as num).toInt())}'),
+                        style: TextButton.styleFrom(foregroundColor: const Color(0xFFE6B74F)),
+                      ),
+                    // Докупить из кошелька — между раздачами, с согласия всех (§9.1c).
+                    if (canRequestTopUp)
+                      TextButton.icon(
+                        onPressed: sendingSpecial || paused
+                            ? null
+                            : () => askTopUp(
+                                  reserve: myReserve,
+                                  onTable: balanceOf(widget.currentPlayerId),
+                                  suggested: tableAmount,
+                                ),
+                        icon: const Icon(Icons.add_card, size: 18),
+                        label: Text('ДОКУПИТЬ · в кошельке ${fmtCoins(myReserve)}'),
+                      ),
                     if (canProposeEnd)
                       TextButton.icon(
                         onPressed: sendingSpecial
@@ -3110,6 +3295,67 @@ class _GameTableScreenState extends State<GameTableScreen> {
         ),
       ),
       ),
+      ),
+    );
+  }
+}
+
+// Надпись на столе, пока все смотрят открытые карты: раздача сыграна (3 секунды,
+// RULES.md §10.8) или игра окончена (3 секунды, потом итоги). Кладётся прямо в Stack стола —
+// у нижнего края, на моё место: мои карты и так видны под столом, а сверху надпись
+// закрывала бы карты соперника напротив (так и было, нашли на эмуляторе 22.10.2026).
+class _CardsOnShowBanner extends StatelessWidget {
+  const _CardsOnShowBanner({required this.title});
+
+  final String title;
+
+  @override
+  Widget build(BuildContext context) {
+    return Positioned(
+      bottom: 10,
+      left: 0,
+      right: 0,
+      child: IgnorePointer(
+        child: Center(
+          child: TweenAnimationBuilder<double>(
+            tween: Tween(begin: 0.3, end: 1),
+            duration: const Duration(milliseconds: 700),
+            curve: Curves.elasticOut,
+            builder: (_, t, c) => Transform.scale(scale: t, child: c),
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 10),
+              decoration: BoxDecoration(
+                color: const Color(0xEE0B1620),
+                borderRadius: BorderRadius.circular(16),
+                border: Border.all(color: const Color(0xFFD4A94F), width: 2),
+                boxShadow: const [
+                  BoxShadow(color: Color(0x88D4A94F), blurRadius: 24),
+                ],
+              ),
+              child: Text.rich(
+                TextSpan(
+                  text: title,
+                  children: const [
+                    TextSpan(
+                      text: '\nсмотрим, у кого какие карты',
+                      style: TextStyle(
+                        fontSize: 14,
+                        fontWeight: FontWeight.w600,
+                        color: Colors.white70,
+                      ),
+                    ),
+                  ],
+                ),
+                textAlign: TextAlign.center,
+                style: const TextStyle(
+                  fontSize: 26,
+                  fontWeight: FontWeight.w900,
+                  color: Color(0xFFD4A94F),
+                ),
+              ),
+            ),
+          ),
+        ),
       ),
     );
   }

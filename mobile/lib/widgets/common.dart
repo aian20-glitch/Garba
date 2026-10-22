@@ -299,11 +299,18 @@ class EmojiButton extends StatelessWidget {
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
             _phraseGrid(sheet, tablePhrases, const Color(0xFF1C3442)),
-            if (ShopState.has('pack_podkol')) ...[
-              _packTitle('ПОДКОЛ'),
-              _phraseGrid(sheet, packPodkol, const Color(0xFF4A1620)),
-            ] else
-              _shopHint(['Фразы-подколы']),
+            // Купленные наборы фраз (§17): «Подкол», «Воин», «Воин 2».
+            for (final pack in phrasePacks.entries)
+              if (ShopState.has(pack.key)) ...[
+                _packTitle(pack.value.title),
+                _phraseGrid(sheet, pack.value.phrases, pack.value.color),
+              ],
+            if (phrasePacks.keys.any((id) => !ShopState.has(id)))
+              _shopHint([
+                if (!ShopState.has('pack_podkol')) 'Фразы-подколы',
+                if (!ShopState.has('pack_voin')) '«Воин»',
+                if (!ShopState.has('pack_voin2')) '«Воин 2»',
+              ]),
           ],
         ),
       );
@@ -632,8 +639,8 @@ class RoomClosedScreen extends StatelessWidget {
 
 // Сумма за стол (решение владельца, 09.10.2026). Перед входом в комнату игрок выбирает,
 // сколько монет взять с собой: от минимума комнаты до всего баланса. За столом он играет
-// только ими, остальное остаётся на балансе. Докупить во время игры нельзя.
-// Проверяет сервер (buyIn.ts) — здесь только выбор. null — передумал.
+// только ими, остальное остаётся на балансе. Докупить за столом — только с согласия всех
+// (§9.1c, 22.10.2026; TopUpDialog). Проверяет сервер (buyIn.ts) — здесь только выбор. null — передумал.
 Future<int?> askBuyIn(BuildContext context, {required int minBalance}) async {
   final response = await apiRequest(http.get(Uri.parse('$apiBase/me'), headers: authHeaders()));
   expectStatus(response, const [200]);
@@ -702,7 +709,8 @@ class _BuyInDialogState extends State<BuyInDialog> {
           const SizedBox(height: 8),
           Text(
             'За столом играете только этими монетами. На балансе останется '
-            '${fmtCoins(widget.balance - amount)}. Докупить во время игры нельзя.',
+            '${fmtCoins(widget.balance - amount)}. Докупить за столом можно, только если '
+            'согласятся все игроки.',
             style: const TextStyle(fontSize: 14, color: Colors.white70),
           ),
         ],
@@ -710,6 +718,185 @@ class _BuyInDialogState extends State<BuyInDialog> {
       actions: [
         TextButton(onPressed: () => Navigator.pop(context), child: const Text('ОТМЕНА')),
         FilledButton(onPressed: () => Navigator.pop(context, amount), child: const Text('ЗА СТОЛ')),
+      ],
+    );
+  }
+}
+
+// Докупить из кошелька за столом (§9.1c, решение владельца, 22.10.2026): сколько перенести
+// на стол. Согласие всех за столом спрашивает сервер — здесь только выбор. null — передумал.
+class TopUpDialog extends StatefulWidget {
+  final int reserve; // сколько в кошельке — вне стола
+  final int onTable; // сколько сейчас на столе
+  final int suggested; // с чего начать — сумма за стол этой комнаты
+
+  const TopUpDialog({super.key, required this.reserve, required this.onTable, required this.suggested});
+
+  @override
+  State<TopUpDialog> createState() => _TopUpDialogState();
+}
+
+class _TopUpDialogState extends State<TopUpDialog> {
+  // Варианты — шагом 1 000, последний — весь кошелёк.
+  late final List<int> options = [
+    for (var v = 1000; v < widget.reserve; v += 1000) v,
+    widget.reserve,
+  ];
+  late int index = () {
+    final i = options.indexWhere((v) => v >= widget.suggested);
+    return i < 0 ? options.length - 1 : i;
+  }();
+
+  @override
+  Widget build(BuildContext context) {
+    final amount = options[index];
+    return AlertDialog(
+      title: const Text('Докупить из кошелька'),
+      content: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Row(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              const CoinIcon(size: 26),
+              const SizedBox(width: 6),
+              Text(fmtCoins(amount), style: const TextStyle(fontSize: 30, fontWeight: FontWeight.w800)),
+            ],
+          ),
+          if (options.length > 1)
+            Slider(
+              value: index.toDouble(),
+              max: (options.length - 1).toDouble(),
+              divisions: options.length - 1,
+              activeColor: const Color(0xFFD4A94F),
+              onChanged: (v) => setState(() => index = v.round()),
+            ),
+          if (options.length > 1)
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                TextButton(onPressed: () => setState(() => index = 0), child: const Text('МИНИМУМ')),
+                TextButton(onPressed: () => setState(() => index = options.length - 1), child: const Text('ВСЁ')),
+              ],
+            ),
+          const SizedBox(height: 8),
+          Text(
+            'На столе станет ${fmtCoins(widget.onTable + amount)}, в кошельке останется '
+            '${fmtCoins(widget.reserve - amount)}.\n'
+            'Нужно согласие всех за столом: хоть один против — докупки не будет.',
+            style: const TextStyle(fontSize: 14, color: Colors.white70),
+          ),
+        ],
+      ),
+      actions: [
+        TextButton(onPressed: () => Navigator.pop(context), child: const Text('ОТМЕНА')),
+        FilledButton(onPressed: () => Navigator.pop(context, amount), child: const Text('ПОПРОСИТЬ')),
+      ],
+    );
+  }
+}
+
+// Сообщение всем за столом, когда выигравший отдал часть выигрыша (RULES.md §11.8), двумя
+// частями: «Серик выиграл 10k монет» и «и отдал 500 монет игроку Аян». «Игроку» — чтобы
+// не склонять имя: Асель, Мадина, Бот Айдар склоняются по-разному.
+({String won, String gave}) winShareText(Map<String, dynamic> share) => (
+      won: '${share['fromName']} выиграл ${fmtCoins((share['won'] as num?)?.toInt() ?? 0)} монет',
+      gave: 'и отдал ${fmtCoins((share['amount'] as num?)?.toInt() ?? 0)} монет игроку ${share['toName']}',
+    );
+
+// Отдать часть выигрыша другому игроку (RULES.md §11.8, 22.10.2026): кому — любому за столом,
+// сколько — от взноса стола до 10% выигрыша, шагом 100. Ответ — кому и сколько, или null.
+class ShareDialog extends StatefulWidget {
+  final int won; // сколько выиграл в этой раздаче
+  final int min; // взнос стола — меньше отдать нельзя
+  final int max; // 10% выигрыша — больше отдать нельзя
+  final List<({String id, String name})> players; // кому можно отдать — все за столом, кроме меня
+
+  const ShareDialog({
+    super.key,
+    required this.won,
+    required this.min,
+    required this.max,
+    required this.players,
+  });
+
+  @override
+  State<ShareDialog> createState() => _ShareDialogState();
+}
+
+class _ShareDialogState extends State<ShareDialog> {
+  late final List<int> options = [
+    for (var v = widget.min; v <= widget.max; v += 100) v,
+  ];
+  int index = 0;
+  String? toId;
+
+  @override
+  Widget build(BuildContext context) {
+    final amount = options[index];
+    return AlertDialog(
+      title: const Text('Отдать часть выигрыша'),
+      content: SingleChildScrollView(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Text(
+              'Вы выиграли ${fmtCoins(widget.won)}. Отдать можно '
+              '${widget.min == widget.max ? fmtCoins(widget.min) : 'от ${fmtCoins(widget.min)} до ${fmtCoins(widget.max)}'}: '
+              'не меньше взноса стола и не больше 10% выигрыша. Монеты уходят сразу, вернуть их нельзя.',
+              style: const TextStyle(fontSize: 14, color: Colors.white70),
+            ),
+            const SizedBox(height: 12),
+            const Text('Кому', style: TextStyle(fontWeight: FontWeight.w800)),
+            const SizedBox(height: 6),
+            Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              children: [
+                for (final p in widget.players)
+                  ChoiceChip(
+                    label: Text(p.name),
+                    selected: toId == p.id,
+                    onSelected: (_) => setState(() => toId = p.id),
+                  ),
+              ],
+            ),
+            const SizedBox(height: 12),
+            Row(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                const CoinIcon(size: 26),
+                const SizedBox(width: 6),
+                Text(fmtCoins(amount), style: const TextStyle(fontSize: 30, fontWeight: FontWeight.w800)),
+              ],
+            ),
+            if (options.length > 1)
+              Slider(
+                value: index.toDouble(),
+                max: (options.length - 1).toDouble(),
+                divisions: options.length - 1,
+                activeColor: const Color(0xFFD4A94F),
+                onChanged: (v) => setState(() => index = v.round()),
+              ),
+            if (options.length > 1)
+              Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  TextButton(onPressed: () => setState(() => index = 0), child: const Text('МИНИМУМ')),
+                  TextButton(onPressed: () => setState(() => index = options.length - 1), child: const Text('10%')),
+                ],
+              ),
+          ],
+        ),
+      ),
+      actions: [
+        TextButton(onPressed: () => Navigator.pop(context), child: const Text('ОТМЕНА')),
+        FilledButton(
+          onPressed: toId == null ? null : () => Navigator.pop(context, (toId: toId!, amount: amount)),
+          child: const Text('ОТДАТЬ'),
+        ),
       ],
     );
   }

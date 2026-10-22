@@ -107,6 +107,7 @@ import {
   COIN_STEP,
   collectAnte,
   ENTRY_STEP,
+  entryAllowed,
   konAvailable,
   konUnlockAt,
   lowestEntryFor,
@@ -174,6 +175,15 @@ import { LOBBY_MS, lobbyExpired, lobbySecondsLeft } from './lobbyTimer.js';
 import { rateCheck } from './rateLimit.js';
 import { openRoomsFor, QUICK_ROOM } from './openRooms.js';
 import { checkBuyIn } from './buyIn.js';
+import { canShare, checkShareAmount } from './share.js';
+import {
+  applyTopUp,
+  canRequestTopUp,
+  checkTopUpAmount,
+  TOP_UP_VOTE_MS,
+  topUpOutcome,
+  type TopUpVote,
+} from './topUp.js';
 import {
   addReport,
   avoidIds,
@@ -193,6 +203,7 @@ import {
   dealShowStep,
   pickRandom,
   revealShowMs,
+  roundShowMs,
   threeIzzhogaShowMs,
   type DealShow,
   TURN_SECONDS_OPTIONS,
@@ -242,7 +253,7 @@ type RoomSettings = {
   ante: number; // взнос, 100…1000, кратен 100
   emptyLimit: number; // лимит пустых раздач подряд, 3…10
   konThreshold: number; // КОН открывается при коне ≥ базовый × это число, 3…10
-  minBalance: number; // минимум денег для входа, 1 000…10 000, не меньше взноса × 10
+  minBalance: number; // сумма за стол — минимум для входа, кратно 1 000, не меньше взноса × 10 (§9.1a)
   turnSeconds?: number; // время на ход, 20 или 40 (§13a); нет — 20 (старые комнаты)
   absenceMinutes?: number; // запас на отлучку за игру, 1…5 минут (§13); нет — 5
 };
@@ -368,6 +379,9 @@ type GameState = {
   playedTricks: PlayedTrick[];
   tricksWon: Record<string, number>;
   result: MainResult[] | null;
+  // Когда раздача сыграна — от этого 3 секунды все смотрят открытые карты, раздавать нельзя
+  // (§10.8, 22.10.2026). Нет в старых сохранённых комнатах — тогда не ждём.
+  roundDoneAt?: number | null;
 
   // Деньги.
   kon: number;
@@ -412,6 +426,27 @@ type GameState = {
   shrinkVote?: ShrinkVote | null;
   // Последний раз стол стал меньше — с какого на какое число игроков (для надписи на столе).
   lastShrink?: { from: number; to: number } | null;
+  // Докупить из кошелька за столом (§9.1c, 22.10.2026): идущая просьба, кто уже просил между
+  // этими раздачами, чем кончилась последняя. Нет в старых сохранённых комнатах.
+  topUpVote?: TopUpVote | null;
+  topUpRequestedIds?: string[];
+  lastTopUp?: {
+    playerId: string;
+    name: string;
+    amount: number;
+    result: 'approved' | 'rejected' | 'expired';
+    byName: string | null; // кто был против
+  } | null;
+  // Главный выиграл и отдал часть выигрыша другому игроку (§11.8, 22.10.2026): кто, кому,
+  // сколько и сколько выиграл. Одна передача за раздачу; новая раздача — null.
+  winShare?: {
+    fromId: string;
+    fromName: string;
+    toId: string;
+    toName: string;
+    amount: number;
+    won: number;
+  } | null;
   // Кто не вернулся (кончился запас на отлучку) — ему доля кона не положена (§13).
   leftPlayerIds?: string[];
   // Победитель комнаты (ТЗ §36): лучший итог по монетам; при ничьей — несколько.
@@ -1922,6 +1957,8 @@ function vacateSeat(room: Room, playerId: string, reason: 'left' | 'gone', close
 
   // Место уже пустовало до него — уход без штрафа к рейтингу (§16.3a, 08.10.2026).
   const seatAlreadyEmpty = (room.vacancies?.length ?? 0) > 0;
+  // Шла просьба докупить (§9.1c) — состав стола меняется, спрашивать некого: отменяется.
+  game.topUpVote = null;
   const { shares, perPlayer, remainder, remainderTo } = splitKon(
     game.kon,
     rest.length > 0 ? rest.map((p) => ({ id: p.id, lost: p.startBalance - p.balance })) : [],
@@ -2169,6 +2206,14 @@ setInterval(guarded('end vote', () => {
         broadcastRoom(room.id).catch((e) => console.error(`[ROOM ${room.id}] broadcast failed:`, e));
       }
     }
+    // И «докупить» (§9.1c): 30 секунд без ответа — докупки нет.
+    if (room.game?.topUpVote) {
+      settleTopUpVote(room);
+      if (!room.game.topUpVote) {
+        persistRoom(room);
+        broadcastRoom(room.id).catch((e) => console.error(`[ROOM ${room.id}] broadcast failed:`, e));
+      }
+    }
   }
 }), 1000);
 
@@ -2245,10 +2290,22 @@ const turnClocks = new Map<string, TurnClock>();
 const dealShows = new Map<string, DealShow>();
 const DEAL_SHOWN_STAGES = ['bidding', 'special', 'special_discard', 'kon_trump'];
 
+// Раздача сыграна — до какого момента все смотрят открытые карты (§10.8, 22.10.2026):
+// следующую раздачу раздать нельзя, часы раздающего и боты ждут. 0 — смотреть нечего.
+function handsShownAt(room: Room): number {
+  const g = room.game;
+  if (!g || g.stage !== 'round_done' || !g.result || !g.roundDoneAt) return 0;
+  const reveal = g.result.some((r) => r.garba || (r.instant && r.declaration === 'ДВА'));
+  return g.roundDoneAt + roundShowMs(reveal);
+}
+
 // Когда у игроков закончится анимация текущей раздачи (0 — раздачи нет).
+// Раздача сыграна — когда все досмотрят открытые карты.
 function dealShownAt(room: Room): number {
   const g = room.game;
   if (!g) return 0;
+  const hands = handsShownAt(room);
+  if (hands) return hands;
   // Первый раздающий: сначала все досматривают вскрытие на туза.
   if (g.stage === 'dealer_found' && !g.openCard) {
     const prev = dealShows.get(room.id);
@@ -2293,8 +2350,9 @@ function awaitedMoves(room: Room): { key: string; moves: TimedMove[] } | null {
     case 'dealer_found':
     case 'awaiting_deal':
     case 'round_done':
-      // Пока голосуют «закончить игру» или «играть без ушедшего», раздавать нельзя (§12.3, §13c).
-      if (g.endVote || g.shrinkVote) return null;
+      // Пока голосуют «закончить игру», «играть без ушедшего» или «докупить», раздавать
+      // нельзя (§12.3, §13c, §9.1c).
+      if (g.endVote || g.shrinkVote || g.topUpVote) return null;
       return {
         key: `deal:${g.stage}:${g.dealerId}:${g.kon}:${g.emptyStreak}`,
         moves: [{ playerId: g.dealerId, path: 'dealer/continue', body: {} }],
@@ -2730,6 +2788,7 @@ function closeWithSplit(
   game.closeReason = reason;
   game.endVote = null;
   game.shrinkVote = null;
+  game.topUpVote = null;
   markWinners(room);
   game.activeBidderId = null;
   game.turnPlayerId = null;
@@ -2782,6 +2841,13 @@ function beginBidding(room: Room) {
   game.endVote = null;
   game.endProposedIds = [];
   game.lastEndVote = null;
+  // И попросить докупить (§9.1c).
+  game.topUpVote = null;
+  game.topUpRequestedIds = [];
+  game.lastTopUp = null;
+  game.roundDoneAt = null;
+  // Отдать часть выигрыша — только до следующей раздачи (§11.8).
+  game.winShare = null;
   Object.assign(game, emptyPlayState());
   game.konBeforeSettlement = null;
 
@@ -3163,6 +3229,7 @@ function finishRound(room: Room, won: boolean[], instantIndex = -1) {
   game.konBeforeSettlement = game.kon;
   game.kon = settlement.konAfter;
   game.turnPlayerId = null;
+  game.roundDoneAt = Date.now();
   game.result = game.mains.map((m, i) => ({
     ...m,
     tricks: game.tricksWon[m.playerId] ?? 0,
@@ -3430,7 +3497,7 @@ function publicRoom(room: Room, viewerId?: string) {
         viewerId !== undefined &&
         canProposeEnd({
           stage: room.game.stage,
-          voteActive: !!room.game.endVote || !!room.game.shrinkVote,
+          voteActive: !!room.game.endVote || !!room.game.shrinkVote || !!room.game.topUpVote,
           proposedIds: room.game.endProposedIds ?? [],
           playerId: viewerId,
         }),
@@ -3451,6 +3518,35 @@ function publicRoom(room: Room, viewerId?: string) {
       myShrinkVote:
         room.game.shrinkVote && viewerId && room.game.shrinkVote.yes.includes(viewerId) ? 'continue' : null,
       lastShrink: room.game.lastShrink ?? null,
+      // Докупить из кошелька (§9.1c): идущая просьба, мой ответ, могу ли попросить, чем кончилась.
+      topUpVote: room.game.topUpVote
+        ? {
+            requesterId: room.game.topUpVote.requesterId,
+            requesterName:
+              room.players.find((p) => p.id === room.game!.topUpVote!.requesterId)?.name ?? '',
+            amount: room.game.topUpVote.amount,
+            yesIds: room.game.topUpVote.yes,
+            noIds: room.game.topUpVote.no,
+            voterIds: topUpVoterIds(room, room.game.topUpVote.requesterId),
+            secondsLeft: Math.max(
+              0,
+              Math.ceil((room.game.topUpVote.startedAt + TOP_UP_VOTE_MS - Date.now()) / 1000),
+            ),
+          }
+        : null,
+      myTopUpVote: room.game.topUpVote && viewerId
+        ? room.game.topUpVote.yes.includes(viewerId)
+          ? 'yes'
+          : room.game.topUpVote.no.includes(viewerId)
+            ? 'no'
+            : null
+        : null,
+      myCanRequestTopUp: viewerId !== undefined && topUpAllowed(room, viewerId),
+      lastTopUp: room.game.lastTopUp ?? null,
+      // Часть выигрыша другому (§11.8): кто кому сколько отдал — видят все; сколько могу
+      // отдать я — только выигравшему главному, пока не роздали следующую раздачу.
+      winShare: room.game.winShare ?? null,
+      myShareLimits: viewerId !== undefined ? shareLimitsFor(room, viewerId) : null,
       // Время на ход (§13a): сколько секунд осталось тому, кого ждём; кого ждём.
       turnSecondsLeft: turnSecondsLeft(turnClockOf(room), Date.now(), turnMsOf(room)),
       // Сколько ещё идёт анимация раздачи (вскрытия на туза): открыл стол позже —
@@ -3576,14 +3672,10 @@ app.post('/rooms', (req, res) => {
     });
   }
 
-  // Минимум для входа — не меньше взноса × 10 (RULES.md §9.1a).
+  // Сумма за стол (минимум для входа) — любая, кратно 1 000, не меньше взноса × 10
+  // (RULES.md §9.1a; с 22.10.2026 — не только 1 000…10 000).
   const lowestEntry = lowestEntryFor(anteValue);
-  if (
-    !Number.isInteger(minBalanceValue) ||
-    minBalanceValue < lowestEntry ||
-    minBalanceValue > MAX_ENTRY ||
-    minBalanceValue % ENTRY_STEP !== 0
-  ) {
+  if (!entryAllowed(minBalanceValue, anteValue)) {
     return res.status(400).json({
       error: `minBalance must be from ${lowestEntry} to ${MAX_ENTRY}, multiple of ${ENTRY_STEP}`,
     });
@@ -4265,6 +4357,12 @@ app.post('/rooms/:id/dealer/continue', (req, res) => {
     });
   }
 
+  // Раздача только что сыграна — 3 секунды все смотрят открытые карты (§10.8, 22.10.2026).
+  const showLeft = handsShownAt(room) - Date.now();
+  if (showLeft > 0) {
+    return res.status(409).json({ error: 'cards on show', msLeft: showLeft });
+  }
+
   // Идёт голосование «закончить игру» — раздавать нельзя, пока не решится (§12.3).
   settleEndVote(room);
   settleShrinkVote(room);
@@ -4277,6 +4375,11 @@ app.post('/rooms/:id/dealer/continue', (req, res) => {
   // Игрок ушёл — пока не решили, играть ли без него, раздавать нельзя (§13c).
   if (room.game.shrinkVote) {
     return res.status(409).json({ error: 'shrink vote in progress' });
+  }
+  // Кто-то просит докупить — сначала ответ стола, потом раздача (§9.1c).
+  settleTopUpVote(room);
+  if (room.game.topUpVote) {
+    return res.status(409).json({ error: 'top-up vote in progress' });
   }
 
   beginBidding(room);
@@ -4568,7 +4671,7 @@ app.post('/rooms/:id/end-game', (req, res) => {
     // Голосования нет — это предложение закончить.
     const allowed = canProposeEnd({
       stage: game.stage,
-      voteActive: !!game.shrinkVote,
+      voteActive: !!game.shrinkVote || !!game.topUpVote,
       proposedIds: game.endProposedIds ?? [],
       playerId: id,
     });
@@ -4588,6 +4691,199 @@ app.post('/rooms/:id/end-game', (req, res) => {
   }
   settleEndVote(room);
 
+  return res.json(publicRoom(room, id));
+});
+
+// --- Докупить из кошелька за столом (RULES.md §9.1c, решение владельца, 22.10.2026) ---
+
+// Кто отвечает на просьбу: все за столом, кроме просящего. Боты сервера не голосуют —
+// решают люди (как в §13c); за столом одни боты — докупка сразу.
+function topUpVoterIds(room: Room, requesterId: string): string[] {
+  return room.players.map((p) => p.id).filter((id) => id !== requesterId && !room.botIds?.includes(id));
+}
+
+// Деньги за столом поменялись не игрой — докупили (§9.1c) или отдали часть выигрыша (§11.8):
+// «последний кон» (§12.1) смотрим заново. У всех снова не меньше базового кона — кон не последний.
+function recheckClosing(room: Room) {
+  const game = room.game!;
+  const closing = someoneBelowBase(room.players.map((p) => p.balance), roomBaseKon(room));
+  if (closing !== game.closing) {
+    console.log(`[ROOM ${room.id}] ${closing ? 'у кого-то меньше базового кона — последний кон' : 'у всех снова не меньше базового кона — кон не последний'}`);
+  }
+  game.closing = closing;
+}
+
+// Подвести просьбу, если она решилась: все согласны — монеты из кошелька на стол;
+// хоть одно «против» или 30 секунд без ответа — докупки нет.
+function settleTopUpVote(room: Room) {
+  const game = room.game;
+  const vote = game?.topUpVote;
+  if (!game || !vote) return;
+  const requester = room.players.find((p) => p.id === vote.requesterId);
+  if (!requester || room.status !== 'started') {
+    game.topUpVote = null;
+    return;
+  }
+  const outcome = topUpOutcome(vote, topUpVoterIds(room, vote.requesterId), Date.now());
+  if (outcome === 'pending') return;
+  game.topUpVote = null;
+  // Кошелёк мог стать меньше, пока спрашивали (списание владельцем, /admin/coins).
+  const amount = Math.min(vote.amount, requester.reserve ?? 0);
+  if (outcome === 'approved' && amount > 0) {
+    const next = applyTopUp(
+      { balance: requester.balance, reserve: requester.reserve ?? 0, startBalance: requester.startBalance },
+      amount,
+    );
+    requester.balance = next.balance;
+    requester.reserve = next.reserve;
+    requester.startBalance = next.startBalance;
+    recheckClosing(room);
+  }
+  const noId = vote.no[0];
+  game.lastTopUp = {
+    playerId: requester.id,
+    name: requester.name,
+    amount,
+    result: outcome === 'approved' && amount === 0 ? 'rejected' : outcome,
+    byName: noId ? (room.players.find((p) => p.id === noId)?.name ?? null) : null,
+  };
+  console.log(
+    outcome === 'approved'
+      ? `[ROOM ${room.id}] ${requester.name} докупил ${amount} из кошелька — на столе ${requester.balance}`
+      : `[ROOM ${room.id}] ${requester.name} не докупил: ${outcome === 'rejected' ? 'кто-то против' : 'не все ответили'}`,
+  );
+}
+
+// Может ли игрок сейчас попросить докупить: между раздачами, никто ничего не решает,
+// в кошельке есть монеты, между этими раздачами ещё не просил. Боты не просят.
+function topUpAllowed(room: Room, playerId: string): boolean {
+  const game = room.game;
+  const player = room.players.find((p) => p.id === playerId);
+  if (!game || !player || room.status !== 'started' || room.botIds?.includes(playerId)) return false;
+  return canRequestTopUp({
+    stage: game.stage,
+    voteActive: !!game.endVote || !!game.shrinkVote || !!game.topUpVote,
+    requestedIds: game.topUpRequestedIds ?? [],
+    playerId,
+    reserve: player.reserve ?? 0,
+  });
+}
+
+// Попросить докупить: amount — сколько монет перенести из кошелька на стол.
+app.post('/rooms/:id/top-up', (req, res) => {
+  const room = rooms.get(req.params.id);
+  if (!room || !room.game) {
+    return res.status(404).json({ error: 'room/game not found' });
+  }
+  const game = room.game;
+  const id = me(res).id;
+  const player = room.players.find((p) => p.id === id);
+  if (!player) {
+    return res.status(403).json({ error: 'player is not in this room' });
+  }
+  settleTopUpVote(room);
+  if (!topUpAllowed(room, id)) {
+    return res.status(409).json({ error: 'cannot request top-up now', stage: game.stage });
+  }
+  const amount = checkTopUpAmount(req.body?.amount, player.reserve ?? 0);
+  if (amount === null) {
+    return res.status(400).json({ error: 'bad top-up amount', reserve: player.reserve ?? 0 });
+  }
+  game.topUpRequestedIds = [...(game.topUpRequestedIds ?? []), id];
+  game.topUpVote = { requesterId: id, amount, yes: [], no: [], startedAt: Date.now() };
+  game.lastTopUp = null;
+  console.log(`[ROOM ${room.id}] ${player.name} просит докупить ${amount} из кошелька`);
+  // За столом, кроме него, одни боты — спрашивать некого, докупка сразу.
+  settleTopUpVote(room);
+  return res.json(publicRoom(room, id));
+});
+
+// Ответ на просьбу докупить: choice — yes | no. Одно «нет» — докупки не будет.
+app.post('/rooms/:id/top-up-vote', (req, res) => {
+  const room = rooms.get(req.params.id);
+  if (!room || !room.game) {
+    return res.status(404).json({ error: 'room/game not found' });
+  }
+  const game = room.game;
+  const id = me(res).id;
+  if (!room.players.some((p) => p.id === id)) {
+    return res.status(403).json({ error: 'player is not in this room' });
+  }
+  const choice = req.body?.choice;
+  if (choice !== 'yes' && choice !== 'no') {
+    return res.status(400).json({ error: 'choice must be yes or no' });
+  }
+  settleTopUpVote(room);
+  const vote = game.topUpVote;
+  if (!vote) {
+    return res.status(409).json({ error: 'no top-up vote now' });
+  }
+  if (!topUpVoterIds(room, vote.requesterId).includes(id)) {
+    return res.status(409).json({ error: 'you do not vote on this' });
+  }
+  if (vote.yes.includes(id) || vote.no.includes(id)) {
+    return res.status(409).json({ error: 'already voted' });
+  }
+  if (choice === 'yes') vote.yes.push(id);
+  else vote.no.push(id);
+  settleTopUpVote(room);
+  return res.json(publicRoom(room, id));
+});
+
+// --- Отдать часть выигрыша другому игроку (RULES.md §11.8, решение владельца, 22.10.2026) ---
+
+// Сколько игрок может отдать сейчас: выиграл РАЗ или ДВА в этой раздаче и ещё не отдавал.
+// null — нельзя. Боты сервера не отдают.
+function shareLimitsFor(room: Room, playerId: string): { min: number; max: number } | null {
+  const game = room.game;
+  if (!game || room.status !== 'started' || room.botIds?.includes(playerId)) return null;
+  if (!room.players.some((p) => p.id === playerId)) return null;
+  return canShare({
+    stage: game.stage,
+    result: game.result,
+    shared: !!game.winShare,
+    playerId,
+    ante: room.settings.ante,
+  });
+}
+
+// Отдать: toId — кому (любой за столом, кроме себя), amount — сколько.
+app.post('/rooms/:id/share', (req, res) => {
+  const room = rooms.get(req.params.id);
+  if (!room || !room.game) {
+    return res.status(404).json({ error: 'room/game not found' });
+  }
+  const game = room.game;
+  const id = me(res).id;
+  const giver = room.players.find((p) => p.id === id);
+  if (!giver) {
+    return res.status(403).json({ error: 'player is not in this room' });
+  }
+  const limits = shareLimitsFor(room, id);
+  if (!limits) {
+    return res.status(409).json({ error: 'cannot share now', stage: game.stage });
+  }
+  const receiver = room.players.find((p) => p.id === req.body?.toId);
+  if (!receiver || receiver.id === id) {
+    return res.status(400).json({ error: 'bad share recipient' });
+  }
+  const amount = checkShareAmount(req.body?.amount, limits);
+  if (amount === null) {
+    return res.status(400).json({ error: 'bad share amount', ...limits });
+  }
+
+  // Монеты за столом — от одного к другому. В статистике — как деньги за столом (recordMoney):
+  // иначе она разойдётся с балансом. Выигравший оставляет себе не меньше 90% выигрыша — на
+  // следующую заявку ему хватит, голосование «делим кон» (§12.2) отсюда не начнётся.
+  giver.balance -= amount;
+  receiver.balance += amount;
+  recordMoney(room, giver.id, -amount);
+  recordMoney(room, receiver.id, amount);
+  const won = game.result?.find((r) => r.playerId === id)?.delta ?? 0;
+  game.winShare = { fromId: id, fromName: giver.name, toId: receiver.id, toName: receiver.name, amount, won };
+  // Обедневший получил монеты — «последний кон» (§12.1) мог отмениться.
+  recheckClosing(room);
+  console.log(`[ROOM ${room.id}] ${giver.name} выиграл ${won} и отдал ${amount} игроку ${receiver.name}`);
   return res.json(publicRoom(room, id));
 });
 

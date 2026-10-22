@@ -28,6 +28,8 @@ import './telegram.test.js';
 import './buyIn.test.js';
 import './shrinkVote.test.js';
 import './shop.test.js';
+import './topUp.test.js';
+import './share.test.js';
 import { summary } from './check.js';
 
 process.exit(summary() === 0 ? 0 : 1);

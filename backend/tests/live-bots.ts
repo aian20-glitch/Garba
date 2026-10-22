@@ -55,8 +55,10 @@ async function main() {
   let lastVersion = -1;
   let versionWentBack = false;
   const deadline = Date.now() + 150_000;
-  while (Date.now() < deadline && !sawRoundDone) {
+  // Взял спецкарту — торгов в этой раздаче нет: отсчёт перед первой заявкой меряем в следующей.
+  while (Date.now() < deadline && !(sawRoundDone && firstBidLeft !== null)) {
     const state = (await request('GET', `/rooms/${room.id}`, host.token)).body;
+    if (state.status === 'finished') break;
     const g = state.game;
     if (state.version < lastVersion) versionWentBack = true;
     lastVersion = state.version;

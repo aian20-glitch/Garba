@@ -222,6 +222,8 @@ export function botAction(botId: string, room: any): BotAction | null {
   if (room.pause) return null;
   // Игрок ушёл — играть ли без него, решают люди (§13c); пока решают, не раздаём.
   if (g.shrinkVote) return null;
+  // Кто-то просит докупить (§9.1c) — отвечают люди, боты не голосуют; пока ждём, не раздаём.
+  if (g.topUpVote) return null;
 
   switch (g.stage) {
     case 'dealer_found':

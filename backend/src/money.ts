@@ -10,15 +10,26 @@ export const MAX_EMPTY_LIMIT = 10;
 export const MIN_KON_THRESHOLD = 3;
 export const MAX_KON_THRESHOLD = 10;
 
-// Минимальный баланс для входа в комнату (RULES.md §9.1a):
-// 1 000 … 10 000 шагом 1 000, но не меньше взноса × 10.
+// Минимальный баланс для входа в комнату — «сумма за стол» (RULES.md §9.1a): шагом 1 000,
+// не меньше взноса × 10. С 22.10.2026 создатель вписывает любую сумму — 25 000, 50 000,
+// 100 000… (раньше — только 1 000 … 10 000). Потолок — только от ошибок ввода.
 export const MIN_ENTRY = 1000;
-export const MAX_ENTRY = 10_000;
+export const MAX_ENTRY = 10_000_000;
 export const ENTRY_STEP = 1000;
 export const ENTRY_PER_ANTE = 10;
 
 export function lowestEntryFor(ante: number): number {
   return Math.max(MIN_ENTRY, ante * ENTRY_PER_ANTE);
+}
+
+// Можно ли создать стол с такой суммой: целое число, кратно 1 000, не меньше взноса × 10.
+export function entryAllowed(value: number, ante: number): boolean {
+  return (
+    Number.isInteger(value) &&
+    value >= lowestEntryFor(ante) &&
+    value <= MAX_ENTRY &&
+    value % ENTRY_STEP === 0
+  );
 }
 
 // Все суммы кратны сотне: взнос кратен 100, половина кона для ДВА

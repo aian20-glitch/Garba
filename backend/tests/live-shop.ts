@@ -34,8 +34,8 @@ async function main() {
   const richCode = (await request('GET', '/me', rich.token)).body.code;
   check('без токена — 401', (await request('GET', '/shop')).status, 401);
   const shop = (await request('GET', '/shop', rich.token)).body;
-  check('витрина: 18 вещей, ничего не куплено, всё снято',
-    [shop.items.length, shop.items.some((i: any) => i.owned), shop.look], [18, false, { frame: null, back: null, cloth: null, effect: null }]);
+  check('витрина: 20 вещей (с 22.10.2026 — и фразы «Воин», «Воин 2»), ничего не куплено, всё снято',
+    [shop.items.length, shop.items.some((i: any) => i.owned), shop.look], [20, false, { frame: null, back: null, cloth: null, effect: null }]);
   const expensive = await request('POST', '/shop/buy', rich.token, { itemId: 'frame_muiz' });
   check('40 000 при 30 000 — не хватает', [expensive.status, expensive.body.error, expensive.body.price], [400, 'not enough coins', 40_000]);
   check('нет такой вещи — 404', (await request('POST', '/shop/buy', rich.token, { itemId: 'title_khan' })).status, 404);

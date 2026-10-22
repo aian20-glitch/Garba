@@ -1,7 +1,7 @@
 // Проверки turnTimer.ts: время на ход (RULES.md §13a). Запуск: npm test
 
 import { check, section } from './check.js';
-import { addMiss, clockFor, dealShowStep, pickRandom, revealShowMs, threeIzzhogaShowMs, TURN_MS, turnMsFor, turnSecondsLeft } from '../src/turnTimer.js';
+import { addMiss, clockFor, dealShowStep, pickRandom, revealShowMs, roundShowMs, threeIzzhogaShowMs, TURN_MS, turnMsFor, turnSecondsLeft } from '../src/turnTimer.js';
 
 section('время на ход — 20 секунд (§13a, решение владельца правил)');
 const t0 = 1_000_000;
@@ -53,4 +53,14 @@ section('отсчёт хода — после анимации раздачи (�
   check('раздачи на столе нет — ничего не меняем', dealShowStep(show, null, 0, 7, 0, t0), show);
   check('вскрытие на туза: 25 карт по 0,9 с + 1,6 с на возврат — больше 20 с хода', revealShowMs(25), 24_100);
   check('три ИЗЖОГИ: раздающему ждать их показ — по 3 с на карту и 0,9 с', threeIzzhogaShowMs(3), 9_900);
+}
+
+section('раздача сыграна — 3 секунды все смотрят открытые карты (§10.8, решение владельца, 22.10.2026)');
+{
+  check('обычная раздача — 3 секунды', roundShowMs(false), 3_000);
+  check('ГАРБА (и ДВА с Q K A) — сначала 2,5 с дама, король и туз, потом те же 3 секунды', roundShowMs(true), 5_500);
+  // Раздающему 20 секунд на раздачу — после показа карт, а не с конца раздачи.
+  const clock = clockFor(undefined, 'deal:round_done:Серик:0:0', t0, t0 + roundShowMs(false));
+  check('часы раздающего стоят, пока смотрим карты', clock!.since, t0 + 3_000);
+  check('через секунду после конца раздачи — 20 с хода и ещё 2 с показа', turnSecondsLeft(clock, t0 + 1_000, TURN_MS), 22);
 }
