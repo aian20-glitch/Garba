@@ -25,6 +25,8 @@ export type StoredRoom = {
   rating?: Record<string, { skill: number }>;
   // Ушли посреди игры (24.09.2026) — для них комната не «доиграна».
   departedIds?: string[];
+  // Монеты за неделю (ТОП-3 недели, 23.10.2026): { неделя: { игрок: чистый плюс } }.
+  weekly?: Record<string, Record<string, number>>;
 };
 
 // Колонки статистики в базе и поля PlayerStats — в одном порядке.
@@ -64,6 +66,19 @@ export function ensureRoomTable(db: DatabaseSync) {
     )
   `);
   db.exec('CREATE INDEX IF NOT EXISTS room_stats_player ON room_stats (player_id)');
+
+  // Монеты за неделю (23.10.2026): чистый плюс игрока за столами комнаты в эту неделю.
+  // ТОП-3 недели — сумма по комнатам. Неделя — дата понедельника (leaders.ts).
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS week_coins (
+      room_id    TEXT NOT NULL,
+      player_id  TEXT NOT NULL,
+      week       TEXT NOT NULL,
+      coins      INTEGER NOT NULL,
+      PRIMARY KEY (room_id, player_id, week)
+    )
+  `);
+  db.exec('CREATE INDEX IF NOT EXISTS week_coins_week ON week_coins (week)');
 }
 
 // Записать комнату и балансы её игроков — без своей транзакции,
@@ -108,6 +123,29 @@ export function writeRoom(db: DatabaseSync, room: StoredRoom) {
       upsert.run(room.id, playerId, departed.has(playerId) ? 0 : finished, ...STAT_COLUMNS.map(([, k]) => st[k]));
     }
   }
+
+  if (room.weekly) {
+    const upsert = db.prepare(
+      `INSERT INTO week_coins (room_id, player_id, week, coins) VALUES (?, ?, ?, ?)
+       ON CONFLICT(room_id, player_id, week) DO UPDATE SET coins = excluded.coins`,
+    );
+    for (const [week, byPlayer] of Object.entries(room.weekly)) {
+      for (const [playerId, coins] of Object.entries(byPlayer)) upsert.run(room.id, playerId, week, coins);
+    }
+  }
+}
+
+// Монеты за неделю — у всех игроков (не ботов), сумма по комнатам.
+export function weekCoins(db: DatabaseSync, week: string): { id: string; name: string; code: string; coins: number }[] {
+  const rows = db
+    .prepare(
+      `SELECT a.id, a.name, a.code, SUM(w.coins) AS coins
+       FROM week_coins w JOIN accounts a ON a.id = w.player_id
+       WHERE w.week = ? AND a.is_bot = 0
+       GROUP BY a.id`,
+    )
+    .all(week) as { id: string; name: string; code: string; coins: number }[];
+  return rows.map((r) => ({ ...r, coins: Number(r.coins) }));
 }
 
 // Статистика игрока за всё время (ТЗ §2): сумма по комнатам, максимумы — максимум.

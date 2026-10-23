@@ -8,6 +8,10 @@ import { Server as SocketServer } from 'socket.io';
 
 import {
   acceptFriend,
+  coinLeaders,
+  leaveRecordOf,
+  peakBalanceOf,
+  setLeaveRecord,
   dropRequests,
   friendRequests,
   friendStatus,
@@ -59,7 +63,9 @@ import {
 import { createDeck, shuffle } from './deck.js';
 import { STARTING_COINS } from './config.js';
 import { BOT_STEP_MS, botAction, botTopUp, freeBotName, type BotAction } from './serverBots.js';
-import { loadUnfinishedRooms, profileStats, ratedPlayers, roomIdTaken, saveRoom, writeRoom } from './roomDb.js';
+import { loadUnfinishedRooms, profileStats, ratedPlayers, roomIdTaken, saveRoom, weekCoins, writeRoom } from './roomDb.js';
+import { addWeekly, coinMedals, weekKey, weekTop, type WeeklyCoins } from './leaders.js';
+import { banSecondsLeft, nextLeaveBan } from './leaveBan.js';
 import { afterDeal, afterRoom, leavePenalty, ratingOf, shownRating, START_SKILL } from './rating.js';
 import { addReaction, isPlayerCode, isRoomCode, type ReactionEntry } from './reactions.js';
 import {
@@ -508,6 +514,8 @@ type Room = {
   game?: GameState;
   // Статистика игроков за эту комнату (ТЗ §35, этап 9.4). Заводится при старте игры.
   stats?: Record<string, PlayerStats>;
+  // Монеты за неделю — для «ТОП-3 недели» (23.10.2026, leaders.ts).
+  weekly?: WeeklyCoins;
   // Рейтинг игроков за столом (RULES.md §16, этап 9.6). Мастерство меняется здесь и
   // сохраняется в аккаунт вместе с комнатой — как баланс. startSkill и startDeals —
   // с чем игрок сел за стол: от них «Рейтинг 4.0 → 4.9» в итогах.
@@ -984,6 +992,19 @@ function walletSplit(account: Account): { balance: number; tableBalance: number 
 // Кто я: по токену. roomId — незаконченная комната, если игрок в ней сидит.
 // balance — монеты вне стола, tableBalance — за столом (09.10.2026).
 // daily — ежедневный бонус (ТЗ §3): взят ли сегодня, какой день серии, сколько даст.
+// Бан за выход из начатой игры (§13d, 23.10.2026): { secondsLeft, count } или null.
+function leaveBanOf(accountId: string): { secondsLeft: number; count: number } | null {
+  const rec = leaveRecordOf(db, accountId);
+  const secondsLeft = banSecondsLeft(rec, Date.now());
+  return secondsLeft > 0 ? { secondsLeft, count: rec!.count } : null;
+}
+
+// Во время бана за стол нельзя: ни создать игру, ни сесть в чужую (403).
+function banError(accountId: string): { error: string; secondsLeft: number; count: number } | null {
+  const ban = leaveBanOf(accountId);
+  return ban ? { error: 'banned for leaving', ...ban } : null;
+}
+
 app.get('/me', (req, res) => {
   const account = accountOf(req);
   if (!account) {
@@ -1015,6 +1036,8 @@ app.get('/me', (req, res) => {
     roomInvites: invitesFor(account.id),
     // Магазин (§17): что куплено и что надето — сукно и наборы смайликов нужны приложению за столом.
     shop: { owned: ownedItems(db, account.id), look: lookFor(account.id) },
+    // Бан за выход из начатой игры (§13d, 23.10.2026): сколько ещё нельзя за стол. Нет — null.
+    leaveBan: leaveBanOf(account.id),
   });
 });
 
@@ -1245,6 +1268,8 @@ app.get('/me/profile', (req, res) => {
     frame: frameOf(account.id),
     rating: shownRating(accountRating(account.id)),
     stats: profileStats(db, account.id),
+    // Медали за монеты (§16.9, 23.10.2026): полученные и следующая закрытая.
+    medals: coinMedals(peakBalanceOf(db, account.id)),
     friendsCount: listFriends(db, account.id).length,
     hasRecoveryCode: hasRecoveryCode(db, account.id),
   });
@@ -1270,6 +1295,7 @@ app.get('/players/:code', (req, res) => {
     balance: player.balance,
     rating: shownRating(accountRating(player.id)),
     stats: profileStats(db, player.id),
+    medals: coinMedals(peakBalanceOf(db, player.id)),
     isFriend: areFriends(db, me.id, player.id),
     // friends | outgoing (я позвал) | incoming (он зовёт меня) | none
     friendStatus: friendStatus(db, me.id, player.id),
@@ -1341,6 +1367,25 @@ app.get('/rating', (req, res) => {
   if (!me) {
     return res.status(401).json({ error: 'unauthorized' });
   }
+  // По монетам (23.10.2026): весь баланс — кошелёк и за столом, первые 50.
+  if (req.query.scope === 'coins') {
+    const places = coinLeaders(db).map((p, i) => ({
+      place: i + 1,
+      code: p.code,
+      name: p.name,
+      avatar: avatarOf(p.id),
+      frame: frameOf(p.id),
+      coins: p.coins,
+      rating: shownRating(accountRating(p.id)),
+      me: p.id === me.id,
+    }));
+    return res.json({
+      scope: 'coins',
+      total: places.length,
+      myPlace: places.find((p) => p.me)?.place ?? null,
+      players: places.slice(0, 50),
+    });
+  }
   const friendsOnly = req.query.scope === 'friends';
   const list = friendsOnly
     ? ratedPlayers(db, [me.id, ...listFriends(db, me.id).map((f) => f.id)])
@@ -1359,6 +1404,27 @@ app.get('/rating', (req, res) => {
   const top = friendsOnly ? places : places.slice(0, 50);
 
   return res.json({ scope: friendsOnly ? 'friends' : 'all', total: places.length, myPlace, players: top });
+});
+
+// ТОП-3 недели (23.10.2026, §16.8): чистый плюс за столами с понедельника 00:00 по
+// Казахстану. Только кто в плюсе; myCoins — мой итог недели (может быть и минус).
+app.get('/rating/week', (req, res) => {
+  const me = accountOf(req);
+  if (!me) {
+    return res.status(401).json({ error: 'unauthorized' });
+  }
+  const week = weekKey(Date.now());
+  const rows = weekCoins(db, week);
+  const top = weekTop(rows).map((p, i) => ({
+    place: i + 1,
+    code: p.code,
+    name: p.name,
+    avatar: avatarOf(p.id),
+    frame: frameOf(p.id),
+    coins: p.coins,
+    me: p.id === me.id,
+  }));
+  return res.json({ week, players: top, myCoins: rows.find((r) => r.id === me.id)?.coins ?? 0 });
 });
 
 // --- Друзья (ТЗ §2, этап 9.4) ---
@@ -2526,6 +2592,7 @@ function statsOf(room: Room, playerId: string): PlayerStats {
 function recordMoney(room: Room, playerId: string, delta: number) {
   room.stats ??= {};
   room.stats[playerId] = addMoney(statsOf(room, playerId), delta);
+  room.weekly = addWeekly(room.weekly ?? {}, weekKey(Date.now()), playerId, delta);
 }
 
 // Комната закрылась — отмечаем победителя (§36).
@@ -3698,6 +3765,8 @@ app.post('/rooms', (req, res) => {
   if (busyIn) {
     return res.status(409).json({ error: 'already in another room', roomId: busyIn.id });
   }
+  const banned = banError(me(res).id);
+  if (banned) return res.status(403).json(banned);
 
   // Создатель тоже должен проходить по минимуму и выбрать сумму за стол.
   const creatorBalance = me(res).balance;
@@ -3800,6 +3869,8 @@ function joinRoom(
   if (busyIn) {
     return { status: 409, body: { error: 'already in another room', roomId: busyIn.id } };
   }
+  const banned = banError(account.id);
+  if (banned) return { status: 403, body: banned };
   // Войти можно, только если денег не меньше минимума комнаты (RULES.md §9.1a);
   // за стол — от минимума до всего баланса.
   const buyIn = checkBuyIn(rawBuyIn, account.balance, room.settings.minBalance);
@@ -3900,6 +3971,8 @@ app.post('/rooms/quick', (req, res) => {
   if (busyIn) {
     return res.status(409).json({ error: 'already in another room', roomId: busyIn.id });
   }
+  const banned = banError(account.id);
+  if (banned) return res.status(403).json(banned);
 
   // Сумма за стол: сажаем только туда, где её хватает на минимум комнаты.
   const rawBuyIn = req.body?.buyIn;
@@ -4076,6 +4149,14 @@ app.post('/rooms/:id/leave', (req, res) => {
       return res.status(409).json({ error: 'can leave only between deals', stage: room.game.stage });
     }
     vacateSeat(room, playerId, 'left');
+    // Сам вышел из начатой игры — бан на вход за стол (§13d, 23.10.2026): 10 минут за
+    // первый выход, дальше +10, не больше часа; 6 часов без выходов — счёт сначала.
+    // Тренировка с ботами никому не мешает — там бана нет.
+    if (!room.practice) {
+      const ban = nextLeaveBan(leaveRecordOf(db, playerId), Date.now());
+      setLeaveRecord(db, playerId, ban);
+      console.log(`[ROOM ${room.id}] ${me(res).name} вышел из игры — бан ${Math.round((ban.until - ban.lastAt) / 60_000)} мин (${ban.count}-й выход)`);
+    }
     return res.json({ left: true });
   }
   if (room.status !== 'lobby') {

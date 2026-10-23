@@ -125,6 +125,23 @@ function migrateAccounts(db: DatabaseSync) {
     db.exec('UPDATE accounts SET referral_paid = 1 WHERE invited_by IS NOT NULL');
   }
 
+  // Медали за монеты (23.10.2026): самый большой баланс, до которого дошёл игрок. Растёт
+  // сам при любой записи баланса (триггер) — за столом, бонус, подарок, магазин; вниз не идёт.
+  add('peak_balance', 'INTEGER NOT NULL DEFAULT 0');
+  db.exec('UPDATE accounts SET peak_balance = balance WHERE balance > peak_balance');
+  db.exec(`
+    CREATE TRIGGER IF NOT EXISTS accounts_peak_balance AFTER UPDATE OF balance ON accounts
+    WHEN NEW.balance > NEW.peak_balance
+    BEGIN
+      UPDATE accounts SET peak_balance = NEW.balance WHERE id = NEW.id;
+    END
+  `);
+  // Бан за выход из начатой игры (23.10.2026, leaveBan.ts): какой выход по счёту, когда
+  // был последний и до какого времени нельзя за стол.
+  add('leave_count', 'INTEGER NOT NULL DEFAULT 0');
+  add('leave_last_at', 'INTEGER NOT NULL DEFAULT 0');
+  add('ban_until', 'INTEGER NOT NULL DEFAULT 0');
+
   // Аккаунтам, созданным до этапа 9.3, выдаём коды.
   const withoutCode = db.prepare('SELECT id FROM accounts WHERE code IS NULL').all() as { id: string }[];
   for (const { id } of withoutCode) {
@@ -395,6 +412,41 @@ export function setBalance(db: DatabaseSync, id: string, balance: number) {
   db.prepare('UPDATE accounts SET balance = ? WHERE id = ?').run(balance, id);
 }
 
+// Самый большой баланс, до которого дошёл игрок (медали, 23.10.2026). Новый аккаунт
+// ещё не записывал баланс — тогда это сам баланс.
+export function peakBalanceOf(db: DatabaseSync, id: string): number {
+  const row = db.prepare('SELECT MAX(peak_balance, balance) AS peak FROM accounts WHERE id = ?').get(id) as
+    | { peak: number }
+    | undefined;
+  return Number(row?.peak ?? 0);
+}
+
+// Самые богатые (лидерборд по монетам, 23.10.2026): весь баланс — кошелёк и за столом.
+export function coinLeaders(db: DatabaseSync): { id: string; name: string; code: string; coins: number }[] {
+  const rows = db
+    .prepare('SELECT id, name, code, balance FROM accounts WHERE is_bot = 0 ORDER BY balance DESC, name')
+    .all() as { id: string; name: string; code: string; balance: number }[];
+  return rows.map((r) => ({ id: r.id, name: r.name, code: r.code, coins: Number(r.balance) }));
+}
+
+// Бан за выход из начатой игры (23.10.2026, leaveBan.ts). Не выходил — null.
+export function leaveRecordOf(db: DatabaseSync, id: string): { count: number; lastAt: number; until: number } | null {
+  const row = db.prepare('SELECT leave_count, leave_last_at, ban_until FROM accounts WHERE id = ?').get(id) as
+    | { leave_count: number; leave_last_at: number; ban_until: number }
+    | undefined;
+  if (!row || !row.leave_count) return null;
+  return { count: Number(row.leave_count), lastAt: Number(row.leave_last_at), until: Number(row.ban_until) };
+}
+
+export function setLeaveRecord(db: DatabaseSync, id: string, rec: { count: number; lastAt: number; until: number }) {
+  db.prepare('UPDATE accounts SET leave_count = ?, leave_last_at = ?, ban_until = ? WHERE id = ?').run(
+    rec.count,
+    rec.lastAt,
+    rec.until,
+    id,
+  );
+}
+
 // Сменить имя — только владелец сервера по жалобе (POST /admin/rename, 29.09.2026).
 export function setName(db: DatabaseSync, id: string, name: string) {
   db.prepare('UPDATE accounts SET name = ? WHERE id = ?').run(name, id);
@@ -549,6 +601,7 @@ export function deleteAccountData(db: DatabaseSync, id: string) {
   deleteModerationData(db, id);
   deleteShopData(db, id);
   db.prepare('DELETE FROM room_stats WHERE player_id = ?').run(id);
+  db.prepare('DELETE FROM week_coins WHERE player_id = ?').run(id);
   db.prepare('UPDATE accounts SET invited_by = NULL WHERE invited_by = ?').run(id);
 
   const rows = db

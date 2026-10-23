@@ -30,6 +30,7 @@ import './shrinkVote.test.js';
 import './shop.test.js';
 import './topUp.test.js';
 import './share.test.js';
+import './leaders.test.js';
 import { summary } from './check.js';
 
 process.exit(summary() === 0 ? 0 : 1);

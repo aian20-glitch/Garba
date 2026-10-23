@@ -27,6 +27,9 @@ class _HomeScreenState extends State<HomeScreen> with RouteAware {
   List<Map<String, dynamic>> invites = const [];
   Set<String> seenInvites = {};
   Timer? invitesTimer;
+  // Бан за выход из начатой игры (§13d, 23.10.2026): до какого времени нельзя за стол.
+  DateTime? banUntil;
+  int banCount = 0;
 
   @override
   void initState() {
@@ -70,6 +73,21 @@ class _HomeScreenState extends State<HomeScreen> with RouteAware {
     refreshMe();
   }
 
+  // Бан за выход (§13d): за стол не пускаем сразу, не спрашивая сумму за стол. Решает
+  // всё равно сервер — это только чтобы не заполнять зря окна.
+  void unlessBanned(VoidCallback action) {
+    final until = banUntil;
+    final left = until == null ? 0 : until.difference(DateTime.now()).inSeconds + 1;
+    if (left <= 0) return action();
+    final messenger = ScaffoldMessenger.of(context);
+    messenger.hideCurrentSnackBar();
+    messenger.showSnackBar(SnackBar(
+      behavior: SnackBarBehavior.floating,
+      backgroundColor: const Color(0xFF7A1F2A),
+      content: Text('Вы вышли из начатой игры — за стол можно через ${fmtClock(left)}.'),
+    ));
+  }
+
   Future<void> refreshMe() async {
     try {
       final response = await http.get(Uri.parse('$apiBase/me'), headers: authHeaders());
@@ -101,6 +119,11 @@ class _HomeScreenState extends State<HomeScreen> with RouteAware {
         invites = ((me['roomInvites'] as List?) ?? const [])
             .map((e) => Map<String, dynamic>.from(e as Map))
             .toList();
+        final ban = me['leaveBan'] is Map ? Map<String, dynamic>.from(me['leaveBan'] as Map) : null;
+        banUntil = ban == null
+            ? null
+            : DateTime.now().add(Duration(seconds: (ban['secondsLeft'] as num).toInt()));
+        banCount = (ban?['count'] as num?)?.toInt() ?? 0;
       });
       final ids = invites.map((i) => i['roomId'].toString()).toSet();
       if (ids.difference(seenInvites).isNotEmpty) {
@@ -242,6 +265,14 @@ class _HomeScreenState extends State<HomeScreen> with RouteAware {
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.stretch,
                     children: [
+                      // Вышел из начатой игры — сколько ещё нельзя за стол (§13d).
+                      if (banUntil != null)
+                        LeaveBanBanner(
+                          key: ValueKey(banUntil!.millisecondsSinceEpoch ~/ 5000),
+                          until: banUntil!,
+                          count: banCount,
+                          onEnd: () => setState(() => banUntil = null),
+                        ),
                       // Друг зовёт за стол — войти одним нажатием.
                       for (final inv in invites)
                         Card(
@@ -314,12 +345,12 @@ class _HomeScreenState extends State<HomeScreen> with RouteAware {
                       // По две плитки в ряд (просьба владельца, 19.09.2026): короче экран,
                       // всё видно сразу. «Вернуться в комнату» — выше, во всю ширину.
                       tileRow(
-                        HomeTile(icon: Icons.bolt, label: 'БЫСТРАЯ ИГРА', onTap: () => quickGame(context)),
+                        HomeTile(icon: Icons.bolt, label: 'БЫСТРАЯ ИГРА', onTap: () => unlessBanned(() => quickGame(context))),
                         HomeTile(icon: Icons.public, label: 'ОТКРЫТЫЕ КОМНАТЫ', onTap: () => go(const OpenRoomsScreen())),
                       ),
                       tileRow(
-                        HomeTile(icon: Icons.add_circle_outline, label: 'СОЗДАТЬ КОМНАТУ', onTap: () => go(const CreateRoomScreen())),
-                        HomeTile(icon: Icons.pin_outlined, label: 'ВОЙТИ ПО КОДУ', onTap: () => go(const JoinRoomScreen())),
+                        HomeTile(icon: Icons.add_circle_outline, label: 'СОЗДАТЬ КОМНАТУ', onTap: () => unlessBanned(() => go(const CreateRoomScreen()))),
+                        HomeTile(icon: Icons.pin_outlined, label: 'ВОЙТИ ПО КОДУ', onTap: () => unlessBanned(() => go(const JoinRoomScreen()))),
                       ),
                       tileRow(
                         HomeTile(icon: Icons.card_giftcard, label: 'ПОДАРИТЬ МОНЕТЫ', onTap: () => go(const GiftScreen())),

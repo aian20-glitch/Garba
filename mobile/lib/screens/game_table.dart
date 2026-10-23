@@ -765,7 +765,9 @@ class _GameTableScreenState extends State<GameTableScreen> {
         title: const Text('Выйти из игры?'),
         content: Text(
           '${kon > 0 ? 'Кон ${fmtCoins(kon)} разделят между остальными игроками.\n' : ''}'
-          'Игра закончится для всех. Ваш рейтинг −1.0.',
+          'Игра закончится для всех. Ваш рейтинг −1.0.'
+          // Бан за выход (§13d, 23.10.2026); в тренировке с ботами его нет.
+          '${room?['practice'] == true ? '' : '\nЗа стол снова — не раньше чем через 10 минут, при повторных выходах дольше, до часа.'}',
         ),
         actions: [
           TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('ОСТАТЬСЯ')),

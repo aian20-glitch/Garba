@@ -41,6 +41,86 @@ class CoinIcon extends StatelessWidget {
   }
 }
 
+// 425 секунд → «7:05».
+String fmtClock(int seconds) => '${seconds ~/ 60}:${(seconds % 60).toString().padLeft(2, '0')}';
+
+// Бан за выход из начатой игры (решение владельца, 23.10.2026, RULES.md §13d): сколько
+// ещё нельзя за стол. Профиль, рейтинг, магазин — можно. Отсчёт идёт сам, кончился — onEnd.
+class LeaveBanBanner extends StatefulWidget {
+  final DateTime until;
+  final int count;
+  final VoidCallback onEnd;
+
+  const LeaveBanBanner({super.key, required this.until, required this.count, required this.onEnd});
+
+  @override
+  State<LeaveBanBanner> createState() => _LeaveBanBannerState();
+}
+
+class _LeaveBanBannerState extends State<LeaveBanBanner> {
+  Timer? ticker;
+
+  int get left => widget.until.difference(DateTime.now()).inSeconds + 1;
+
+  @override
+  void initState() {
+    super.initState();
+    ticker = Timer.periodic(const Duration(seconds: 1), (_) {
+      if (left <= 0) {
+        ticker?.cancel();
+        widget.onEnd();
+      } else {
+        setState(() {});
+      }
+    });
+  }
+
+  @override
+  void dispose() {
+    ticker?.cancel();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final seconds = left.clamp(0, 24 * 3600);
+    return Card(
+      color: const Color(0xFF3A1E1E),
+      margin: const EdgeInsets.only(bottom: 12),
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(12),
+        side: const BorderSide(color: Colors.redAccent),
+      ),
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(14, 12, 14, 12),
+        child: Row(
+          children: [
+            const Icon(Icons.timer_outlined, color: Colors.redAccent, size: 30),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    'За стол можно через ${fmtClock(seconds)}',
+                    style: const TextStyle(fontSize: 17, fontWeight: FontWeight.w900),
+                  ),
+                  const SizedBox(height: 2),
+                  Text(
+                    'Вы вышли из начатой игры (${widget.count}-й раз за 6 часов). '
+                    'Каждый следующий выход — на 10 минут дольше, до часа.',
+                    style: const TextStyle(color: Colors.white70, fontSize: 13),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
 class PlayerTile extends StatelessWidget {
   final String name;
   final String subtitle;

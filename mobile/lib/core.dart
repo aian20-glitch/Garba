@@ -387,6 +387,11 @@ String userErrorMessage(Object error, {String fallback = 'Не удалось в
     if (error.code == 'already in another room' && details['roomId'] != null) {
       return 'Вы уже в комнате #${details['roomId']}. Вернитесь в неё с главного экрана.';
     }
+    // Бан за выход из начатой игры (§13d, 23.10.2026).
+    if (error.code == 'banned for leaving') {
+      final left = (details['secondsLeft'] as num?)?.toInt() ?? 0;
+      return 'Вы вышли из начатой игры — за стол можно через ${fmtClock(left)}.';
+    }
     if (error.code == 'not enough coins to enter') {
       final need = (details['minBalance'] as num?)?.toInt();
       final balance = (details['balance'] as num?)?.toInt();

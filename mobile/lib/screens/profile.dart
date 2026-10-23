@@ -48,6 +48,83 @@ class StatsView extends StatelessWidget {
   }
 }
 
+// Достижения — медали за монеты (решение владельца, 23.10.2026, RULES.md §16.9): за каждый
+// миллион, до которого дошёл весь баланс. Полученная — золотая и не пропадает, следующая —
+// серая, закрытая. Какие получены — решает сервер.
+class CoinMedalsView extends StatelessWidget {
+  final List medals;
+
+  const CoinMedalsView({super.key, required this.medals});
+
+  @override
+  Widget build(BuildContext context) {
+    final list = medals.map((e) => Map<String, dynamic>.from(e as Map)).toList();
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const Text(
+          'ДОСТИЖЕНИЯ',
+          style: TextStyle(fontWeight: FontWeight.w900, color: Color(0xFFD4A94F)),
+        ),
+        const SizedBox(height: 10),
+        Wrap(
+          spacing: 12,
+          runSpacing: 12,
+          children: list.map((m) => _CoinMedal(coins: (m['coins'] as num).toInt(), earned: m['earned'] == true)).toList(),
+        ),
+      ],
+    );
+  }
+}
+
+class _CoinMedal extends StatelessWidget {
+  final int coins;
+  final bool earned;
+
+  const _CoinMedal({required this.coins, required this.earned});
+
+  @override
+  Widget build(BuildContext context) {
+    const gold = Color(0xFFD4A94F);
+    final millions = coins ~/ 1000000;
+    return Semantics(
+      label: earned ? 'Медаль $millions млн — получена' : 'Медаль $millions млн — ещё закрыта',
+      child: SizedBox(
+        width: 72,
+        child: Column(
+          children: [
+            Container(
+              width: 58,
+              height: 58,
+              alignment: Alignment.center,
+              decoration: BoxDecoration(
+                shape: BoxShape.circle,
+                gradient: earned
+                    ? const RadialGradient(colors: [Color(0xFFFFE6A0), gold, Color(0xFF8A6A22)])
+                    : null,
+                color: earned ? null : Colors.white10,
+                border: Border.all(color: earned ? const Color(0xFFFFE6A0) : Colors.white24, width: 2),
+                boxShadow: earned ? const [BoxShadow(color: Color(0x88D4A94F), blurRadius: 10)] : null,
+              ),
+              child: earned
+                  ? Text(
+                      '${millions}M',
+                      style: const TextStyle(color: Color(0xFF3B2A00), fontSize: 18, fontWeight: FontWeight.w900),
+                    )
+                  : const Icon(Icons.lock_outline, color: Colors.white38),
+            ),
+            const SizedBox(height: 4),
+            Text(
+              '$millions млн',
+              style: TextStyle(fontSize: 12, color: earned ? gold : Colors.white38, fontWeight: FontWeight.w700),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
 // Свой профиль (ТЗ §2). Аватара пока нет, рейтинг — после утверждения формулы (§37).
 class ProfileScreen extends StatefulWidget {
   const ProfileScreen({super.key});
@@ -242,6 +319,10 @@ class _ProfileScreenState extends State<ProfileScreen> {
                   ],
                 ),
                 const Divider(height: 32),
+                if (p['medals'] is List) ...[
+                  CoinMedalsView(medals: p['medals'] as List),
+                  const Divider(height: 32),
+                ],
                 StatsView(stats: Map<String, dynamic>.from(p['stats'] as Map)),
                 const Divider(height: 40),
                 const Text(
@@ -921,6 +1002,10 @@ class _PlayerScreenState extends State<PlayerScreen> {
                   ],
                 ),
                 const Divider(height: 32),
+                if (p['medals'] is List) ...[
+                  CoinMedalsView(medals: p['medals'] as List),
+                  const Divider(height: 32),
+                ],
                 StatsView(stats: Map<String, dynamic>.from(p['stats'] as Map)),
               ],
             ),

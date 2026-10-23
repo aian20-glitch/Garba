@@ -216,6 +216,40 @@ async function shareChecks(roomId: string, players: P[], views: any[], win: any)
     (await post(roomId, giver, 'share', { toId: receiver.id, amount: 100 })).body.error, 'cannot share now');
 }
 
+async function leaveBanAndLeaders() {
+  section('вышел из начатой игры — бан на вход за стол (§13d, 23.10.2026)');
+  const { players, roomId } = await fourAtTable('Б');
+  await dealAndPass(roomId, players);
+  const leaver = players[3];
+  check('выйти между раздачами можно', (await post(roomId, leaver, 'leave')).status, 200);
+  const meNow = (await request('GET', '/me', leaver.token)).body;
+  check('в /me — первый выход, бан 10 минут',
+    [meNow.leaveBan?.count, meNow.leaveBan?.secondsLeft > 590 && meNow.leaveBan?.secondsLeft <= 600], [1, true]);
+  const settings = { capacity: 4, ante: 100, emptyLimit: 10, konThreshold: 10, minBalance: 1000 };
+  const created = await request('POST', '/rooms', leaver.token, settings);
+  check('создать игру нельзя — 403 и сколько осталось',
+    [created.status, created.body.error, created.body.secondsLeft > 0], [403, 'banned for leaving', true]);
+  check('«Быстрая игра» — тоже нельзя', (await request('POST', '/rooms/quick', leaver.token, {})).body.error, 'banned for leaving');
+  const host = await account('Хозяин');
+  const lobby = (await request('POST', '/rooms', host.token, settings)).body;
+  check('сесть в чужое лобби — нельзя', (await post(lobby.id, leaver, 'join')).body.error, 'banned for leaving');
+  check('профиль и рейтинг смотреть можно',
+    [(await request('GET', '/me/profile', leaver.token)).status, (await request('GET', '/rating', leaver.token)).status], [200, 200]);
+  const free = await account('Свободный');
+  check('новый игрок без бана — садится', (await post(lobby.id, free, 'join')).status, 200);
+
+  section('рейтинг по монетам и ТОП-3 недели (§16.8)');
+  await wait(300);
+  const coins = (await request('GET', '/rating?scope=coins', leaver.token)).body;
+  const sorted = coins.players.every((p: any, i: number) => i === 0 || coins.players[i - 1].coins >= p.coins);
+  check('по монетам — по убыванию, моё место есть', [coins.scope, sorted, typeof coins.myPlace], ['coins', true, 'number']);
+  const weeks = await Promise.all(players.map(async (p) => (await request('GET', '/rating/week', p.token)).body));
+  check('за неделю у четверых в сумме 0 — кон поделили между ними', weeks.reduce((a, w) => a + w.myCoins, 0), 0);
+  check('ушедший за неделю в минусе — его взносы остались в кону', weeks[3].myCoins < 0, true);
+  check('в ТОПе недели — только кто в плюсе, не больше трёх',
+    weeks[0].players.length <= 3 && weeks[0].players.every((p: any) => p.coins > 0), true);
+}
+
 async function main() {
   for (let i = 0; i < 50; i++) {
     try { if ((await fetch(BASE + '/health')).ok) break; } catch {}
@@ -223,6 +257,7 @@ async function main() {
   }
   await topUp();
   await openHandsAndShare();
+  await leaveBanAndLeaders();
 }
 
 main()
