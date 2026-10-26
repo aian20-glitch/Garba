@@ -3,6 +3,7 @@
 import { check, section } from './check.js';
 import { referralDue,
   dailyClaim,
+  dailySchedule,
   dayKey,
   giftError,
   giftLeftToday,
@@ -18,14 +19,14 @@ check('вчера для 1 марта — 28 февраля', previousDay('2026-
 check('вчера для 1 января — 31 декабря', previousDay('2026-01-01'), '2025-12-31');
 
 section('ежедневный бонус (ТЗ §3)');
-check('первый вход — день 1/7, 1 000', dailyClaim(null, 0, '2026-09-18'), { claimable: true, streak: 1, amount: 1_000 });
+check('первый вход — день 1/7, 10 000', dailyClaim(null, 0, '2026-09-18'), { claimable: true, streak: 1, amount: 10_000 });
 check('второй раз в тот же день — нельзя', dailyClaim('2026-09-18', 1, '2026-09-18'), { claimable: false, streak: 1 });
-check('на следующий день — 2/7', dailyClaim('2026-09-18', 1, '2026-09-19'), { claimable: true, streak: 2, amount: 1_000 });
-check('6-й день подряд — ещё обычный бонус', dailyClaim('2026-09-22', 5, '2026-09-23'), { claimable: true, streak: 6, amount: 1_000 });
-check('7-й день подряд — 1 000 + 5 000 = 6 000', dailyClaim('2026-09-23', 6, '2026-09-24'), { claimable: true, streak: 7, amount: 6_000 });
-check('после 7/7 серия начинается с 1/7', dailyClaim('2026-09-24', 7, '2026-09-25'), { claimable: true, streak: 1, amount: 1_000 });
-check('пропустил день — серия заново', dailyClaim('2026-09-20', 4, '2026-09-22'), { claimable: true, streak: 1, amount: 1_000 });
-check('пропустил на 6-м дне — 6 000 не будет', dailyClaim('2026-09-21', 6, '2026-09-23'), { claimable: true, streak: 1, amount: 1_000 });
+check('на следующий день — 2/7', dailyClaim('2026-09-18', 1, '2026-09-19'), { claimable: true, streak: 2, amount: 10_000 });
+check('6-й день подряд — ещё обычный бонус', dailyClaim('2026-09-22', 5, '2026-09-23'), { claimable: true, streak: 6, amount: 10_000 });
+check('7-й день подряд — 50 000', dailyClaim('2026-09-23', 6, '2026-09-24'), { claimable: true, streak: 7, amount: 50_000 });
+check('после 7/7 серия начинается с 1/7', dailyClaim('2026-09-24', 7, '2026-09-25'), { claimable: true, streak: 1, amount: 10_000 });
+check('пропустил день — серия заново', dailyClaim('2026-09-20', 4, '2026-09-22'), { claimable: true, streak: 1, amount: 10_000 });
+check('пропустил на 6-м дне — 50 000 не будет', dailyClaim('2026-09-21', 6, '2026-09-23'), { claimable: true, streak: 1, amount: 10_000 });
 
 let day = '2026-09-18';
 let last: string | null = null;
@@ -36,7 +37,8 @@ for (let i = 0; i < 7; i++) {
   if (c.claimable) { total += c.amount; streak = c.streak; last = day; }
   day = new Date(Date.parse(`${day}T00:00:00Z`) + 86_400_000).toISOString().slice(0, 10);
 }
-check('7 дней подряд — всего 6×1 000 + 6 000 = 12 000', total, 12_000);
+check('7 дней подряд — всего 6×10 000 + 50 000 = 110 000', total, 110_000);
+check('окно бонуса: по дням', dailySchedule(), [10_000, 10_000, 10_000, 10_000, 10_000, 10_000, 50_000]);
 
 section('подарки (ТЗ §5)');
 const ok = { amount: 400, balance: 5_000, sentToday: 0, toSelf: false };

@@ -63,10 +63,10 @@ import {
 import { createDeck, shuffle } from './deck.js';
 import { STARTING_COINS } from './config.js';
 import { BOT_STEP_MS, botAction, botTopUp, freeBotName, type BotAction } from './serverBots.js';
-import { loadUnfinishedRooms, profileStats, ratedPlayers, roomIdTaken, saveRoom, weekCoins, writeRoom } from './roomDb.js';
+import { loadUnfinishedRooms, playerExperience, profileStats, ratedPlayers, roomIdTaken, saveRoom, weekCoins, writeRoom } from './roomDb.js';
 import { addWeekly, coinMedals, weekKey, weekTop, type WeeklyCoins } from './leaders.js';
 import { banSecondsLeft, nextLeaveBan } from './leaveBan.js';
-import { afterDeal, afterRoom, leavePenalty, ratingOf, shownRating, START_SKILL } from './rating.js';
+import { applyLeave, calculateHandDifficulty, dealDeltas, leavePenalty, ratingOf, settleRoom, shownRating, START_SKILL } from './rating.js';
 import { addReaction, isPlayerCode, isRoomCode, type ReactionEntry } from './reactions.js';
 import {
   buyError,
@@ -85,6 +85,7 @@ import { addDeal, addMoney, emptyStats, roomWinners, type PlayerStats } from './
 import { avatarPath, detectImageType, loadAvatar, MAX_AVATAR_BYTES, saveAvatar } from './avatars.js';
 import {
   dailyClaim,
+  dailySchedule,
   dayKey,
   giftError,
   giftLeftToday,
@@ -476,6 +477,8 @@ type GameState = {
   } | null;
 
   hands: Record<string, Card[]>;
+  // Сила начальной руки главных (§16.2a, 26.10.2026) — когда главный и риск определены.
+  handDifficulty?: Record<string, number>;
   bids: BidEntry[];
   bidOrder: string[];
   bidIndex: number;
@@ -516,10 +519,21 @@ type Room = {
   stats?: Record<string, PlayerStats>;
   // Монеты за неделю — для «ТОП-3 недели» (23.10.2026, leaders.ts).
   weekly?: WeeklyCoins;
-  // Рейтинг игроков за столом (RULES.md §16, этап 9.6). Мастерство меняется здесь и
-  // сохраняется в аккаунт вместе с комнатой — как баланс. startSkill и startDeals —
-  // с чем игрок сел за стол: от них «Рейтинг 4.0 → 4.9» в итогах.
-  rating?: Record<string, { skill: number; startSkill: number; startDeals: number }>;
+  // Рейтинг игроков за столом (RULES.md §16, этап 9.6). Мастерство сохраняется в аккаунт
+  // вместе с комнатой — как баланс. startSkill и startExp — с чем игрок сел за стол: от них
+  // «Рейтинг 4.0 → 4.1» в итогах. С 26.10.2026 мастерство за столом не меняется: изменения
+  // за партии копятся в pending, activeMs — сколько он реально играл за этим столом;
+  // в конце комнаты (или при уходе) — settleRoom (§16.3b). startDeals — у старых комнат.
+  rating?: Record<string, {
+    skill: number;
+    startSkill: number;
+    startExp?: number;
+    startDeals?: number;
+    pending?: number;
+    activeMs?: number;
+  }>;
+  // Активное время и партии по дням — для опыта (§16.1, 26.10.2026), пишется в room_activity.
+  activity?: Record<string, Record<string, { ms: number; deals: number }>>;
   // Последние реакции-смайлики (RULES.md §14, этап 9.7).
   reactions?: ReactionEntry[];
   // Открытая комната — видна всем в списке, войти можно без кода (19.09.2026).
@@ -1063,6 +1077,7 @@ app.post('/me/daily-bonus', (req, res) => {
     amount: claim.amount,
     streak: claim.streak,
     balance: walletSplit(getAccount(db, account.id)!).balance,
+    days: dailySchedule(), // монеты за дни 1…7 — для окна бонуса (26.10.2026)
   });
 });
 
@@ -2036,8 +2051,9 @@ function vacateSeat(room: Room, playerId: string, reason: 'left' | 'gone', close
   game.lastLeave = { playerId, name: player.name, reason, kon: game.kon, perPlayer, remainder, remainderTo };
   if (rest.length > 0) game.kon = 0;
 
+  // Сначала итог его партий за этим столом (§16.3b), потом штраф за уход (§16.3a) — отдельно.
   const r = ratingState(room, playerId);
-  r.skill = Math.max(0, r.skill + leavePenalty(seatAlreadyEmpty));
+  r.skill = applyLeave(settleRating(r), leavePenalty(seatAlreadyEmpty));
 
   // Раздавать должен был он — раздаёт следующий по кругу (§13c).
   if (rest.length > 0) {
@@ -2060,7 +2076,7 @@ function vacateSeat(room: Room, playerId: string, reason: 'left' | 'gone', close
       name: player.name,
       startBalance: player.startBalance,
       balance: player.balance,
-      ratingStart: shownRating(room.practice ? accountRating(playerId) : ratingOf(r.startSkill, r.startDeals)),
+      ratingStart: shownRating(room.practice ? accountRating(playerId) : startRating(room, playerId)),
       rating: shownRating(room.practice ? accountRating(playerId) : liveRating(room, playerId)),
       bot: room.botIds?.includes(playerId) ?? false,
     },
@@ -2095,7 +2111,7 @@ function vacateSeat(room: Room, playerId: string, reason: 'left' | 'gone', close
 
 // Кто-то ушёл. Кон уже поделён. Осталось 4 и больше — спрашиваем всех: играть дальше
 // без него или закрыть (§13c, 09.10.2026). Меньше 4 — игра заканчивается, остальным —
-// итог комнаты по §16.3 (как с 08.10.2026). Комнаты со старым пустым местом (до 08.10)
+// итог комнаты по §16.3b (как с 08.10.2026). Комнаты со старым пустым местом (до 08.10)
 // закрываются, как раньше.
 function finishLeaving(room: Room) {
   if (room.status === 'finished') return;
@@ -2601,19 +2617,23 @@ function markWinners(room: Room) {
     room.players.map((p) => ({ id: p.id, diff: p.balance - p.startBalance })),
   );
 
-  // Итог комнаты меняет рейтинг (RULES.md §16.3); ушедшему — штраф (§16.3a).
-  const skills = afterRoom(
-    room.players.map((p) => ({
-      id: p.id,
-      skill: ratingState(room, p.id).skill,
-      rating: liveRating(room, p.id),
-      diff: p.balance - p.startBalance,
-    })),
-    room.game!.winnerIds,
-    room.capacity,
-    room.game!.leftPlayerIds ?? [],
-  );
-  for (const [id, skill] of Object.entries(skills)) ratingState(room, id).skill = skill;
+  // Комната закончилась — накопленное за партии становится мастерством (§16.3b): монеты
+  // за комнату на рейтинг не влияют. Не вернувшемуся (§13) — ещё штраф за уход (§16.3a).
+  const leftIds = room.game!.leftPlayerIds ?? [];
+  for (const p of room.players) {
+    const r = ratingState(room, p.id);
+    r.skill = settleRating(r);
+    if (leftIds.includes(p.id)) r.skill = applyLeave(r.skill, leavePenalty(false));
+  }
+}
+
+// Итог партий игрока за этим столом: накопленное × время игры, потеря — не больше 0.25.
+// Второй раз не засчитывается.
+function settleRating(r: NonNullable<Room['rating']>[string]): number {
+  const skill = settleRoom(r.skill, r.pending ?? 0, r.activeMs ?? 0);
+  r.pending = 0;
+  r.activeMs = 0;
+  return skill;
 }
 
 // --- Рейтинг (RULES.md §16, этап 9.6) ---
@@ -2625,16 +2645,47 @@ function ratingState(room: Room, playerId: string) {
   if (!room.rating[playerId]) {
     const account = getAccount(db, playerId);
     const skill = account?.skill ?? START_SKILL;
-    const deals = profileStats(db, playerId).deals - statsOf(room, playerId).deals;
-    room.rating[playerId] = { skill, startSkill: skill, startDeals: deals };
+    room.rating[playerId] = { skill, startSkill: skill, startExp: playerExperience(db, playerId, room), pending: 0, activeMs: 0 };
   }
   return room.rating[playerId];
 }
 
-// Рейтинг прямо сейчас: мастерство + опыт, включая партии этой комнаты.
+// Рейтинг прямо сейчас: мастерство + опыт, включая время и партии этой комнаты.
 function liveRating(room: Room, playerId: string): number {
+  return ratingOf(ratingState(room, playerId).skill, playerExperience(db, playerId, room));
+}
+
+// Время и партии игрока за столом в этот день (опыт, §16.1).
+function activityOf(room: Room, playerId: string, day: string) {
+  room.activity ??= {};
+  room.activity[playerId] ??= {};
+  return (room.activity[playerId][day] ??= { ms: 0, deals: 0 });
+}
+
+// Реальное игровое время (§16.1, §16.3b): раз в секунду — всем, кто сидит за начатым
+// столом, если игра не на паузе (отключился, «ушёл», пустое место). Лобби не считается.
+// Сервер стоял — разрыв больше 5 секунд не засчитываем.
+let lastActiveTick = Date.now();
+setInterval(guarded('active time', () => {
+  const now = Date.now();
+  const dt = Math.min(5_000, Math.max(0, now - lastActiveTick));
+  lastActiveTick = now;
+  const day = dayKey(now);
+  for (const room of rooms.values()) {
+    if (room.status !== 'started' || !room.game || room.game.stage === 'room_done' || isPaused(room)) continue;
+    for (const p of room.players) {
+      const r = ratingState(room, p.id);
+      r.activeMs = (r.activeMs ?? 0) + dt;
+      activityOf(room, p.id, day).ms += dt;
+    }
+  }
+}), 1000);
+
+// С каким рейтингом игрок сел за стол. Комнаты до 26.10.2026 помнили число партий.
+function startRating(room: Room, playerId: string): number {
   const r = ratingState(room, playerId);
-  return ratingOf(r.skill, r.startDeals + statsOf(room, playerId).deals);
+  r.startExp ??= Math.min(2, (r.startDeals ?? 0) * 0.01);
+  return ratingOf(r.startSkill, r.startExp);
 }
 
 // Первая десятка общего рейтинга (09.10.2026): за столом и в лобби у таких игроков — «ТОП-N».
@@ -2655,7 +2706,7 @@ function topPlaceOf(playerId: string): number | null {
 // Рейтинг игрока вне стола — из базы.
 function accountRating(playerId: string): number {
   const account = getAccount(db, playerId);
-  return ratingOf(account?.skill ?? START_SKILL, profileStats(db, playerId).deals);
+  return ratingOf(account?.skill ?? START_SKILL, playerExperience(db, playerId));
 }
 
 function makeRoomId(): string {
@@ -3120,6 +3171,11 @@ function startPlay(room: Room) {
   Object.assign(game, emptyPlayState());
   game.tricksWon = Object.fromEntries(seatIds.map((id) => [id, 0]));
 
+  // Сила руки главных — сейчас: главный и риск определены, розыгрыша ещё не было (§16.2a).
+  game.handDifficulty = Object.fromEntries(
+    game.mains.map((m) => [m.playerId, calculateHandDifficulty(game.hands[m.playerId] ?? [], game.trumpSuit!, room.capacity)]),
+  );
+
   // Главный пропал на 5 минут ещё до розыгрыша — сказал заявку и отключился, держал
   // спецкарту, выиграл КОН — сразу проигрыш, как если бы сдался (RULES.md §13, §10.7).
   // Отметка «пропал» ставится один раз, а главным он мог стать уже после неё.
@@ -3316,13 +3372,21 @@ function finishRound(room: Room, won: boolean[], instantIndex = -1) {
     );
   }
 
-  // И рейтинг (RULES.md §16.2): риск, ГАРБА, отбились ли противники.
-  const skills = afterDeal(
-    room.players.map((p) => ({ id: p.id, skill: ratingState(room, p.id).skill, rating: liveRating(room, p.id) })),
-    game.result.map((r) => ({ id: r.playerId, won: r.won, risk, garba: r.garba })),
+  // Партия — в опыт (§16.1): активный день — 20 минут и 5 партий.
+  const today = dayKey(Date.now());
+  for (const p of room.players) activityOf(room, p.id, today).deals += 1;
+
+  // И рейтинг (RULES.md §16.2): сила соперников (рейтинг на начало комнаты), сила руки,
+  // риск, отбились ли противники. Копится до конца комнаты — там умножится на время.
+  const deltas = dealDeltas(
+    room.players.map((p) => ({ id: p.id, skill: ratingState(room, p.id).skill, rating: startRating(room, p.id) })),
+    game.result.map((r) => ({ id: r.playerId, won: r.won, risk, handDifficulty: game.handDifficulty?.[r.playerId] })),
     room.capacity,
   );
-  for (const [id, skill] of Object.entries(skills)) ratingState(room, id).skill = skill;
+  for (const [id, d] of Object.entries(deltas)) {
+    const r = ratingState(room, id);
+    r.pending = (r.pending ?? 0) + d;
+  }
 
   updateClosing(room);
 
@@ -3670,9 +3734,7 @@ function publicRoom(room: Room, viewerId?: string) {
         cardBack: lookFor(p.id).back,
         winEffect: lookFor(p.id).effect,
         rating: shownRating(atTable ? liveRating(room, p.id) : accountRating(p.id)),
-        ratingStart: shownRating(
-          atTable ? ratingOf(atTable.startSkill, atTable.startDeals) : accountRating(p.id),
-        ),
+        ratingStart: shownRating(atTable ? startRating(room, p.id) : accountRating(p.id)),
         // Место в общем рейтинге, если игрок в первой десятке, иначе null.
         top: topPlaceOf(p.id),
       };

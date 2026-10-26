@@ -7,7 +7,7 @@
 
 import type { DatabaseSync } from 'node:sqlite';
 import { emptyStats, type PlayerStats } from './stats.js';
-import { ratingOf } from './rating.js';
+import { experienceOf, ratingOf, type ActivityDay } from './rating.js';
 
 export type StoredRoom = {
   id: string;
@@ -23,6 +23,8 @@ export type StoredRoom = {
   stats?: Record<string, PlayerStats>;
   // Мастерство игроков, пока они за столом (этап 9.6) — как баланс.
   rating?: Record<string, { skill: number }>;
+  // Активное время и партии игроков по дням (опыт, §16.1, 26.10.2026): { игрок: { день: … } }.
+  activity?: Record<string, Record<string, { ms: number; deals: number }>>;
   // Ушли посреди игры (24.09.2026) — для них комната не «доиграна».
   departedIds?: string[];
   // Монеты за неделю (ТОП-3 недели, 23.10.2026): { неделя: { игрок: чистый плюс } }.
@@ -79,6 +81,20 @@ export function ensureRoomTable(db: DatabaseSync) {
     )
   `);
   db.exec('CREATE INDEX IF NOT EXISTS week_coins_week ON week_coins (week)');
+
+  // Активность (опыт, §16.1, 26.10.2026): сколько игрок реально играл за столом комнаты
+  // в этот день (без пауз и лобби) и сколько партий доиграл. Активный день — сумма по комнатам.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS room_activity (
+      room_id    TEXT NOT NULL,
+      player_id  TEXT NOT NULL,
+      day        TEXT NOT NULL,
+      ms         INTEGER NOT NULL,
+      deals      INTEGER NOT NULL,
+      PRIMARY KEY (room_id, player_id, day)
+    )
+  `);
+  db.exec('CREATE INDEX IF NOT EXISTS room_activity_player ON room_activity (player_id)');
 }
 
 // Записать комнату и балансы её игроков — без своей транзакции,
@@ -124,6 +140,16 @@ export function writeRoom(db: DatabaseSync, room: StoredRoom) {
     }
   }
 
+  if (room.activity) {
+    const upsert = db.prepare(
+      `INSERT INTO room_activity (room_id, player_id, day, ms, deals) VALUES (?, ?, ?, ?, ?)
+       ON CONFLICT(room_id, player_id, day) DO UPDATE SET ms = excluded.ms, deals = excluded.deals`,
+    );
+    for (const [playerId, days] of Object.entries(room.activity)) {
+      for (const [day, a] of Object.entries(days)) upsert.run(room.id, playerId, day, Math.round(a.ms), a.deals);
+    }
+  }
+
   if (room.weekly) {
     const upsert = db.prepare(
       `INSERT INTO week_coins (room_id, player_id, week, coins) VALUES (?, ?, ?, ?)
@@ -133,6 +159,41 @@ export function writeRoom(db: DatabaseSync, room: StoredRoom) {
       for (const [playerId, coins] of Object.entries(byPlayer)) upsert.run(room.id, playerId, week, coins);
     }
   }
+}
+
+// Дни игрока: время и партии по всем комнатам. skipRoom — эту комнату не брать из базы
+// (её свежие цифры — в памяти, их добавляет вызывающий).
+export function activityDays(db: DatabaseSync, playerId: string, skipRoom?: string): ActivityDay[] {
+  const rows = db
+    .prepare(
+      `SELECT day, SUM(ms) AS ms, SUM(deals) AS deals FROM room_activity
+       WHERE player_id = ? AND room_id != ? GROUP BY day`,
+    )
+    .all(playerId, skipRoom ?? '') as { day: string; ms: number; deals: number }[];
+  return rows.map((r) => ({ day: r.day, ms: Number(r.ms), deals: Number(r.deals) }));
+}
+
+// Сложить дни из базы и из комнаты в памяти.
+export function mergeDays(days: ActivityDay[], extra: Record<string, { ms: number; deals: number }> = {}): ActivityDay[] {
+  const map = new Map(days.map((d) => [d.day, { ...d }]));
+  for (const [day, a] of Object.entries(extra)) {
+    const d = map.get(day) ?? { day, ms: 0, deals: 0 };
+    d.ms += a.ms;
+    d.deals += a.deals;
+    map.set(day, d);
+  }
+  return [...map.values()];
+}
+
+// Опыт игрока (§16.1): старый опыт из аккаунта + активные дни и серия.
+export function playerExperience(db: DatabaseSync, playerId: string, room?: { id: string; activity?: StoredRoom['activity'] }): number {
+  const row = db.prepare('SELECT legacy_experience AS legacy FROM accounts WHERE id = ?').get(playerId) as
+    | { legacy: number }
+    | undefined;
+  const days = room
+    ? mergeDays(activityDays(db, playerId, room.id), room.activity?.[playerId])
+    : activityDays(db, playerId);
+  return experienceOf(Number(row?.legacy ?? 0), days);
 }
 
 // Монеты за неделю — у всех игроков (не ботов), сумма по комнатам.
@@ -190,7 +251,7 @@ export function roomIdTaken(db: DatabaseSync, id: string): boolean {
 
 export type RatedPlayer = { id: string; name: string; code: string; rating: number };
 
-// Рейтинг игроков (RULES.md §16): мастерство + опыт по всем сыгранным партиям.
+// Рейтинг игроков (RULES.md §16): мастерство + опыт (старый + активные дни и серия).
 // ids — только эти игроки (друзья); без ids — все. По убыванию рейтинга.
 export function ratedPlayers(db: DatabaseSync, ids?: string[]): RatedPlayer[] {
   if (ids && ids.length === 0) return [];
@@ -198,14 +259,30 @@ export function ratedPlayers(db: DatabaseSync, ids?: string[]): RatedPlayer[] {
   const where = ids ? `WHERE a.is_bot = 0 AND a.id IN (${ids.map(() => '?').join(', ')})` : 'WHERE a.is_bot = 0';
   const rows = db
     .prepare(
-      `SELECT a.id, a.name, a.code, a.skill, COALESCE(SUM(rs.deals), 0) AS deals
-       FROM accounts a LEFT JOIN room_stats rs ON rs.player_id = a.id
-       ${where}
-       GROUP BY a.id`,
+      `SELECT a.id, a.name, a.code, a.skill, a.legacy_experience AS legacy FROM accounts a ${where}`,
     )
-    .all(...(ids ?? [])) as { id: string; name: string; code: string; skill: number; deals: number }[];
+    .all(...(ids ?? [])) as { id: string; name: string; code: string; skill: number; legacy: number }[];
+
+  // Дни всех этих игроков — одним запросом.
+  const dayRows = db
+    .prepare(
+      `SELECT ra.player_id AS id, ra.day, SUM(ra.ms) AS ms, SUM(ra.deals) AS deals
+       FROM room_activity ra JOIN accounts a ON a.id = ra.player_id
+       ${where.replace('a.id IN', 'ra.player_id IN')}
+       GROUP BY ra.player_id, ra.day`,
+    )
+    .all(...(ids ?? [])) as { id: string; day: string; ms: number; deals: number }[];
+  const days = new Map<string, ActivityDay[]>();
+  for (const d of dayRows) {
+    days.set(d.id, [...(days.get(d.id) ?? []), { day: d.day, ms: Number(d.ms), deals: Number(d.deals) }]);
+  }
 
   return rows
-    .map((r) => ({ id: r.id, name: r.name, code: r.code, rating: ratingOf(Number(r.skill), Number(r.deals)) }))
+    .map((r) => ({
+      id: r.id,
+      name: r.name,
+      code: r.code,
+      rating: ratingOf(Number(r.skill), experienceOf(Number(r.legacy ?? 0), days.get(r.id) ?? [])),
+    }))
     .sort((a, b) => b.rating - a.rating || a.name.localeCompare(b.name));
 }

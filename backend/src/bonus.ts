@@ -3,9 +3,16 @@
 import { COIN_STEP } from './money.js';
 
 // --- Ежедневный бонус (ТЗ §3) ---
-export const DAILY_BONUS = 1_000;
+// Решение владельца, 26.10.2026: каждый день 10 000, на 7-й день подряд — 50 000
+// (было 1 000 и 6 000).
+export const DAILY_BONUS = 10_000;
 export const STREAK_DAYS = 7;
-export const STREAK_BONUS = 5_000; // сверху на 7-й день подряд: итого 6 000
+export const STREAK_BONUS = 40_000; // сверху на 7-й день подряд: итого 50 000
+
+// Сколько монет в каждый день серии 1…7 — приложение рисует по ним окно бонуса.
+export function dailySchedule(): number[] {
+  return Array.from({ length: STREAK_DAYS }, (_, i) => DAILY_BONUS + (i + 1 === STREAK_DAYS ? STREAK_BONUS : 0));
+}
 
 // --- Приглашение (ТЗ §4) ---
 export const REFERRAL_BONUS = 10_000; // решение владельца, 25.09.2026 (было 1 000)

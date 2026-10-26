@@ -128,6 +128,17 @@ function migrateAccounts(db: DatabaseSync) {
   // Медали за монеты (23.10.2026): самый большой баланс, до которого дошёл игрок. Растёт
   // сам при любой записи баланса (триггер) — за столом, бонус, подарок, магазин; вниз не идёт.
   add('peak_balance', 'INTEGER NOT NULL DEFAULT 0');
+
+  // Опыт по старому правилу — +0.01 за партию, до 2.0 (новая система рейтинга, 26.10.2026).
+  // Уже набранный опыт сохраняется (решение владельца), дальше опыт — за активные дни (§16.1).
+  if (!columns.has('legacy_experience')) {
+    db.exec('ALTER TABLE accounts ADD COLUMN legacy_experience REAL NOT NULL DEFAULT 0');
+    const hasStats = db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'room_stats'").get();
+    if (hasStats) {
+      db.exec(`UPDATE accounts SET legacy_experience = MIN(2, 0.01 *
+        (SELECT COALESCE(SUM(deals), 0) FROM room_stats WHERE player_id = accounts.id))`);
+    }
+  }
   db.exec('UPDATE accounts SET peak_balance = balance WHERE balance > peak_balance');
   db.exec(`
     CREATE TRIGGER IF NOT EXISTS accounts_peak_balance AFTER UPDATE OF balance ON accounts
@@ -602,6 +613,7 @@ export function deleteAccountData(db: DatabaseSync, id: string) {
   deleteShopData(db, id);
   db.prepare('DELETE FROM room_stats WHERE player_id = ?').run(id);
   db.prepare('DELETE FROM week_coins WHERE player_id = ?').run(id);
+  db.prepare('DELETE FROM room_activity WHERE player_id = ?').run(id);
   db.prepare('UPDATE accounts SET invited_by = NULL WHERE invited_by = ?').run(id);
 
   const rows = db

@@ -174,9 +174,9 @@ async function main() {
   // Бонус пригласившему — только после 3 комнат друга (решение владельца, 19.09.2026).
   check('пригласившему пока ничего — бонус после 3 комнат друга', [aAfterInvite.balance, aAfterInvite.invitedCount], [30_000, 1]);
 
-  check('бонус ещё не взят: день 1/7, 1 000', aAfterInvite.daily, { claimedToday: false, streak: 1, amount: 1_000 });
+  check('бонус ещё не взят: день 1/7, 10 000', aAfterInvite.daily, { claimedToday: false, streak: 1, amount: 10_000 });
   const bonus = await post('/me/daily-bonus', a.token);
-  check('забрал ежедневный бонус', [bonus.body.amount, bonus.body.streak, bonus.body.balance], [1_000, 1, 31_000]);
+  check('забрал ежедневный бонус', [bonus.body.amount, bonus.body.streak, bonus.body.balance], [10_000, 1, 40_000]);
   check('второй раз за день — нельзя', (await post('/me/daily-bonus', a.token)).status, 409);
   check('на главном экране: сегодня уже взят', (await request('GET', '/me', a.token)).body.daily.claimedToday, true);
 
@@ -188,7 +188,7 @@ async function main() {
   check('больше 10 000 подарить нельзя', (await post('/gifts', a.token, { toCode: bMe.code, amount: 10_100 })).body.error, 'bad amount');
   check('себе — нельзя', (await post('/gifts', a.token, { toCode: aMe.code, amount: 400 })).body.error, 'self');
   const gift = await post('/gifts', a.token, { toCode: bMe.code, amount: 400 });
-  check('подарил 400', [gift.status, gift.body.balance, gift.body.to?.name], [200, 30_600, 'Ержан']);
+  check('подарил 400', [gift.status, gift.body.balance, gift.body.to?.name], [200, 39_600, 'Ержан']);
   check('получатель получил', (await request('GET', '/me', b.token)).body.balance, 30_400);
   check('второй подарок в тот же день — можно, пока не вышло 10 000', (await post('/gifts', a.token, { toCode: bMe.code, amount: 100 })).body.leftToday, 9_500);
   check('больше остатка на сегодня — нельзя', (await post('/gifts', a.token, { toCode: bMe.code, amount: 10_000 })).body.error, 'over daily limit');
@@ -203,7 +203,7 @@ async function main() {
   check('подарок и бонус игроку за столом на стол не попали',
     [serikAfter.balance - serikBefore.balance, serikAfter.startBalance - serikBefore.startBalance], [0, 0]);
   const serikMe = (await request('GET', '/me', serik.token)).body;
-  check('они в общем балансе, вне стола', [serikMe.balance, serikMe.tableBalance], [21_300, serikAfter.balance]);
+  check('они в общем балансе, вне стола', [serikMe.balance, serikMe.tableBalance], [30_300, serikAfter.balance]);
 
   section('профиль и друзья (этап 9.4)');
   const profile = (await request('GET', '/me/profile', serik.token)).body;

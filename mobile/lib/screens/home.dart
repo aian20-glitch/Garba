@@ -156,24 +156,13 @@ class _HomeScreenState extends State<HomeScreen> with RouteAware {
         balance = (bonus['balance'] as num).toInt();
         dailyStreak = streak;
       });
+      final days = (bonus['days'] as List?)?.map((d) => (d as num).toInt()).toList();
       await showDialog<void>(
         context: context,
-        builder: (dialogContext) => AlertDialog(
-          title: const Text('Ежедневный бонус'),
-          content: Text(
-            streak == 7
-                ? 'День 7/7 — 7 дней подряд!\n+${fmtCoins(amount)} монет'
-                : 'День $streak/7\n+${fmtCoins(amount)} монет\n\n'
-                    'Заходите каждый день: на 7-й день подряд — 6 000.',
-            textAlign: TextAlign.center,
-            style: const TextStyle(fontSize: 18),
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(dialogContext),
-              child: const Text('ЗАБРАТЬ'),
-            ),
-          ],
+        builder: (_) => DailyBonusDialog(
+          streak: streak,
+          amount: amount,
+          days: days ?? dailyBonusFallback,
         ),
       );
     } catch (_) {

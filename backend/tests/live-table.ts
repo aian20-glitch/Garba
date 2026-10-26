@@ -248,6 +248,10 @@ async function leaveBanAndLeaders() {
   check('ушедший за неделю в минусе — его взносы остались в кону', weeks[3].myCoins < 0, true);
   check('в ТОПе недели — только кто в плюсе, не больше трёх',
     weeks[0].players.length <= 3 && weeks[0].players.every((p: any) => p.coins > 0), true);
+
+  section('рейтинг не от монет (§16, 26.10.2026)');
+  const ratings = await Promise.all(players.map(async (p) => (await request('GET', '/me', p.token)).body.rating));
+  check('оставшиеся получили доли кона, но рейтинг тот же — 4.0; ушедший — 3.0', ratings, [4, 4, 4, 3]);
 }
 
 async function main() {
