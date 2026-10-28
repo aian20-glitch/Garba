@@ -1984,10 +1984,20 @@ async function broadcastRoom(roomId: string) {
   if (!room) return;
 
   const sockets = await io.in(roomId).fetchSockets();
-  for (const s of sockets) {
-    const viewer = typeof s.data.playerId === 'string' ? s.data.playerId : undefined;
-    s.emit('room', publicRoom(room, viewer));
-  }
+  const viewerOf = (s: (typeof sockets)[number]) =>
+    typeof s.data.playerId === 'string' ? (s.data.playerId as string) : undefined;
+  // Право смотреть (§18) проверяем при каждой рассылке, а не только при 'watch': зритель
+  // мог с тех пор сесть за другую игру, или появилась блокировка, или он следил за лобби,
+  // а игра началась. Сначала убираем таких — чтобы остальным ушло уже верное число 👁.
+  const allowed = sockets.filter((s) => {
+    const viewer = viewerOf(s);
+    const refusal = viewer === undefined ? null : spectateRefusalFor(room, viewer);
+    if (!refusal) return true;
+    s.leave(roomId);
+    s.emit('room_error', { error: refusal });
+    return false;
+  });
+  for (const s of allowed) s.emit('room', publicRoom(room, viewerOf(s)));
 }
 
 // После любого действия с комнатой (POST /rooms/:id/...) — рассылка.

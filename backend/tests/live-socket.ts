@@ -177,6 +177,16 @@ async function main() {
   await wait(500);
   check('зритель ушёл — 👁 0', serikWatch.state.last?.spectators, 0);
 
+  // Блокировка после начала просмотра — со следующей рассылкой стол больше не приходит.
+  const late = watcher(roomId, viewer.token);
+  await wait(500);
+  await post(`/players/${(await request('GET', '/me', serik.token)).body.code}/block`, viewer.token);
+  await post(`/rooms/${roomId}/bid`, serik.token, { bid: 'ПАС' }); // любой запрос — рассылка
+  await wait(500);
+  check('заблокировал игрока за столом — смотреть больше нельзя', late.state.error, 'blocked');
+  check('и 👁 снова 0', serikWatch.state.last?.spectators, 0);
+  late.socket.disconnect();
+
   section('выход из лобби');
   const a = await account('Дана');
   const b = await account('Ержан');
