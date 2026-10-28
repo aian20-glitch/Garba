@@ -4,11 +4,14 @@ part of '../main.dart';
 class GameTableScreen extends StatefulWidget {
   final String roomCode;
   final String currentPlayerId;
+  // Наблюдатель (RULES.md §18): смотрит стол, не сидя за ним, — без руки и без кнопок.
+  final bool spectator;
 
   const GameTableScreen({
     super.key,
     required this.roomCode,
     required this.currentPlayerId,
+    this.spectator = false,
   });
 
   @override
@@ -92,6 +95,8 @@ class _GameTableScreenState extends State<GameTableScreen> {
   late final RoomLink link;
   // Комнаты нет на сервере: закрылась и выгружена, пока приложение было свёрнуто.
   bool notFound = false;
+  // Смотреть этот стол нельзя (§18): сам в начатой игре или за столом тот, с кем блок.
+  String? refusal;
 
   @override
   void initState() {
@@ -102,6 +107,7 @@ class _GameTableScreenState extends State<GameTableScreen> {
       onRoom: applyRoom,
       onError: (error) {
         if (error == 'room not found' && mounted) setState(() => notFound = true);
+        if (spectateRefusalText(error) != null && mounted) setState(() => refusal = error);
       },
     );
     refreshRoom();
@@ -113,6 +119,31 @@ class _GameTableScreenState extends State<GameTableScreen> {
   String roomUrl() =>
       '$apiBase/rooms/${widget.roomCode}';
 
+  // Наблюдатель садится на освободившееся место (§18, §13b) — с суммой за стол, как при
+  // обычном входе. Сел — сервер пришлёт стол уже с ним, дальше он обычный игрок.
+  bool sitting = false;
+  Future<void> sitDown(Map<String, dynamic> data) async {
+    if (sitting) return;
+    sitting = true;
+    try {
+      final minBalance = ((data['settings'] as Map?)?['minBalance'] as num?)?.toInt() ?? 0;
+      final buyIn = await askBuyIn(context, minBalance: minBalance);
+      if (buyIn == null) return;
+      final response = await apiRequest(http.post(
+        Uri.parse('${roomUrl()}/join'),
+        headers: authHeaders(),
+        body: jsonEncode({'buyIn': buyIn}),
+      ));
+      final problem = roomEntryError(response);
+      if (problem != null) throw Exception(problem);
+      applyRoom(jsonDecode(response.body) as Map<String, dynamic>);
+    } catch (e) {
+      if (mounted) showGarbaError(context, e);
+    } finally {
+      sitting = false;
+    }
+  }
+
   Future<void> refreshRoom() async {
     try {
       final response = await apiRequest(http.get(Uri.parse(roomUrl()), headers: authHeaders()));
@@ -120,6 +151,9 @@ class _GameTableScreenState extends State<GameTableScreen> {
         applyRoom(jsonDecode(response.body) as Map<String, dynamic>);
       } else if (response.statusCode == 404 && mounted) {
         setState(() => notFound = true);
+      } else if (response.statusCode == 403 && mounted) {
+        final error = (jsonDecode(response.body) as Map)['error']?.toString();
+        if (spectateRefusalText(error) != null) setState(() => refusal = error);
       }
     } catch (_) {}
   }
@@ -1030,6 +1064,9 @@ class _GameTableScreenState extends State<GameTableScreen> {
     final data = room;
 
     if (notFound) return const RoomClosedScreen();
+    if (refusal != null) {
+      return RoomClosedScreen(title: 'Смотреть нельзя', text: spectateRefusalText(refusal));
+    }
     if (data == null || data['game'] is! Map) {
       return Scaffold(
         appBar: backOnlyAppBar(),
@@ -1044,7 +1081,9 @@ class _GameTableScreenState extends State<GameTableScreen> {
     // Меня за столом больше нет: вышел или кончился запас на отлучку (RULES.md §13, §13b).
     final seated = ((data['players'] as List?) ?? const [])
         .any((p) => (p as Map)['id'].toString() == widget.currentPlayerId);
-    if (!seated && data['status'] == 'started') {
+    // Наблюдатель (§18) — за столом не сидит, смотрит; сел на свободное место — играет.
+    final watching = widget.spectator && !seated;
+    if (!seated && !widget.spectator && data['status'] == 'started') {
       return Scaffold(
         appBar: backOnlyAppBar(),
         body: Padding(
@@ -1264,6 +1303,8 @@ class _GameTableScreenState extends State<GameTableScreen> {
             .toList()
         : <Map<String, dynamic>>[];
     final paused = pausedPlayers.isNotEmpty || vacancies.isNotEmpty;
+    // Сколько зрителей смотрит стол (§18).
+    final spectators = (data['spectators'] as num?)?.toInt() ?? 0;
     final pauseElapsed = DateTime.now().difference(pauseReceivedAt).inSeconds;
     // Время на ход (RULES.md §13a): сколько секунд осталось тому, кого ждём.
     final turnLeftRaw = (game['turnSecondsLeft'] as num?)?.toInt();
@@ -2328,12 +2369,13 @@ class _GameTableScreenState extends State<GameTableScreen> {
                       ),
                   ];
                 }(),
-                // Смайлики — в любой момент (RULES.md §14, 25.09.2026).
-                Positioned(
-                  right: 8,
-                  bottom: 8,
-                  child: EmojiButton(onSend: sendReaction),
-                ),
+                // Смайлики — в любой момент (RULES.md §14, 25.09.2026). Наблюдатель не шлёт (§18).
+                if (!watching)
+                  Positioned(
+                    right: 8,
+                    bottom: 8,
+                    child: EmojiButton(onSend: sendReaction),
+                  ),
               ],
             ),
           );
@@ -2413,7 +2455,7 @@ class _GameTableScreenState extends State<GameTableScreen> {
     final absenceMinutes =
         ((data['settings'] as Map?)?['absenceMinutes'] as num?)?.toInt() ?? 5;
     return PopScope(
-      canPop: isRoomDone,
+      canPop: isRoomDone || watching,
       onPopInvokedWithResult: (didPop, _) async {
         if (didPop) return;
         final leave = await showDialog<bool>(
@@ -2465,6 +2507,11 @@ class _GameTableScreenState extends State<GameTableScreen> {
                   // Тренировка с ботами: монеты и рейтинг не меняются (28.09.2026).
                   if (room!['practice'] == true) ...[
                     const PracticeChip(),
+                    const SizedBox(width: 6),
+                  ],
+                  // Сколько зрителей смотрит стол (§18) — видят все.
+                  if (spectators > 0) ...[
+                    SpectatorsChip(count: spectators),
                     const SizedBox(width: 6),
                   ],
                   Expanded(
@@ -2587,7 +2634,16 @@ class _GameTableScreenState extends State<GameTableScreen> {
                                 fontSize: 11,
                               ),
                             ),
-                            if (vacancies.isNotEmpty)
+                            // Наблюдатель может сесть на свободное место (§18, §13b).
+                            if (vacancies.isNotEmpty && watching)
+                              Padding(
+                                padding: const EdgeInsets.only(top: 8),
+                                child: FilledButton(
+                                  onPressed: () => sitDown(data),
+                                  child: const Text('СЕСТЬ ЗА СТОЛ'),
+                                ),
+                              ),
+                            if (vacancies.isNotEmpty && !watching)
                               Padding(
                                 padding: const EdgeInsets.only(top: 8),
                                 child: OutlinedButton.icon(
@@ -2599,7 +2655,7 @@ class _GameTableScreenState extends State<GameTableScreen> {
                                   label: const Text('ПОЗВАТЬ ПО ССЫЛКЕ'),
                                 ),
                               ),
-                            if (vacancies.isNotEmpty)
+                            if (vacancies.isNotEmpty && !watching)
                               Padding(
                                 padding: const EdgeInsets.only(top: 6),
                                 child: OutlinedButton.icon(
@@ -2685,6 +2741,13 @@ class _GameTableScreenState extends State<GameTableScreen> {
                 ),
               ),
               const SizedBox(height: 6),
+              // Наблюдатель (§18): своей руки нет — вместо неё плашка «вы смотрите».
+              if (watching)
+                SpectatorBar(
+                  canSit: vacancies.isNotEmpty,
+                  onSit: () => sitDown(data),
+                )
+              else ...[
               const Text(
                 'ВАШИ КАРТЫ',
                 textAlign: TextAlign.center,
@@ -2778,6 +2841,7 @@ class _GameTableScreenState extends State<GameTableScreen> {
                           );
                         },
                       ),
+              ],
               const SizedBox(height: 8),
               // Решили продолжать — показываем, чем кончилось голосование.
               if (lastVote != null &&
@@ -2832,7 +2896,9 @@ class _GameTableScreenState extends State<GameTableScreen> {
                         style: const TextStyle(fontSize: 12, color: Colors.white70),
                       ),
                       const SizedBox(height: 8),
-                      if (myShrinkVote == null)
+                      if (watching)
+                        const SizedBox.shrink()
+                      else if (myShrinkVote == null)
                         Row(
                           children: [
                             Expanded(
@@ -2862,6 +2928,12 @@ class _GameTableScreenState extends State<GameTableScreen> {
                         ),
                     ],
                   ),
+                )
+              else if (isVote && watching)
+                const Text(
+                  'Игроки голосуют: продолжаем или делим кон',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(color: Colors.white60),
                 )
               else if (isVote)
                 myVote == null
@@ -2921,7 +2993,9 @@ class _GameTableScreenState extends State<GameTableScreen> {
                               style: const TextStyle(fontSize: 12, color: Colors.white70),
                             ),
                             const SizedBox(height: 8),
-                            if (myEndVote == null)
+                            if (watching)
+                              const SizedBox.shrink()
+                            else if (myEndVote == null)
                               Row(
                                 children: [
                                   Expanded(
@@ -3119,8 +3193,8 @@ class _GameTableScreenState extends State<GameTableScreen> {
                         icon: const Icon(Icons.bedtime_outlined, size: 18),
                         label: const Text('ЗАКОНЧИТЬ ИГРУ'),
                       ),
-                    // Выйти — только между раздачами (RULES.md §13b).
-                    if (endVote == null)
+                    // Выйти — только между раздачами (RULES.md §13b). Наблюдателю выходить не из чего.
+                    if (endVote == null && !watching)
                       TextButton.icon(
                         onPressed: leaving ? null : () => leaveGame(kon),
                         icon: const Icon(Icons.logout, size: 18),
@@ -3251,6 +3325,12 @@ class _GameTableScreenState extends State<GameTableScreen> {
                         textAlign: TextAlign.center,
                         style: const TextStyle(color: Colors.white60),
                       )
+              else if (stage == 'bidding' && watching)
+                Text(
+                  activeName.isEmpty ? 'Идут торги' : 'Торгуется $activeName',
+                  textAlign: TextAlign.center,
+                  style: const TextStyle(color: Colors.white60),
+                )
               else if (stage == 'bidding')
                 Row(
                   children: [

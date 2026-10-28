@@ -152,6 +152,31 @@ async function main() {
   check('подписка на несуществующую комнату — ошибка, а не молчание', ghost.state.error, 'room not found');
   check('подписка с чужим токеном — отказ', [stranger.state.error, stranger.state.last], ['unauthorized', null]);
 
+  section('наблюдатели (§18, 28.10.2026)');
+  const viewer = await account('Зритель');
+  const live = (await request('GET', '/rooms/open', viewer.token)).body.live ?? [];
+  check('идущий стол виден в лобби', live.some((r: any) => r.id === roomId), true);
+  check('сидящий за столом свой стол в «Идут сейчас» не видит',
+    ((await request('GET', '/rooms/open', serik.token)).body.live ?? []).some((r: any) => r.id === roomId), false);
+  const viewerWatch = watcher(roomId, viewer.token);
+  await wait(500);
+  const seen = viewerWatch.state.last;
+  check('зритель получает стол по сокету', seen?.id, roomId);
+  check('зритель не видит ничьих карт: рука пустая, кнопок нет',
+    [seen?.game?.hand, seen?.game?.myAllowedBids, seen?.game?.myPlayableCardIds, seen?.game?.myCanProposeEnd],
+    [[], [], [], false]);
+  // Вскрытие на туза и открытая карта открыты всем — их id могут совпасть с картами рук.
+  const { revealLog: _r, openCard: _o, ...hidden } = seen?.game ?? {};
+  const viewerJson = JSON.stringify({ ...seen, game: hidden });
+  const leaked = [...myIds.split(','), ...botIds.split(',')].filter((id) => id && viewerJson.includes(`"${id}"`));
+  check('в состоянии зрителя нет ни одной карты из рук игроков', leaked, []);
+  check('игроки видят 👁 1', serikWatch.state.last?.spectators, 1);
+  check('зритель смайлик не шлёт — 403', (await post(`/rooms/${roomId}/react`, viewer.token, { emoji: '👍' })).status, 403);
+  check('зритель не ходит — ПАС отклонён', (await post(`/rooms/${roomId}/bid`, viewer.token, { bid: 'ПАС' })).status >= 400, true);
+  viewerWatch.socket.disconnect();
+  await wait(500);
+  check('зритель ушёл — 👁 0', serikWatch.state.last?.spectators, 0);
+
   section('выход из лобби');
   const a = await account('Дана');
   const b = await account('Ержан');

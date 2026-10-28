@@ -676,6 +676,81 @@ class PracticeChip extends StatelessWidget {
   }
 }
 
+// Сколько зрителей смотрит стол (RULES.md §18): «👁 7» — видят и игроки, и зрители.
+class SpectatorsChip extends StatelessWidget {
+  const SpectatorsChip({super.key, required this.count});
+
+  final int count;
+
+  @override
+  Widget build(BuildContext context) {
+    return Tooltip(
+      message: 'Зрителей: $count',
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+        decoration: BoxDecoration(
+          color: const Color(0x22FFFFFF),
+          borderRadius: BorderRadius.circular(6),
+        ),
+        child: Text(
+          '👁 $count',
+          style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w800, color: Colors.white70),
+        ),
+      ),
+    );
+  }
+}
+
+// Наблюдатель за столом (§18): вместо своих карт — плашка «вы смотрите игру»; освободилось
+// место — кнопка «СЕСТЬ».
+class SpectatorBar extends StatelessWidget {
+  const SpectatorBar({super.key, required this.canSit, required this.onSit});
+
+  final bool canSit;
+  final VoidCallback onSit;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+      decoration: BoxDecoration(
+        color: const Color(0xFF13232E),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: const Color(0x55E6B74F)),
+      ),
+      child: Row(
+        children: [
+          const Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text(
+                  '👁 ВЫ НАБЛЮДАЕТЕ',
+                  style: TextStyle(
+                    fontWeight: FontWeight.w900,
+                    letterSpacing: 1.1,
+                    color: Color(0xFFE6B74F),
+                  ),
+                ),
+                SizedBox(height: 2),
+                Text(
+                  'Карты игроков закрыты — видно только то, что на столе.',
+                  style: TextStyle(fontSize: 12, color: Colors.white60),
+                ),
+              ],
+            ),
+          ),
+          if (canSit) ...[
+            const SizedBox(width: 8),
+            FilledButton(onPressed: onSit, child: const Text('СЕСТЬ')),
+          ],
+        ],
+      ),
+    );
+  }
+}
+
 // Комнаты больше нет: закрылась, пока приложение было свёрнуто, и сервер её уже
 // выгрузил (404 / room_error), или за столом не осталось никого (28.09.2026).
 class RoomClosedScreen extends StatelessWidget {

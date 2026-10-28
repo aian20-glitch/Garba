@@ -33,6 +33,37 @@ void openLobby(BuildContext context, String roomId, {bool replace = false}) {
   }
 }
 
+// Почему сервер не даёт смотреть стол (RULES.md §18); null — отказ не про наблюдателя.
+String? spectateRefusalText(String? error) => switch (error) {
+      'playing elsewhere' => 'Вы сейчас в игре. Смотреть чужой стол можно, когда доиграете свою.',
+      'blocked' => 'За этим столом игрок, с которым у вас блокировка.',
+      _ => null,
+    };
+
+// Наблюдать за идущим столом (§18): стол без своей руки и без кнопок. Сначала спрашиваем
+// сервер — вдруг смотреть нельзя (сам в игре, блокировка) или игра уже закончилась.
+Future<void> watchRoom(BuildContext context, String roomId) async {
+  try {
+    final response = await apiRequest(http.get(Uri.parse('$apiBase/rooms/$roomId'), headers: authHeaders()));
+    if (response.statusCode == 403) {
+      final refusal = spectateRefusalText((jsonDecode(response.body) as Map)['error']?.toString());
+      if (refusal != null) throw Exception(refusal);
+    }
+    if (response.statusCode == 404) throw Exception('Эта игра уже закончилась.');
+    expectStatus(response, const [200]);
+    if (!context.mounted) return;
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => GameTableScreen(roomCode: roomId, currentPlayerId: Session.id, spectator: true),
+      ),
+    );
+  } catch (e) {
+    if (!context.mounted) return;
+    showGarbaError(context, e);
+  }
+}
+
 // «Быстрая игра»: сервер сажает в самую заполненную открытую комнату, куда хватает
 // монет, а если таких нет — создаёт открытую (5 игроков, взнос 100) и ждёт людей.
 // Двойное нажатие не отправляет второй запрос: иначе второй ответ «вы уже в комнате»
@@ -75,6 +106,8 @@ class OpenRoomsScreen extends StatefulWidget {
 
 class _OpenRoomsScreenState extends State<OpenRoomsScreen> {
   List<Map<String, dynamic>>? rooms;
+  // Идущие столы — смотреть или сесть на освободившееся место (§18).
+  List<Map<String, dynamic>> live = const [];
   String? error;
   Timer? refresher;
   bool joining = false;
@@ -97,11 +130,15 @@ class _OpenRoomsScreenState extends State<OpenRoomsScreen> {
     try {
       final response = await apiRequest(http.get(Uri.parse('$apiBase/rooms/open'), headers: authHeaders()));
       expectStatus(response, const [200]);
-      final list = ((jsonDecode(response.body) as Map)['rooms'] as List)
-          .map((e) => Map<String, dynamic>.from(e as Map))
-          .toList();
+      final body = jsonDecode(response.body) as Map;
+      List<Map<String, dynamic>> parse(Object? raw) =>
+          ((raw as List?) ?? const []).map((e) => Map<String, dynamic>.from(e as Map)).toList();
+      // Начатые игры со свободным местом сервер кладёт и в rooms (для старых сборок) —
+      // здесь они в «Идут сейчас», с кнопкой «СЕСТЬ».
+      final list = parse(body['rooms']).where((r) => r['started'] != true).toList();
       if (mounted) setState(() {
         rooms = list;
+        live = parse(body['live']);
         error = null;
       });
     } catch (e) {
@@ -133,6 +170,67 @@ class _OpenRoomsScreenState extends State<OpenRoomsScreen> {
     }
   }
 
+  Widget liveRoomCard(Map<String, dynamic> r) {
+    final s = Map<String, dynamic>.from(r['settings'] as Map);
+    int v(String k) => (s[k] as num?)?.toInt() ?? 0;
+    final id = r['id'].toString();
+    final spectators = (r['spectators'] as num?)?.toInt() ?? 0;
+    final deal = (r['dealNumber'] as num?)?.toInt() ?? 0;
+    final vacancies = (r['vacancies'] as num?)?.toInt() ?? 0;
+    return Card(
+      color: const Color(0xFF13232E),
+      margin: const EdgeInsets.only(bottom: 10),
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(16, 10, 12, 10),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Row(
+              children: [
+                Expanded(
+                  child: Text(
+                    '${r['creatorName']} · ${r['players']} из ${r['capacity']}',
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(fontWeight: FontWeight.w800, fontSize: 16),
+                  ),
+                ),
+                if (r['practice'] == true) ...[
+                  const PracticeChip(),
+                  const SizedBox(width: 6),
+                ],
+                if (spectators > 0) SpectatorsChip(count: spectators),
+              ],
+            ),
+            const SizedBox(height: 4),
+            Text(
+              'Игра идёт${deal > 0 ? ' · раздача $deal' : ''} · взнос ${fmtCoins(v('ante'))}'
+              '${vacancies > 0 ? '\nОсвободилось место · вход от ${fmtCoins(v('minBalance'))}' : ''}',
+              style: const TextStyle(color: Colors.white70),
+            ),
+            const SizedBox(height: 8),
+            Row(
+              mainAxisAlignment: MainAxisAlignment.end,
+              children: [
+                OutlinedButton.icon(
+                  onPressed: () => watchRoom(context, id),
+                  icon: const Icon(Icons.visibility, size: 18),
+                  label: const Text('НАБЛЮДАТЬ'),
+                ),
+                if (r['canSit'] == true) ...[
+                  const SizedBox(width: 8),
+                  FilledButton(
+                    onPressed: joining ? null : () => join(id, v('minBalance')),
+                    child: const Text('СЕСТЬ'),
+                  ),
+                ],
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final list = rooms;
@@ -156,11 +254,11 @@ class _OpenRoomsScreenState extends State<OpenRoomsScreen> {
               Center(
                 child: error == null ? const CircularProgressIndicator() : Text(error!),
               )
-            else if (list.isEmpty)
+            else if (list.isEmpty && live.isEmpty)
               const Padding(
                 padding: EdgeInsets.only(top: 24),
                 child: Text(
-                  'Открытых комнат, куда хватает монет, сейчас нет.\n'
+                  'Открытых комнат, куда хватает монет, и идущих игр сейчас нет.\n'
                   'Нажмите «Быстрая игра» — создадим комнату, и к вам присоединятся.',
                   textAlign: TextAlign.center,
                   style: TextStyle(color: Colors.white70),
@@ -191,6 +289,16 @@ class _OpenRoomsScreenState extends State<OpenRoomsScreen> {
                   ),
                 );
               }),
+            // Идущие столы (§18): «Игра идёт» — смотреть, освободилось место — сесть.
+            if (list != null && live.isNotEmpty) ...[
+              const SizedBox(height: 12),
+              const Text(
+                'ИДУТ СЕЙЧАС',
+                style: TextStyle(fontWeight: FontWeight.w900, letterSpacing: 1.1, color: Color(0xFFE6B74F)),
+              ),
+              const SizedBox(height: 8),
+              ...live.map(liveRoomCard),
+            ],
           ],
         ),
       ),

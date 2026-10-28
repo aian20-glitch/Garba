@@ -181,6 +181,7 @@ import {
 import { LOBBY_MS, lobbyExpired, lobbySecondsLeft } from './lobbyTimer.js';
 import { rateCheck } from './rateLimit.js';
 import { openRoomsFor, QUICK_ROOM } from './openRooms.js';
+import { liveRoomsFor, spectateRefusal, spectatorCount } from './spectators.js';
 import { checkBuyIn } from './buyIn.js';
 import { canShare, checkShareAmount } from './share.js';
 import {
@@ -1860,7 +1861,15 @@ const WATCH_LIMIT = [{ max: 10, windowMs: 10_000 }];
 io.on('connection', (socket) => {
   const ip = socketIp(socket.request);
   socketsByIp.set(ip, (socketsByIp.get(ip) ?? 0) + 1);
+  // Ушёл зритель — счётчик 👁 у стола меньше (§18). В 'disconnect' комнаты сокета уже пусты.
+  socket.on('disconnecting', () => {
+    socket.data.lastRooms = [...socket.rooms].filter((r) => r !== socket.id);
+  });
   socket.on('disconnect', (reason) => {
+    const watcher = socket.data.playerId;
+    if (typeof watcher === 'string') {
+      for (const roomId of (socket.data.lastRooms as string[] | undefined) ?? []) broadcastSpectators(roomId, watcher);
+    }
     const left = (socketsByIp.get(ip) ?? 1) - 1;
     if (left > 0) socketsByIp.set(ip, left);
     else socketsByIp.delete(ip);
@@ -1895,13 +1904,26 @@ io.on('connection', (socket) => {
       return;
     }
 
+    // Наблюдатель (§18): сам в начатой игре или за столом тот, с кем блок, — нельзя.
+    const refusal = spectateRefusalFor(room, playerId);
+    if (refusal) {
+      socket.emit('room_error', { error: refusal });
+      return;
+    }
+
     // Один сокет — одна комната: при повторном watch уходим из прежней.
+    // Ушёл зритель — у той комнаты счётчик 👁 меньше.
     for (const joined of socket.rooms) {
-      if (joined !== socket.id) socket.leave(joined);
+      if (joined === socket.id || joined === roomId) continue;
+      socket.leave(joined);
+      if (typeof socket.data.playerId === 'string') broadcastSpectators(joined, socket.data.playerId);
     }
 
     socket.data.playerId = playerId;
+    const wasWatching = socket.rooms.has(roomId);
     socket.join(roomId);
+    // Пришёл новый зритель — игрокам и зрителям новое число 👁.
+    if (!wasWatching) broadcastSpectators(roomId, playerId);
 
     // Игрок сам открыл стол — значит, вернулся: «ушёл» снимается (§13a), иначе
     // пауза держалась бы, пока он не найдёт кнопку «Я ЗДЕСЬ».
@@ -1923,6 +1945,38 @@ function dropSocketsOf(accountId: string) {
       for (const s of list) if (s.data.playerId === accountId) s.disconnect(true);
     })
     .catch((e) => console.error('drop sockets failed:', e));
+}
+
+// Сколько зрителей у стола (§18): разные аккаунты среди сокетов комнаты, кроме сидящих.
+function spectatorsOf(room: Room): number {
+  const watcherIds: string[] = [];
+  for (const socketId of io.sockets.adapter.rooms.get(room.id) ?? []) {
+    const id = io.sockets.sockets.get(socketId)?.data.playerId;
+    if (typeof id === 'string') watcherIds.push(id);
+  }
+  return spectatorCount(room.status, watcherIds, room.players.map((p) => p.id));
+}
+
+// Можно ли этому аккаунту смотреть стол (§18) — null, если можно.
+function spectateRefusalFor(room: Room, accountId: string) {
+  const member = room.players.some((p) => p.id === accountId);
+  if (member || room.status !== 'started') return null;
+  const elsewhere = activeRoomOf(accountId);
+  const avoid = avoidIds(db, accountId);
+  return spectateRefusal({
+    member,
+    status: room.status,
+    playingElsewhere: elsewhere !== undefined && elsewhere.status === 'started',
+    blocked: room.players.some((p) => avoid.has(p.id)),
+  });
+}
+
+// Зритель пришёл или ушёл — разослать новое число 👁. Игрок своего стола сокет открывает
+// и закрывает постоянно (свернул приложение) — тогда рассылать нечего.
+function broadcastSpectators(roomId: string, accountId: string) {
+  const room = rooms.get(roomId);
+  if (!room || room.status === 'lobby' || room.players.some((p) => p.id === accountId)) return;
+  broadcastRoom(roomId).catch((e) => console.error(`[ROOM ${roomId}] broadcast failed:`, e));
 }
 
 async function broadcastRoom(roomId: string) {
@@ -3424,6 +3478,9 @@ function reactionsFor(room: Room, viewerId?: string): ReactionEntry[] {
 
 function publicRoom(room: Room, viewerId?: string) {
   let game: any = null;
+  // Своя рука и свои кнопки (my…) — только сидящему за столом. Наблюдателю (§18) и
+  // вышедшему — только то, что открыто всем.
+  const seatedId = viewerId !== undefined && room.players.some((p) => p.id === viewerId) ? viewerId : undefined;
 
   if (room.game) {
     game = {
@@ -3440,21 +3497,21 @@ function publicRoom(room: Room, viewerId?: string) {
       // Масть ДВА видит только тот, кто сказал ДВА (§6.3), остальным — null.
       // Кто смотрит — сервер знает по токену (этап 9.1), чужой не подсмотрит.
       myDvaSuit:
-        viewerId !== undefined &&
+        seatedId !== undefined &&
         room.game.dvaSuit !== null &&
-        room.game.bids.some((b) => b.playerId === viewerId && b.bid === 'ДВА')
+        room.game.bids.some((b) => b.playerId === seatedId && b.bid === 'ДВА')
           ? room.game.dvaSuit
           : null,
       // Из каких мастей можно выбрать ДВА — только тому, чья очередь и кому ДВА доступен.
       myDvaSuitOptions:
         room.game.stage === 'bidding' &&
-        viewerId !== undefined &&
-        viewerId === room.game.activeBidderId &&
+        seatedId !== undefined &&
+        seatedId === room.game.activeBidderId &&
         room.game.razSuit &&
         allowedBidsFor(
           room.capacity as Capacity,
           room.game.bids,
-          walletOf(room, viewerId),
+          walletOf(room, seatedId),
         ).includes('ДВА')
           ? dvaSuitOptions(room.capacity as Capacity, room.game.razSuit)
           : [],
@@ -3464,12 +3521,12 @@ function publicRoom(room: Room, viewerId?: string) {
       // Не-активному игроку — пустой список.
       myAllowedBids:
         room.game.stage === 'bidding' &&
-        viewerId !== undefined &&
-        viewerId === room.game.activeBidderId
+        seatedId !== undefined &&
+        seatedId === room.game.activeBidderId
           ? allowedBidsFor(
               room.capacity as Capacity,
               room.game.bids,
-              walletOf(room, viewerId),
+              walletOf(room, seatedId),
             )
           : [],
       // Деньги.
@@ -3492,8 +3549,8 @@ function publicRoom(room: Room, viewerId?: string) {
       // Выбор козыря — только игроку, выигравшему КОН, пока он выбирает.
       myKonTrumpOptions:
         room.game.stage === 'kon_trump' &&
-        viewerId !== undefined &&
-        viewerId === room.game.mains[0]?.playerId &&
+        seatedId !== undefined &&
+        seatedId === room.game.mains[0]?.playerId &&
         room.game.razSuit
           ? konTrumpOptions(room.capacity as Capacity, room.game.razSuit)
           : [],
@@ -3521,8 +3578,8 @@ function publicRoom(room: Room, viewerId?: string) {
           }
         : null,
       myVote:
-        room.game.vote && viewerId
-          ? (room.game.vote.votes[viewerId] ?? null)
+        room.game.vote && seatedId
+          ? (room.game.vote.votes[seatedId] ?? null)
           : null,
       lastVote: room.game.lastVote,
       // Через сколько раздач снова спросим, если кон всё ещё никому не по карману.
@@ -3543,11 +3600,11 @@ function publicRoom(room: Room, viewerId?: string) {
       // клиент только подсвечивает. Не его ход — пустой список.
       myPlayableCardIds:
         room.game.stage === 'playing' &&
-        viewerId !== undefined &&
-        viewerId === room.game.turnPlayerId &&
+        seatedId !== undefined &&
+        seatedId === room.game.turnPlayerId &&
         room.game.trumpSuit
           ? playableCards(
-              room.game.hands[viewerId] ?? [],
+              room.game.hands[seatedId] ?? [],
               room.game.currentTrick,
               room.game.trumpSuit,
             ).map((c) => c.id)
@@ -3558,8 +3615,8 @@ function publicRoom(room: Room, viewerId?: string) {
       activeBidderId: room.game.activeBidderId,
       // Во время борьбы за спецкарту видна только часть руки (§7.2, §7.3).
       hand:
-        viewerId && room.game.hands[viewerId]
-          ? room.game.hands[viewerId].slice(
+        seatedId && room.game.hands[seatedId]
+          ? room.game.hands[seatedId].slice(
               0,
               visibleCardCount(room.game) ?? undefined,
             )
@@ -3593,15 +3650,15 @@ function publicRoom(room: Room, viewerId?: string) {
       mySpecialRisks:
         room.game.stage === 'special' &&
         room.game.special &&
-        viewerId !== undefined &&
-        nextActor(room.game.special.contest) === viewerId
+        seatedId !== undefined &&
+        nextActor(room.game.special.contest) === seatedId
           ? riskOptions(room.game.special.contest).filter((r) =>
-              canAffordSpecial(room, viewerId, r),
+              canAffordSpecial(room, seatedId, r),
             )
           : [],
       // Может ли запросивший сдаться и сколько тогда положит в кон (§10.7).
-      myCanConcede: viewerId !== undefined && concedeAllowed(room.game, viewerId),
-      myConcedeLoss: viewerId !== undefined ? concedeLoss(room, viewerId) : 0,
+      myCanConcede: seatedId !== undefined && concedeAllowed(room.game, seatedId),
+      myConcedeLoss: seatedId !== undefined ? concedeLoss(room, seatedId) : 0,
       // Кто из главных уже сдался — он доигрывает как обычный противник.
       concededIds: room.game.concededIds ?? [],
       // Закончить игру по согласию (§12.3): идущее голосование, мой голос, могу ли предложить.
@@ -3617,20 +3674,20 @@ function publicRoom(room: Room, viewerId?: string) {
             ),
           }
         : null,
-      myEndVote: room.game.endVote && viewerId
-        ? room.game.endVote.yes.includes(viewerId)
+      myEndVote: room.game.endVote && seatedId
+        ? room.game.endVote.yes.includes(seatedId)
           ? 'yes'
-          : room.game.endVote.no.includes(viewerId)
+          : room.game.endVote.no.includes(seatedId)
             ? 'no'
             : null
         : null,
       myCanProposeEnd:
-        viewerId !== undefined &&
+        seatedId !== undefined &&
         canProposeEnd({
           stage: room.game.stage,
           voteActive: !!room.game.endVote || !!room.game.shrinkVote || !!room.game.topUpVote,
           proposedIds: room.game.endProposedIds ?? [],
-          playerId: viewerId,
+          playerId: seatedId,
         }),
       lastEndVote: room.game.lastEndVote ?? null,
       // Игрок ушёл — играть дальше без него или закрыть (§13c). Голосуют только люди.
@@ -3647,7 +3704,7 @@ function publicRoom(room: Room, viewerId?: string) {
           }
         : null,
       myShrinkVote:
-        room.game.shrinkVote && viewerId && room.game.shrinkVote.yes.includes(viewerId) ? 'continue' : null,
+        room.game.shrinkVote && seatedId && room.game.shrinkVote.yes.includes(seatedId) ? 'continue' : null,
       lastShrink: room.game.lastShrink ?? null,
       // Докупить из кошелька (§9.1c): идущая просьба, мой ответ, могу ли попросить, чем кончилась.
       topUpVote: room.game.topUpVote
@@ -3665,19 +3722,19 @@ function publicRoom(room: Room, viewerId?: string) {
             ),
           }
         : null,
-      myTopUpVote: room.game.topUpVote && viewerId
-        ? room.game.topUpVote.yes.includes(viewerId)
+      myTopUpVote: room.game.topUpVote && seatedId
+        ? room.game.topUpVote.yes.includes(seatedId)
           ? 'yes'
-          : room.game.topUpVote.no.includes(viewerId)
+          : room.game.topUpVote.no.includes(seatedId)
             ? 'no'
             : null
         : null,
-      myCanRequestTopUp: viewerId !== undefined && topUpAllowed(room, viewerId),
+      myCanRequestTopUp: seatedId !== undefined && topUpAllowed(room, seatedId),
       lastTopUp: room.game.lastTopUp ?? null,
       // Часть выигрыша другому (§11.8): кто кому сколько отдал — видят все; сколько могу
       // отдать я — только выигравшему главному, пока не роздали следующую раздачу.
       winShare: room.game.winShare ?? null,
-      myShareLimits: viewerId !== undefined ? shareLimitsFor(room, viewerId) : null,
+      myShareLimits: seatedId !== undefined ? shareLimitsFor(room, seatedId) : null,
       // Время на ход (§13a): сколько секунд осталось тому, кого ждём; кого ждём.
       turnSecondsLeft: turnSecondsLeft(turnClockOf(room), Date.now(), turnMsOf(room)),
       // Сколько ещё идёт анимация раздачи (вскрытия на туза): открыл стол позже —
@@ -3687,10 +3744,10 @@ function publicRoom(room: Room, viewerId?: string) {
       // Владелец спецкарты сбрасывает одну свою карту — кроме самой спецкарты (§7.5).
       myDiscardOptions:
         room.game.stage === 'special_discard' &&
-        viewerId !== undefined &&
-        viewerId === room.game.mains[0]?.playerId &&
+        seatedId !== undefined &&
+        seatedId === room.game.mains[0]?.playerId &&
         room.game.special
-          ? room.game.hands[viewerId]
+          ? room.game.hands[seatedId]
               .filter((c) => c.id !== room.game!.special!.card.id)
               .map((c) => c.id)
           : [],
@@ -3719,6 +3776,8 @@ function publicRoom(room: Room, viewerId?: string) {
     // Тренировка с ботами: монеты и рейтинг за столом — не настоящие.
     practice: !!room.practice,
     version: room.version ?? 0,
+    // Сколько зрителей смотрит стол (§18) — видят все: «👁 7».
+    spectators: spectatorsOf(room),
     players: room.players.map((p) => {
       // На тренировке рейтинг не меняется — показываем тот, что в аккаунте.
       const atTable = room.practice ? undefined : room.rating?.[p.id];
@@ -4022,8 +4081,40 @@ app.get('/rooms/open', (req, res) => {
       started: room.status === 'started',
     };
   });
-  return res.json({ rooms: list });
+  return res.json({ rooms: list, live: liveRoomsForAccount(me(res)) });
 });
+
+// Идущие столы — смотреть или сесть на освободившееся место (RULES.md §18, 28.10.2026).
+// Все начатые, и открытые, и «только по коду» (решение владельца).
+function liveRoomsForAccount(account: Account) {
+  return liveRoomsFor(
+    [...rooms.values()].map((r) => ({
+      room: r,
+      id: r.id,
+      status: r.status,
+      memberIds: r.players.map((p) => p.id),
+      spectators: spectatorsOf(r),
+      createdAt: r.createdAt,
+    })),
+    account.id,
+    avoidIds(db, account.id),
+  ).map(({ room, spectators }) => {
+    const vacancies = room.vacancies?.length ?? 0;
+    return {
+      id: room.id,
+      capacity: room.capacity,
+      players: room.players.length,
+      creatorName: room.players.find((p) => p.id === room.creatorId)?.name ?? '',
+      settings: room.settings,
+      practice: !!room.practice,
+      dealNumber: room.game?.dealNumber ?? 0,
+      spectators,
+      vacancies,
+      // Сесть можно, если есть место и хватает монет на минимум стола (§13b, §9.1a).
+      canSit: vacancies > 0 && room.settings.minBalance <= account.balance,
+    };
+  });
+}
 
 // «Быстрая игра»: сесть в самую заполненную открытую комнату, куда хватает монет;
 // таких нет — создать открытую комнату (5 игроков, взнос 100) и ждать людей.
@@ -4068,6 +4159,10 @@ app.get('/rooms/:id', (req, res) => {
   if (!room) {
     return res.status(404).json({ error: 'room not found' });
   }
+
+  // Наблюдатель (§18): сам в начатой игре или за столом тот, с кем блок, — нельзя.
+  const refusal = spectateRefusalFor(room, me(res).id);
+  if (refusal) return res.status(403).json({ error: refusal });
 
   // Свою руку видит только тот, чей токен. ?playerId=... больше не читается.
   return res.json(publicRoom(room, me(res).id));
