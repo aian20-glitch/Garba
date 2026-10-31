@@ -8,6 +8,7 @@
 import type { DatabaseSync } from 'node:sqlite';
 import { emptyStats, type PlayerStats } from './stats.js';
 import { experienceOf, ratingOf, type ActivityDay } from './rating.js';
+import { writeEntryPlay, type TableStage } from './tournamentDb.js';
 
 export type StoredRoom = {
   id: string;
@@ -29,6 +30,9 @@ export type StoredRoom = {
   departedIds?: string[];
   // Монеты за неделю (ТОП-3 недели, 23.10.2026): { неделя: { игрок: чистый плюс } }.
   weekly?: Record<string, Record<string, number>>;
+  // Стол еженедельного турнира (§19, 31.10.2026): монеты за ним — турнирные, не из кошелька.
+  tournament?: { id: string; stage: TableStage; scores?: Record<string, { razWins: number; dvaWins: number; maxRisk: number }> };
+  botIds?: string[];
 };
 
 // Колонки статистики в базе и поля PlayerStats — в одном порядке.
@@ -111,6 +115,18 @@ export function writeRoom(db: DatabaseSync, room: StoredRoom) {
   // Закрытая комната свой итог уже записала — больше в аккаунты не пишет.
   if (room.practice || room.accountsClosed) return;
 
+  // Турнирный стол (§19.4): кошелёк, рейтинг, опыт и ТОП-3 недели не трогает. Турнирный баланс
+  // и счёт для ничьей — в запись участника; статистика партий — в профиль, как обычно.
+  if (room.tournament) {
+    writeStats(db, room);
+    const t = room.tournament;
+    for (const p of room.players) {
+      if (room.botIds?.includes(p.id)) continue;
+      writeEntryPlay(db, t.id, p.id, t.stage, p.balance, t.scores?.[p.id] ?? { razWins: 0, dvaWins: 0, maxRisk: 0 });
+    }
+    return;
+  }
+
   const setBalance = db.prepare('UPDATE accounts SET balance = ? WHERE id = ?');
   // В аккаунте — всё вместе: монеты за столом и запас, не взятый за стол (09.10.2026).
   for (const p of room.players) setBalance.run(p.balance + (p.reserve ?? 0), p.id);
@@ -125,20 +141,7 @@ export function writeRoom(db: DatabaseSync, room: StoredRoom) {
     }
   }
 
-  if (room.stats) {
-    const cols = STAT_COLUMNS.map(([c]) => c);
-    const upsert = db.prepare(
-      `INSERT INTO room_stats (room_id, player_id, finished, ${cols.join(', ')})
-       VALUES (?, ?, ?, ${cols.map(() => '?').join(', ')})
-       ON CONFLICT(room_id, player_id) DO UPDATE SET finished = excluded.finished,
-         ${cols.map((c) => `${c} = excluded.${c}`).join(', ')}`,
-    );
-    const finished = room.status === 'finished' ? 1 : 0;
-    const departed = new Set(room.departedIds ?? []);
-    for (const [playerId, st] of Object.entries(room.stats)) {
-      upsert.run(room.id, playerId, departed.has(playerId) ? 0 : finished, ...STAT_COLUMNS.map(([, k]) => st[k]));
-    }
-  }
+  writeStats(db, room);
 
   if (room.activity) {
     const upsert = db.prepare(
@@ -157,6 +160,24 @@ export function writeRoom(db: DatabaseSync, room: StoredRoom) {
     );
     for (const [week, byPlayer] of Object.entries(room.weekly)) {
       for (const [playerId, coins] of Object.entries(byPlayer)) upsert.run(room.id, playerId, week, coins);
+    }
+  }
+}
+
+// Статистика игроков за комнату (этап 9.4) — в room_stats.
+function writeStats(db: DatabaseSync, room: StoredRoom) {
+  if (room.stats) {
+    const cols = STAT_COLUMNS.map(([c]) => c);
+    const upsert = db.prepare(
+      `INSERT INTO room_stats (room_id, player_id, finished, ${cols.join(', ')})
+       VALUES (?, ?, ?, ${cols.map(() => '?').join(', ')})
+       ON CONFLICT(room_id, player_id) DO UPDATE SET finished = excluded.finished,
+         ${cols.map((c) => `${c} = excluded.${c}`).join(', ')}`,
+    );
+    const finished = room.status === 'finished' ? 1 : 0;
+    const departed = new Set(room.departedIds ?? []);
+    for (const [playerId, st] of Object.entries(room.stats)) {
+      upsert.run(room.id, playerId, departed.has(playerId) ? 0 : finished, ...STAT_COLUMNS.map(([, k]) => st[k]));
     }
   }
 }
@@ -234,6 +255,12 @@ export function saveRoom(db: DatabaseSync, room: StoredRoom) {
     db.exec('ROLLBACK');
     throw e;
   }
+}
+
+// Одна комната из базы — в том числе закрытая (итог турнирного стола после перезапуска).
+export function loadRoom<T>(db: DatabaseSync, id: string): T | null {
+  const row = db.prepare('SELECT data FROM rooms WHERE id = ?').get(id) as { data: string } | undefined;
+  return row ? (JSON.parse(row.data) as T) : null;
 }
 
 // Недоигранные комнаты — их нужно поднять после перезапуска.

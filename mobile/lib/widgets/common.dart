@@ -50,8 +50,16 @@ class LeaveBanBanner extends StatefulWidget {
   final DateTime until;
   final int count;
   final VoidCallback onEnd;
+  // Бан за турнир (§19.6): 24 часа за неявку или выход.
+  final bool tournament;
 
-  const LeaveBanBanner({super.key, required this.until, required this.count, required this.onEnd});
+  const LeaveBanBanner({
+    super.key,
+    required this.until,
+    required this.count,
+    required this.onEnd,
+    this.tournament = false,
+  });
 
   @override
   State<LeaveBanBanner> createState() => _LeaveBanBannerState();
@@ -102,13 +110,15 @@ class _LeaveBanBannerState extends State<LeaveBanBanner> {
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Text(
-                    'За стол можно через ${fmtClock(seconds)}',
+                    'За стол можно через ${widget.tournament ? fmtCountdown(seconds) : fmtClock(seconds)}',
                     style: const TextStyle(fontSize: 17, fontWeight: FontWeight.w900),
                   ),
                   const SizedBox(height: 2),
                   Text(
-                    'Вы вышли из начатой игры (${widget.count}-й раз за 6 часов). '
-                    'Каждый следующий выход — на 10 минут дольше, до часа.',
+                    widget.tournament
+                        ? 'Бан на 24 часа за турнир: не сыграли свой стол или вышли из турнирной игры.'
+                        : 'Вы вышли из начатой игры (${widget.count}-й раз за 6 часов). '
+                            'Каждый следующий выход — на 10 минут дольше, до часа.',
                     style: const TextStyle(color: Colors.white70, fontSize: 13),
                   ),
                 ],
@@ -1065,6 +1075,16 @@ Widget? myWalletBar(Map<String, dynamic> room) {
   final me = players.cast<Map>().where((p) => p['id']?.toString() == Session.id).firstOrNull;
   if (me == null) return null;
   final onTable = (me['balance'] as num?)?.toInt() ?? 0;
+  // Турнирный стол (§19.4): турнирные монеты отдельно от кошелька — не складываем.
+  if (room['tournament'] is Map) {
+    return WalletBar(
+      onTable: onTable,
+      total: (room['myReserve'] as num?)?.toInt() ?? 0,
+      rating: me['rating'],
+      tableLabel: 'турнир',
+      totalLabel: 'кошелёк',
+    );
+  }
   final total = onTable + ((room['myReserve'] as num?)?.toInt() ?? 0);
   return WalletBar(onTable: onTable, total: total, rating: me['rating']);
 }
@@ -1073,8 +1093,17 @@ class WalletBar extends StatelessWidget {
   final int onTable;
   final int total;
   final Object? rating;
+  final String tableLabel;
+  final String totalLabel;
 
-  const WalletBar({super.key, required this.onTable, required this.total, this.rating});
+  const WalletBar({
+    super.key,
+    required this.onTable,
+    required this.total,
+    this.rating,
+    this.tableLabel = 'на столе',
+    this.totalLabel = 'всего',
+  });
 
   static const gold = Color(0xFFD4A94F);
 
@@ -1111,9 +1140,9 @@ class WalletBar extends StatelessWidget {
           child: Row(
             mainAxisSize: MainAxisSize.min,
             children: [
-              part(const CoinIcon(size: 16), fmtCoins(onTable), 'на столе'),
+              part(const CoinIcon(size: 16), fmtCoins(onTable), tableLabel),
               divider(),
-              part(const Icon(Icons.account_balance_wallet, size: 16, color: gold), fmtCoins(total), 'всего'),
+              part(const Icon(Icons.account_balance_wallet, size: 16, color: gold), fmtCoins(total), totalLabel),
               divider(),
               Row(
                 mainAxisSize: MainAxisSize.min,

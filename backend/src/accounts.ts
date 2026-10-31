@@ -16,6 +16,7 @@ import { ensureAvatarTable } from './avatars.js';
 import { START_SKILL } from './rating.js';
 import { deleteModerationData, ensureModerationTables } from './moderation.js';
 import { deleteShopData, ensureShopTables } from './shop.js';
+import { anonymizeEntries, ensureTournamentTables } from './tournamentDb.js';
 
 export type Account = {
   id: string;
@@ -95,6 +96,7 @@ export function openDb(file: string): DatabaseSync {
   ensureAvatarTable(db); // аватары — этап 9.5
   ensureModerationTables(db); // жалобы и блокировка — 29.09.2026
   ensureShopTables(db); // магазин — 13.10.2026
+  ensureTournamentTables(db); // еженедельный турнир — 31.10.2026
   return db;
 }
 
@@ -152,6 +154,10 @@ function migrateAccounts(db: DatabaseSync) {
   add('leave_count', 'INTEGER NOT NULL DEFAULT 0');
   add('leave_last_at', 'INTEGER NOT NULL DEFAULT 0');
   add('ban_until', 'INTEGER NOT NULL DEFAULT 0');
+  // Еженедельный турнир (§19, 31.10.2026): сколько раз выиграл (значок 🏆×N) и до какого
+  // времени бан за неявку или выход из турнира — отдельно от счёта выходов §13d.
+  add('tournament_wins', 'INTEGER NOT NULL DEFAULT 0');
+  add('tournament_ban_until', 'INTEGER NOT NULL DEFAULT 0');
 
   // Аккаунтам, созданным до этапа 9.3, выдаём коды.
   const withoutCode = db.prepare('SELECT id FROM accounts WHERE code IS NULL').all() as { id: string }[];
@@ -458,6 +464,16 @@ export function setLeaveRecord(db: DatabaseSync, id: string, rec: { count: numbe
   );
 }
 
+// Турнирный бан (§19.6, 31.10.2026): до какого времени нельзя за стол. 0 — бана нет.
+export function tournamentBanUntil(db: DatabaseSync, id: string): number {
+  const row = db.prepare('SELECT tournament_ban_until AS t FROM accounts WHERE id = ?').get(id) as { t: number } | undefined;
+  return Number(row?.t ?? 0);
+}
+
+export function setTournamentBan(db: DatabaseSync, id: string, until: number) {
+  db.prepare('UPDATE accounts SET tournament_ban_until = MAX(tournament_ban_until, ?) WHERE id = ?').run(until, id);
+}
+
 // Сменить имя — только владелец сервера по жалобе (POST /admin/rename, 29.09.2026).
 export function setName(db: DatabaseSync, id: string, name: string) {
   db.prepare('UPDATE accounts SET name = ? WHERE id = ?').run(name, id);
@@ -614,6 +630,7 @@ export function deleteAccountData(db: DatabaseSync, id: string) {
   db.prepare('DELETE FROM room_stats WHERE player_id = ?').run(id);
   db.prepare('DELETE FROM week_coins WHERE player_id = ?').run(id);
   db.prepare('DELETE FROM room_activity WHERE player_id = ?').run(id);
+  anonymizeEntries(db, id, DELETED_NAME);
   db.prepare('UPDATE accounts SET invited_by = NULL WHERE invited_by = ?').run(id);
 
   const rows = db

@@ -30,6 +30,10 @@ class _HomeScreenState extends State<HomeScreen> with RouteAware {
   // Бан за выход из начатой игры (§13d, 23.10.2026): до какого времени нельзя за стол.
   DateTime? banUntil;
   int banCount = 0;
+  // Бан за неявку или выход из турнира (§19.6) — 24 часа, другой текст.
+  bool banTournament = false;
+  // Еженедельный турнир (§19): этап и зарегистрирован ли я — для плитки «ТУРНИР».
+  Map<String, dynamic>? tournament;
 
   @override
   void initState() {
@@ -84,7 +88,9 @@ class _HomeScreenState extends State<HomeScreen> with RouteAware {
     messenger.showSnackBar(SnackBar(
       behavior: SnackBarBehavior.floating,
       backgroundColor: const Color(0xFF7A1F2A),
-      content: Text('Вы вышли из начатой игры — за стол можно через ${fmtClock(left)}.'),
+      content: Text(banTournament
+          ? 'Бан за турнир — за стол можно через ${fmtCountdown(left)}.'
+          : 'Вы вышли из начатой игры — за стол можно через ${fmtClock(left)}.'),
     ));
   }
 
@@ -124,6 +130,8 @@ class _HomeScreenState extends State<HomeScreen> with RouteAware {
             ? null
             : DateTime.now().add(Duration(seconds: (ban['secondsLeft'] as num).toInt()));
         banCount = (ban?['count'] as num?)?.toInt() ?? 0;
+        banTournament = ban?['tournament'] == true;
+        tournament = me['tournament'] is Map ? Map<String, dynamic>.from(me['tournament'] as Map) : null;
       });
       final ids = invites.map((i) => i['roomId'].toString()).toSet();
       if (ids.difference(seenInvites).isNotEmpty) {
@@ -260,6 +268,7 @@ class _HomeScreenState extends State<HomeScreen> with RouteAware {
                           key: ValueKey(banUntil!.millisecondsSinceEpoch ~/ 5000),
                           until: banUntil!,
                           count: banCount,
+                          tournament: banTournament,
                           onEnd: () => setState(() => banUntil = null),
                         ),
                       // Друг зовёт за стол — войти одним нажатием.
@@ -271,19 +280,24 @@ class _HomeScreenState extends State<HomeScreen> with RouteAware {
                             leading: const Icon(Icons.mail, color: Color(0xFFD4A94F)),
                             title: Text('${inv['fromName']} зовёт за стол',
                                 style: const TextStyle(fontWeight: FontWeight.w800)),
-                            subtitle: Text('Комната #${inv['roomId']}'),
+                            subtitle: Text(inv['tableNo'] != null
+                                ? 'Турнир · стол №${inv['tableNo']}'
+                                : 'Комната #${inv['roomId']}'),
                             trailing: Row(
                               mainAxisSize: MainAxisSize.min,
                               children: [
                                 FilledButton(
                                   onPressed: roomId != null
                                       ? null
-                                      : () => Navigator.push(
-                                            context,
-                                            MaterialPageRoute(
-                                              builder: (_) => JoinRoomScreen(initialCode: inv['roomId'].toString()),
-                                            ),
-                                          ),
+                                      // За турнирный стол — без суммы за стол, с турнирным балансом (§19.3).
+                                      : inv['tableNo'] != null
+                                          ? () => sitAtTournamentTable(context, (inv['tableNo'] as num).toInt())
+                                          : () => Navigator.push(
+                                                context,
+                                                MaterialPageRoute(
+                                                  builder: (_) => JoinRoomScreen(initialCode: inv['roomId'].toString()),
+                                                ),
+                                              ),
                                   child: const Text('ВОЙТИ'),
                                 ),
                                 IconButton(
@@ -305,7 +319,9 @@ class _HomeScreenState extends State<HomeScreen> with RouteAware {
                       // Игрок уже сидит в комнате — туда и возвращаемся, новую не начать.
                       if (roomId != null) ...[
                         GarbaButton(
-                          label: 'ВЕРНУТЬСЯ В КОМНАТУ #$roomId',
+                          label: tournament?['roomId']?.toString() == roomId
+                              ? 'ВЕРНУТЬСЯ ЗА ТУРНИРНЫЙ СТОЛ'
+                              : 'ВЕРНУТЬСЯ В КОМНАТУ #$roomId',
                           onTap: () => Navigator.push(
                             context,
                             MaterialPageRoute(
@@ -326,6 +342,11 @@ class _HomeScreenState extends State<HomeScreen> with RouteAware {
                         ],
                         const SizedBox(height: 14),
                       ],
+                      // Еженедельный турнир (§19, 31.10.2026) — во всю ширину.
+                      Padding(
+                        padding: const EdgeInsets.only(bottom: 12),
+                        child: TournamentTile(brief: tournament, onTap: () => go(const TournamentScreen())),
+                      ),
                       // Магазин (§17, 13.10.2026) — во всю ширину: рамки, рубашки, сукно, смайлики.
                       Padding(
                         padding: const EdgeInsets.only(bottom: 12),

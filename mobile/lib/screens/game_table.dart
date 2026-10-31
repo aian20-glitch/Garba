@@ -531,10 +531,16 @@ class _GameTableScreenState extends State<GameTableScreen> {
       // Открыл стол — объявляем, игроки каких цветных уровней рейтинга за столом:
       // «один игрок фиолетового уровня» (просьба владельца, 11.10.2026).
       final levels = strongLevels((data['players'] as List?) ?? const []);
-      if (levels.isEmpty) return;
-      text = 'За столом';
+      // И победитель турнира за столом (§19.12): «В игре есть победитель турнира 🏆».
+      final winner = data['winnerBanner'] is String ? data['winnerBanner'].toString() : null;
+      if (levels.isEmpty && winner == null) return;
+      text = levels.isEmpty ? winner! : 'За столом';
+      final shown = [
+        ...levels,
+        if (winner != null && levels.isNotEmpty) (text: winner, color: const Color(0xFFD4A94F)),
+      ];
       final id = ++announcementSeq;
-      setState(() => announcement = (id: id, text: text!, levels: levels));
+      setState(() => announcement = (id: id, text: text!, levels: shown.isEmpty ? null : shown));
       Timer(const Duration(milliseconds: 3200), () {
         if (mounted && announcement?.id == id) setState(() => announcement = null);
       });
@@ -793,9 +799,23 @@ class _GameTableScreenState extends State<GameTableScreen> {
   // Выйти из игры между раздачами (RULES.md §13b): кон делят оставшиеся, рейтинг −1.0,
   // игра заканчивается (08.10.2026). Сначала спрашиваем.
   Future<void> leaveGame(int kon) async {
+    final tournamentTable = room?['tournament'] is Map;
     final ok = await showDialog<bool>(
       context: context,
-      builder: (context) => AlertDialog(
+      builder: (context) => tournamentTable
+          // Турнир (§19.6): выход — наказание; кон остаётся на столе.
+          ? AlertDialog(
+              title: const Text('Выйти из турнира?'),
+              content: const Text(
+                'Вы будете исключены из турнира: бан на 24 часа, −1.5 рейтинга, '
+                'ваши турнирные монеты перейдут в казну. Кон останется на столе.',
+              ),
+              actions: [
+                FilledButton(onPressed: () => Navigator.pop(context, false), child: const Text('ОСТАТЬСЯ')),
+                TextButton(onPressed: () => Navigator.pop(context, true), child: const Text('ВЫЙТИ')),
+              ],
+            )
+          : AlertDialog(
         title: const Text('Выйти из игры?'),
         content: Text(
           '${kon > 0 ? 'Кон ${fmtCoins(kon)} разделят между остальными игроками.\n' : ''}'
@@ -1083,6 +1103,22 @@ class _GameTableScreenState extends State<GameTableScreen> {
         .any((p) => (p as Map)['id'].toString() == widget.currentPlayerId);
     // Наблюдатель (§18) — за столом не сидит, смотрит; сел на свободное место — играет.
     final watching = widget.spectator && !seated;
+    // Турнир (§19.4, §19.6): выбыл — не хватило на взнос; или вышел — наказан. Стол доигрывают.
+    final tour = data['tournament'] is Map ? Map<String, dynamic>.from(data['tournament'] as Map) : null;
+    if (!seated && !widget.spectator && data['status'] == 'started' && tour != null) {
+      final eliminated = ((tour['eliminatedIds'] as List?) ?? const []).any((id) => id.toString() == widget.currentPlayerId);
+      final mine = ((data['departedPlayers'] as List?) ?? const [])
+          .cast<Map>()
+          .where((d) => d['id']?.toString() == widget.currentPlayerId)
+          .firstOrNull;
+      return RoomClosedScreen(
+        title: eliminated ? 'Вы выбыли из-за стола' : 'Вы вышли из турнира',
+        text: eliminated
+            ? 'Монет меньше взноса. Ваш итог: ${fmtCoins((mine?['balance'] as num?)?.toInt() ?? 0)}. '
+                'Остальные доигрывают стол — результаты на экране «ТУРНИР».'
+            : 'Бан на 24 часа, −1.5 рейтинга, турнирные монеты ушли в казну.',
+      );
+    }
     if (!seated && !widget.spectator && data['status'] == 'started') {
       return Scaffold(
         appBar: backOnlyAppBar(),
@@ -1970,13 +2006,16 @@ class _GameTableScreenState extends State<GameTableScreen> {
                     const CoinIcon(size: 11),
                     const SizedBox(width: 2),
                     Text(fmtCoins(balanceOf(pId)), style: plateText),
-                    const SizedBox(width: 6),
-                    Icon(Icons.account_balance_wallet, size: 11, color: isMain ? Colors.black87 : gold),
-                    const SizedBox(width: 2),
-                    Text(
-                      fmtCoins(balanceOf(pId) + ((p['reserve'] as num?)?.toInt() ?? 0)),
-                      style: plateText,
-                    ),
+                    // Турнир (§19.4): турнирные монеты с кошельком не складываем — только они.
+                    if (room!['tournament'] is! Map) ...[
+                      const SizedBox(width: 6),
+                      Icon(Icons.account_balance_wallet, size: 11, color: isMain ? Colors.black87 : gold),
+                      const SizedBox(width: 2),
+                      Text(
+                        fmtCoins(balanceOf(pId) + ((p['reserve'] as num?)?.toInt() ?? 0)),
+                        style: plateText,
+                      ),
+                    ],
                   ],
                 ),
               ),
@@ -2465,7 +2504,7 @@ class _GameTableScreenState extends State<GameTableScreen> {
             content: Text(
               'Игра не остановится: пока вас нет, за вас ходит таймер. '
               'Два пропуска подряд — игра встаёт на паузу, и тратится ваш запас $absenceMinutes мин. '
-              'Кончится запас — игра закончится, а вы потеряете рейтинг.',
+              '${data['tournament'] is Map ? 'Кончится запас — вы исключены из турнира: бан 24 часа, −1.5 рейтинга, монеты — в казну.' : 'Кончится запас — игра закончится, а вы потеряете рейтинг.'}',
             ),
             actions: [
               FilledButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('ОСТАТЬСЯ')),
@@ -2554,6 +2593,12 @@ class _GameTableScreenState extends State<GameTableScreen> {
                   ],
                 ],
               ),
+              // Турнирный стол (§19.4): стол №, до конца часа, казна, кто выбыл.
+              if (data['tournament'] is Map)
+                TournamentTableBar(
+                  tournament: Map<String, dynamic>.from(data['tournament'] as Map),
+                  receivedAt: pauseReceivedAt,
+                ),
               if (closing && !isRoomDone)
                 Padding(
                   padding: const EdgeInsets.only(top: 6),
@@ -3127,6 +3172,18 @@ class _GameTableScreenState extends State<GameTableScreen> {
                         padding: const EdgeInsets.only(bottom: 6),
                         child: Text(
                           '${winShareText(winShare).won} ${winShareText(winShare).gave}',
+                          textAlign: TextAlign.center,
+                          style: const TextStyle(color: Color(0xFFE6B74F), fontSize: 13),
+                        ),
+                      ),
+                    // Турнир (§19.4): кон никому не по карману — поделили, играем дальше.
+                    if (game['konSplit'] is Map)
+                      Padding(
+                        padding: const EdgeInsets.only(bottom: 6),
+                        child: Text(
+                          'Кон ${fmtCoins(((game['konSplit'] as Map)['kon'] as num).toInt())} не по карману никому — '
+                          'поделили поровну: по ${fmtCoins(((game['konSplit'] as Map)['perPlayer'] as num).toInt())}. '
+                          'Играем дальше с новым взносом.',
                           textAlign: TextAlign.center,
                           style: const TextStyle(color: Color(0xFFE6B74F), fontSize: 13),
                         ),

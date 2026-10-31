@@ -42,6 +42,8 @@ import {
   setDaily,
   setName,
   setSkill,
+  setTournamentBan,
+  tournamentBanUntil,
   anonymize,
   tokenFromHeader,
   transaction,
@@ -63,7 +65,61 @@ import {
 import { createDeck, shuffle } from './deck.js';
 import { STARTING_COINS } from './config.js';
 import { BOT_STEP_MS, botAction, botTopUp, freeBotName, type BotAction } from './serverBots.js';
-import { loadUnfinishedRooms, playerExperience, profileStats, ratedPlayers, roomIdTaken, saveRoom, weekCoins, writeRoom } from './roomDb.js';
+import { loadRoom, loadUnfinishedRooms, playerExperience, profileStats, ratedPlayers, roomIdTaken, saveRoom, weekCoins, writeRoom } from './roomDb.js';
+import {
+  compareStandings,
+  DEFAULT_TIMES,
+  eliminatedIds,
+  ENTRY_FEE,
+  lastCallPhase,
+  MIN_PARTICIPANTS,
+  nextWeeklyStartAt,
+  payouts,
+  PENALTY_BAN_MS,
+  PENALTY_RATING,
+  rankStandings,
+  selectFinalists,
+  tableEndReason,
+  tableSizes,
+  TABLE_BONUS,
+  TOURNAMENT_SETTINGS,
+  tournamentIdFor,
+  tournamentRating,
+  weeklyRegistrationOpen,
+  weeklyStartAt,
+  winnerBanner,
+  winsBadge,
+  FINAL_MIN,
+  FINAL_MAX,
+  QUALIFY_ABOVE,
+  type Standing,
+  type TableEnd,
+  type TournamentTimes,
+} from './tournament.js';
+import {
+  activeTournament,
+  addEntry,
+  addTable,
+  createTournament,
+  entriesOf,
+  entryOf,
+  latestTournament,
+  ledgerAdd,
+  moveEntry,
+  moveTable,
+  moveTournament,
+  rateEntry,
+  tablesOf,
+  treasuryOf,
+  tournamentWinsOf,
+  unfinishedEntryOf,
+  writeEntryPlay,
+  type Entry,
+  type EntryStatus,
+  type TableStage,
+  type Tournament,
+  type TournamentTable,
+} from './tournamentDb.js';
 import { addWeekly, coinMedals, weekKey, weekTop, type WeeklyCoins } from './leaders.js';
 import { banSecondsLeft, nextLeaveBan } from './leaveBan.js';
 import { applyLeave, calculateHandDifficulty, dealDeltas, leavePenalty, ratingOf, settleRoom, shownRating, START_SKILL } from './rating.js';
@@ -397,6 +453,8 @@ type GameState = {
   // Пустые раздачи подряд (все ПАС). Сбрасывается, когда кто-то сыграл (§9.3).
   emptyStreak: number;
   lastAnte: AnteRecord | null;
+  // Турнир (§19.4): кон никому не по карману — поделили между раздачами. До следующей раздачи.
+  konSplit?: { kon: number; perPlayer: number; remainder: number; remainderTo: string | null } | null;
   // Главные, которые сдались в этой раздаче (§10.7). Нет в старых сохранённых комнатах.
   concededIds?: string[];
   // Закончить игру по согласию (§12.3): идущее голосование, кто уже предлагал между
@@ -416,7 +474,7 @@ type GameState = {
   // Почему закрылась комната: кон забрали (§12.1), кон никто не может взять
   // и его поделили поровну (§12.2) или игрок отключился и не вернулся (кончился запас на отлучку) (§13).
   // seat_empty — место пустовало 10 минут, никто не сел (24.09.2026).
-  closeReason: 'kon_taken' | 'nobody_can_play' | 'player_left' | 'agreed_end' | 'seat_empty' | null;
+  closeReason: 'kon_taken' | 'nobody_can_play' | 'player_left' | 'agreed_end' | 'seat_empty' | 'tournament_end' | null;
   // Пропали на 5 минут посреди раздачи: за них доигрывает таймер, после раздачи —
   // место свободно (24.09.2026).
   goneIds?: string[];
@@ -539,6 +597,26 @@ type Room = {
   reactions?: ReactionEntry[];
   // Открытая комната — видна всем в списке, войти можно без кода (19.09.2026).
   isPublic?: boolean;
+  // Стол еженедельного турнира (RULES.md §19, 31.10.2026). Нет — обычная комната.
+  tournament?: TournamentRoom;
+};
+
+// Турнирный стол: какой турнир, этап и номер; с какого момента идёт час игры; последний шанс.
+type TournamentRoom = {
+  id: string;
+  stage: TableStage;
+  tableNo: number;
+  // Сколько мест займут боты, когда сядут люди (финал, где людей меньше 4 — §19.7).
+  reserveBots?: number;
+  startedAt?: number; // начало игры — от него 20 минут (§19.4)
+  lastCall?: boolean; // открыт последние 10 минут, уведомление разослано (§19.5)
+  launch?: boolean; // «ГОТОВ» последнего шанса: кто не нажал — его место боту
+  // Счёт для ничьей (§19.7): победы на РАЗ (спецкарта — как РАЗ), на ДВА, лучший риск.
+  scores?: Record<string, { razWins: number; dvaWins: number; maxRisk: number }>;
+  eliminatedIds?: string[]; // выбыли — не могли заплатить взнос
+  penalizedIds?: string[]; // сами вышли или не вернулись — наказаны (§19.6)
+  lastOut?: { name: string; reason: 'eliminated' | 'left' | 'gone' } | null; // для надписи на столе
+  endReason?: TableEnd; // почему стол закончился
 };
 
 const app = express();
@@ -676,8 +754,8 @@ function changeCoins(accountId: string, delta: number, undo: (() => void)[]): Ro
       player.reserve = (player.reserve ?? 0) - delta;
     });
     writeRoom(db, room);
-    // Тренировка балансы в аккаунт не пишет — начисление кладём в аккаунт сами.
-    if (room.practice) db.prepare('UPDATE accounts SET balance = balance + ? WHERE id = ?').run(delta, accountId);
+    // Тренировка и турнирный стол балансы в аккаунт не пишут — начисление кладём в аккаунт сами.
+    if (room.practice || room.tournament) db.prepare('UPDATE accounts SET balance = balance + ? WHERE id = ?').run(delta, accountId);
     return room;
   }
 
@@ -975,6 +1053,11 @@ app.delete('/me', (req, res) => {
   if (room) {
     return res.status(409).json({ error: 'finish your game first', roomId: room.id });
   }
+  // В незаконченном турнире — сначала доиграть: на нём турнирные монеты и обязательства (§19.2).
+  const tournamentId = unfinishedEntryOf(db, account.id);
+  if (tournamentId) {
+    return res.status(409).json({ error: 'finish your tournament first', tournamentId });
+  }
   deleteAccountEverywhere(account);
   return res.json({ ok: true });
 });
@@ -998,9 +1081,12 @@ function deleteAccountEverywhere(account: Account) {
 
 // Сколько у игрока монет вне стола (09.10.2026): за столом — запас, который он не взял
 // с собой; не за столом — весь баланс. tableBalance — сколько сейчас на столе, или null.
+// Турнирный стол (§19.4): турнирные монеты — не кошелёк, в «всего» их не складываем.
 function walletSplit(account: Account): { balance: number; tableBalance: number | null } {
-  const player = activeRoomOf(account.id)?.players.find((p) => p.id === account.id);
+  const room = activeRoomOf(account.id);
+  const player = room?.players.find((p) => p.id === account.id);
   if (!player) return { balance: account.balance, tableBalance: null };
+  if (room?.tournament) return { balance: account.balance, tableBalance: null };
   return { balance: player.reserve ?? 0, tableBalance: player.balance };
 }
 
@@ -1008,10 +1094,14 @@ function walletSplit(account: Account): { balance: number; tableBalance: number 
 // balance — монеты вне стола, tableBalance — за столом (09.10.2026).
 // daily — ежедневный бонус (ТЗ §3): взят ли сегодня, какой день серии, сколько даст.
 // Бан за выход из начатой игры (§13d, 23.10.2026): { secondsLeft, count } или null.
-function leaveBanOf(accountId: string): { secondsLeft: number; count: number } | null {
+// Турнирный бан (§19.6, 24 часа) — тот же запрет за стол; tournament: true — бан за турнир.
+function leaveBanOf(accountId: string): { secondsLeft: number; count: number; tournament: boolean } | null {
+  const now = Date.now();
   const rec = leaveRecordOf(db, accountId);
-  const secondsLeft = banSecondsLeft(rec, Date.now());
-  return secondsLeft > 0 ? { secondsLeft, count: rec!.count } : null;
+  const leave = banSecondsLeft(rec, now);
+  const tournament = Math.max(0, Math.ceil((tournamentBanUntil(db, accountId) - now) / 1000));
+  const secondsLeft = Math.max(leave, tournament);
+  return secondsLeft > 0 ? { secondsLeft, count: rec?.count ?? 0, tournament: tournament >= leave } : null;
 }
 
 // Во время бана за стол нельзя: ни создать игру, ни сесть в чужую (403).
@@ -1053,6 +1143,9 @@ app.get('/me', (req, res) => {
     shop: { owned: ownedItems(db, account.id), look: lookFor(account.id) },
     // Бан за выход из начатой игры (§13d, 23.10.2026): сколько ещё нельзя за стол. Нет — null.
     leaveBan: leaveBanOf(account.id),
+    // Еженедельный турнир (§19): идёт ли, зарегистрирован ли я, мой стол. Нет турнира — null.
+    tournament: tournamentBrief(account.id),
+    tournamentWins: winsOf(account.id),
   });
 });
 
@@ -1286,6 +1379,8 @@ app.get('/me/profile', (req, res) => {
     stats: profileStats(db, account.id),
     // Медали за монеты (§16.9, 23.10.2026): полученные и следующая закрытая.
     medals: coinMedals(peakBalanceOf(db, account.id)),
+    // Победы в еженедельном турнире (§19.12): значок 🏆×N в «ДОСТИЖЕНИЯХ».
+    tournamentWins: winsOf(account.id),
     friendsCount: listFriends(db, account.id).length,
     hasRecoveryCode: hasRecoveryCode(db, account.id),
   });
@@ -1312,6 +1407,7 @@ app.get('/players/:code', (req, res) => {
     rating: shownRating(accountRating(player.id)),
     stats: profileStats(db, player.id),
     medals: coinMedals(peakBalanceOf(db, player.id)),
+    tournamentWins: winsOf(player.id),
     isFriend: areFriends(db, me.id, player.id),
     // friends | outgoing (я позвал) | incoming (он зовёт меня) | none
     friendStatus: friendStatus(db, me.id, player.id),
@@ -1632,6 +1728,7 @@ app.post('/admin/delete', (req, res) => {
   if (!account) return res.status(404).json({ error: 'player not found' });
   const room = activeRoomOf(account.id);
   if (room) return res.status(409).json({ error: 'player is in a game', roomId: room.id });
+  if (unfinishedEntryOf(db, account.id)) return res.status(409).json({ error: 'player is in a tournament' });
   deleteAccountEverywhere(account);
   return res.json({ ok: true, name: account.name });
 });
@@ -1914,7 +2011,7 @@ io.on('connection', (socket) => {
     // Один сокет — одна комната: при повторном watch уходим из прежней.
     // Ушёл зритель — у той комнаты счётчик 👁 меньше.
     for (const joined of socket.rooms) {
-      if (joined === socket.id || joined === roomId) continue;
+      if (joined === socket.id || joined === roomId || joined === TOURNAMENT_ROOM) continue;
       socket.leave(joined);
       if (typeof socket.data.playerId === 'string') broadcastSpectators(joined, socket.data.playerId);
     }
@@ -1933,6 +2030,21 @@ io.on('connection', (socket) => {
       broadcastRoom(room.id).catch((e) => console.error(`[ROOM ${room.id}] broadcast failed:`, e));
     }
     socket.emit('room', publicRoom(room, playerId));
+  });
+
+  // Экран «ТУРНИР» (§19): следить за турниром — сразу и после каждого изменения.
+  socket.on('watch_tournament', (payload: { token?: unknown }) => {
+    const watchCheck = rateCheck((socket.data.watchTimes as number[] | undefined) ?? [], Date.now(), WATCH_LIMIT);
+    socket.data.watchTimes = watchCheck.times;
+    if (!watchCheck.allowed) return;
+    const account = findAccountByToken(db, String(payload?.token ?? ''));
+    if (!account) {
+      socket.emit('tournament_error', { error: 'unauthorized' });
+      return;
+    }
+    socket.data.tournamentViewer = account.id;
+    socket.join(TOURNAMENT_ROOM);
+    socket.emit('tournament', tournamentView(account.id));
   });
 });
 
@@ -1998,6 +2110,8 @@ async function broadcastRoom(roomId: string) {
     return false;
   });
   for (const s of allowed) s.emit('room', publicRoom(room, viewerOf(s)));
+  // Турнирный стол поменялся — на экране «ТУРНИР» тоже (кто сел, игра идёт, итог).
+  if (room.tournament) scheduleTournamentBroadcast();
 }
 
 // После любого действия с комнатой (POST /rooms/:id/...) — рассылка.
@@ -2098,6 +2212,12 @@ function vacateSeat(room: Room, playerId: string, reason: 'left' | 'gone', close
   const game = room.game!;
   const player = room.players.find((p) => p.id === playerId);
   if (!player || room.status === 'finished') return;
+  // Турнирный стол: кон остаётся на столе, ушедший наказан, стол меньше (§19.4, §19.6).
+  if (room.tournament) {
+    tournamentDrop(room, playerId, reason);
+    if (close) finishLeaving(room);
+    return;
+  }
   const rest = room.players.filter((p) => p.id !== playerId);
 
   // Место уже пустовало до него — уход без штрафа к рейтингу (§16.3a, 08.10.2026).
@@ -2149,8 +2269,18 @@ function vacateSeat(room: Room, playerId: string, reason: 'left' | 'gone', close
   delete room.rating?.[playerId];
   room.departedIds = [...(room.departedIds ?? []).filter((id) => id !== playerId), playerId];
   room.players = rest;
+  forgetSeat(room, playerId);
 
-  // Всё, что про него помнила пауза и таймер хода.
+  console.log(
+    `[ROOM ${room.id}] ${player.name} ${reason === 'left' ? 'вышел из игры' : 'не вернулся (кончился запас на отлучку)'} — ` +
+      `кон ${game.lastLeave.kon} разделён: по ${perPlayer}`,
+  );
+  if (close) finishLeaving(room);
+}
+
+// Всё, что про ушедшего помнили пауза и таймер хода.
+function forgetSeat(room: Room, playerId: string) {
+  const game = room.game!;
   const drop = <T>(rec: Record<string, T> | undefined) => {
     if (!rec) return rec;
     const copy = { ...rec };
@@ -2165,12 +2295,6 @@ function vacateSeat(room: Room, playerId: string, reason: 'left' | 'gone', close
   const pres = presence.get(room.id);
   if (pres) presence.set(room.id, { lastSeen: drop(pres.lastSeen)!, disconnectedAt: drop(pres.disconnectedAt)! });
   absentSince.set(room.id, drop(absentSince.get(room.id)) ?? {});
-
-  console.log(
-    `[ROOM ${room.id}] ${player.name} ${reason === 'left' ? 'вышел из игры' : 'не вернулся (кончился запас на отлучку)'} — ` +
-      `кон ${game.lastLeave.kon} разделён: по ${perPlayer}`,
-  );
-  if (close) finishLeaving(room);
 }
 
 // Кто-то ушёл. Кон уже поделён. Осталось 4 и больше — спрашиваем всех: играть дальше
@@ -2179,6 +2303,10 @@ function vacateSeat(room: Room, playerId: string, reason: 'left' | 'gone', close
 // закрываются, как раньше.
 function finishLeaving(room: Room) {
   if (room.status === 'finished') return;
+  if (room.tournament) {
+    finishTournamentLeaving(room);
+    return;
+  }
   const game = room.game!;
   if (room.players.length === 0) {
     game.stage = 'room_done';
@@ -2889,7 +3017,8 @@ function takeAnte(room: Room, reason: AnteRecord['reason']) {
 // кон: новых конов не будет, играем, пока текущий кто-нибудь не заберёт (§12).
 function updateClosing(room: Room) {
   const game = room.game!;
-  if (game.closing) return;
+  // В турнире «последнего кона» нет: обедневший выбывает, стол играет дальше (§19.4).
+  if (game.closing || room.tournament) return;
   const balances = room.players.map((p) => p.balance);
   if (someoneBelowBase(balances, roomBaseKon(room))) {
     game.closing = true;
@@ -2910,6 +3039,12 @@ function startVoteIfNobodyCanPlay(room: Room) {
   const balances = room.players.map((p) => p.balance);
   if (!nobodyCanPlay(balances, cheapest)) return;
 
+  // В турнире голосования нет (§19.4): кон делится сразу, и стол играет дальше.
+  if (room.tournament) {
+    tournamentSplitKon(room);
+    return;
+  }
+
   // Недавно решили продолжать — ждём, пока раздача обойдёт круг (§12.2).
   if (dealsUntilNextVote(game.dealsSinceContinue, room.players.length) > 0) return;
 
@@ -2919,6 +3054,25 @@ function startVoteIfNobodyCanPlay(room: Room) {
   console.log(
     `[ROOM ${room.id}] nobody can afford even the cheapest bid (${cheapest}), kon ${game.kon}: vote`,
   );
+}
+
+// Турнир (§19.4, решение владельца 31.10.2026): кон не по карману никому — делим поровну
+// между сидящими, остаток — тому, кто за этим столом проиграл больше всех (как §12.2).
+// Стол не закрывается: следующая раздача — с новым взносом.
+function tournamentSplitKon(room: Room) {
+  const game = room.game!;
+  const { shares, perPlayer, remainder, remainderTo } = splitKon(
+    game.kon,
+    room.players.map((p) => ({ id: p.id, lost: p.startBalance - p.balance })),
+  );
+  for (const p of room.players) {
+    p.balance += shares[p.id];
+    recordMoney(room, p.id, shares[p.id]);
+  }
+  game.konSplit = { kon: game.kon, perPlayer, remainder, remainderTo };
+  game.kon = 0;
+  game.emptyStreak = 0; // новый кон — счёт пустых раздач сначала
+  console.log(`[ROOM ${room.id}] tournament: kon ${game.konSplit.kon} nobody can take — split ${perPlayer} each, play on`);
 }
 
 // Голос подан — если итог уже ясен, выполняем его.
@@ -2951,7 +3105,7 @@ function applyVoteIfDecided(room: Room) {
 // Комната закрывается, кон делится поровну (RULES.md §12.2).
 function closeWithSplit(
   room: Room,
-  reason: 'nobody_can_play' | 'agreed_end' | 'seat_empty' | 'player_left' = 'nobody_can_play',
+  reason: 'nobody_can_play' | 'agreed_end' | 'seat_empty' | 'player_left' | 'tournament_end' = 'nobody_can_play',
 ) {
   const game = room.game!;
   const { shares, perPlayer, remainder, remainderTo } = splitKon(
@@ -3030,6 +3184,7 @@ function beginBidding(room: Room) {
   game.roundDoneAt = null;
   // Отдать часть выигрыша — только до следующей раздачи (§11.8).
   game.winShare = null;
+  game.konSplit = null;
   Object.assign(game, emptyPlayState());
   game.konBeforeSettlement = null;
 
@@ -3436,6 +3591,17 @@ function finishRound(room: Room, won: boolean[], instantIndex = -1) {
     );
   }
 
+  // Турнир: счёт для ничьей (§19.7) — победы на РАЗ (спецкарта — как РАЗ), на ДВА, лучший риск.
+  if (room.tournament) {
+    const scores = (room.tournament.scores ??= {});
+    for (const r of game.result.filter((x) => x.won)) {
+      const sc = (scores[r.playerId] ??= { razWins: 0, dvaWins: 0, maxRisk: 0 });
+      if (r.declaration === 'РАЗ') sc.razWins += 1;
+      if (r.declaration === 'ДВА') sc.dvaWins += 1;
+      sc.maxRisk = Math.max(sc.maxRisk, risk);
+    }
+  }
+
   // Партия — в опыт (§16.1): активный день — 20 минут и 5 партий.
   const today = dayKey(Date.now());
   for (const p of room.players) activityOf(room, p.id, today).deals += 1;
@@ -3566,6 +3732,7 @@ function publicRoom(room: Room, viewerId?: string) {
           : [],
       emptyStreak: room.game.emptyStreak,
       lastAnte: room.game.lastAnte,
+      konSplit: room.game.konSplit ?? null,
       closing: room.game.closing,
       closeReason: room.game.closeReason,
       leftPlayerIds: room.game.leftPlayerIds ?? [],
@@ -3693,6 +3860,7 @@ function publicRoom(room: Room, viewerId?: string) {
         : null,
       myCanProposeEnd:
         seatedId !== undefined &&
+        !room.tournament &&
         canProposeEnd({
           stage: room.game.stage,
           voteActive: !!room.game.endVote || !!room.game.shrinkVote || !!room.game.topUpVote,
@@ -3779,7 +3947,7 @@ function publicRoom(room: Room, viewerId?: string) {
       : null,
     readyDroppedIds: room.readyDroppedIds ?? [],
     // Лобби: через сколько секунд закроется, если игра не начнётся; закрылось ли по времени.
-    lobbySecondsLeft: room.status === 'lobby' ? lobbySecondsLeft(room.createdAt, Date.now(), lobbyMs) : null,
+    lobbySecondsLeft: room.status === 'lobby' && !room.tournament ? lobbySecondsLeft(room.createdAt, Date.now(), lobbyMs) : null,
     lobbyTimedOut: !!room.lobbyTimedOut,
     // У каждого игрока — адрес его фото (этап 9.5) или null.
     // И рейтинг (этап 9.6): сейчас и с каким сел за стол — для итогов «4.0 → 4.9».
@@ -3789,8 +3957,8 @@ function publicRoom(room: Room, viewerId?: string) {
     // Сколько зрителей смотрит стол (§18) — видят все: «👁 7».
     spectators: spectatorsOf(room),
     players: room.players.map((p) => {
-      // На тренировке рейтинг не меняется — показываем тот, что в аккаунте.
-      const atTable = room.practice ? undefined : room.rating?.[p.id];
+      // На тренировке и в турнире рейтинг за партии не меняется — показываем тот, что в аккаунте.
+      const atTable = room.practice || room.tournament ? undefined : room.rating?.[p.id];
       return {
         ...p,
         // Код игрока — нажать на него за столом и открыть карточку (в друзья, подарок).
@@ -3806,8 +3974,14 @@ function publicRoom(room: Room, viewerId?: string) {
         ratingStart: shownRating(atTable ? startRating(room, p.id) : accountRating(p.id)),
         // Место в общем рейтинге, если игрок в первой десятке, иначе null.
         top: topPlaceOf(p.id),
+        // Сколько раз выигрывал еженедельный турнир (§19.12): значок 🏆×N, объявление в лобби.
+        tournamentWins: winsOf(p.id),
       };
     }),
+    // Объявление перед обычной игрой: за столом победитель турнира (§19.12).
+    winnerBanner: room.tournament ? null : winnerBanner(room.players.map((p) => winsOf(p.id))),
+    // Турнирный стол (§19): этап, номер, сколько осталось от часа, казна, кто выбыл.
+    tournament: room.tournament ? tournamentRoomView(room) : null,
     status: room.status,
     // Пауза из-за отключения (§13): кто отключился и сколько секунд у него осталось.
     pause: publicPause(room),
@@ -3972,14 +4146,20 @@ function makeRoom(account: Account, capacity: number, settings: RoomSettings, is
 // seat — какое место выбрал (нет — первое свободное). В начатую игру — только на
 // освободившееся место (24.09.2026): новый игрок садится, и игра идёт дальше.
 // rawBuyIn — сколько монет берёт за стол (buyIn.ts); нет — весь баланс.
+// tournamentBalance — турнирный стол (§19): садится со своим турнирным балансом, а не с
+// суммой из кошелька. Без него за турнирный стол не сесть (tournamentSit проверяет участие).
 function joinRoom(
   room: Room,
   account: Account,
   wantedSeat?: number,
   rawBuyIn?: unknown,
+  tournamentBalance?: number,
 ): { status: number; body: unknown } {
   if (room.players.some((p) => p.id === account.id)) {
     return { status: 200, body: publicRoom(room, account.id) };
+  }
+  if (room.tournament && tournamentBalance === undefined) {
+    return { status: 403, body: { error: 'tournament table' } };
   }
   const midGame = room.status === 'started' && !!room.game && (room.vacancies?.length ?? 0) > 0;
   if (room.status !== 'lobby' && !midGame) {
@@ -4004,22 +4184,24 @@ function joinRoom(
   if (banned) return { status: 403, body: banned };
   // Войти можно, только если денег не меньше минимума комнаты (RULES.md §9.1a);
   // за стол — от минимума до всего баланса.
-  const buyIn = checkBuyIn(rawBuyIn, account.balance, room.settings.minBalance);
-  if (!buyIn.ok) {
+  const buyIn = room.tournament ? null : checkBuyIn(rawBuyIn, account.balance, room.settings.minBalance);
+  if (buyIn && !buyIn.ok) {
     return {
       status: buyIn.status,
       body: { error: buyIn.error, minBalance: room.settings.minBalance, balance: account.balance },
     };
   }
+  // За турнирным столом — турнирные монеты; кошелёк целиком остаётся вне стола (§19.4).
+  const onTable = buyIn ? buyIn.amount : tournamentBalance!;
 
   room.players.push({
     id: account.id,
     name: account.name,
     ready: true,
     joinedAt: Date.now(),
-    balance: buyIn.amount,
-    reserve: account.balance - buyIn.amount,
-    startBalance: buyIn.amount,
+    balance: onTable,
+    reserve: account.balance - (buyIn ? onTable : 0),
+    startBalance: onTable,
     seat,
   });
   sortSeats(room);
@@ -4039,7 +4221,7 @@ function joinRoom(
     }
     return { status: 200, body: publicRoom(room, account.id) };
   }
-  if (room.players.length === room.capacity) {
+  if (tableFull(room)) {
     room.readyCheck = startReadyCheck(Date.now());
     console.log(`[ROOM ${room.id}] набралась — ждём «ГОТОВ» от всех`);
     for (const p of room.players) {
@@ -4186,6 +4368,11 @@ app.post('/rooms/:id/join', (req, res) => {
   }
 
   const wanted = req.body?.seat === undefined ? undefined : Number(req.body.seat);
+  // Турнирный стол (§19.3): садится только участник, со своим турнирным балансом.
+  if (room.tournament) {
+    const sat = tournamentSit(room, me(res), Number.isInteger(wanted) ? wanted : undefined);
+    return res.status(sat.status).json(sat.body);
+  }
   const joined = joinRoom(room, me(res), Number.isInteger(wanted) ? wanted : undefined, req.body?.buyIn);
   return res.status(joined.status).json(joined.body);
 });
@@ -4225,7 +4412,13 @@ function invitesFor(accountId: string) {
       !room.players.some((p) => p.id === accountId);
   });
   roomInvites.set(accountId, list);
-  return list.map((inv) => ({ roomId: inv.roomId, fromName: inv.fromName, at: inv.at }));
+  // tableNo — зовут за турнирный стол (§19.3): приложение сажает без суммы за стол.
+  return list.map((inv) => ({
+    roomId: inv.roomId,
+    fromName: inv.fromName,
+    at: inv.at,
+    tableNo: rooms.get(inv.roomId)?.tournament?.tableNo ?? null,
+  }));
 }
 
 app.post('/rooms/:id/invite', (req, res) => {
@@ -4238,13 +4431,24 @@ app.post('/rooms/:id/invite', (req, res) => {
   if (!roomHasSeat(room)) return res.status(409).json({ error: 'no free seat' });
   const friend = findAccountByCode(db, normalizeCode(req.body?.code) ?? '');
   if (!friend) return res.status(404).json({ error: 'player not found' });
-  if (!areFriends(db, from.id, friend.id)) return res.status(403).json({ error: 'not a friend' });
+  // За турнирный стол зовут любого участника турнира, не только друга (§19.3).
+  if (room.tournament) {
+    if (!tournamentSeatAllowed(room, friend.id)) return res.status(403).json({ error: 'not a tournament participant' });
+    if (blockedBetween(db, from.id, friend.id)) return res.status(403).json({ error: 'blocked' });
+  } else if (!areFriends(db, from.id, friend.id)) return res.status(403).json({ error: 'not a friend' });
   if (room.players.some((p) => p.id === friend.id)) return res.status(409).json({ error: 'already in this room' });
 
   const list = (roomInvites.get(friend.id) ?? []).filter((inv) => inv.roomId !== room.id);
   roomInvites.set(friend.id, [...list, { roomId: room.id, fromId: from.id, fromName: from.name, at: Date.now() }]);
   console.log(`[ROOM ${room.id}] ${from.name} зовёт друга ${friend.name}`);
-  notifyTelegram(friend.id, `invite:${room.id}`, `${from.name} зовёт тебя за стол ГАРБЫ — комната #${room.id}.`, `room_${room.id}`);
+  notifyTelegram(
+    friend.id,
+    `invite:${room.id}`,
+    room.tournament
+      ? `${from.name} зовёт тебя за турнирный стол №${room.tournament.tableNo} ГАРБЫ.`
+      : `${from.name} зовёт тебя за стол ГАРБЫ — комната #${room.id}.`,
+    `room_${room.id}`,
+  );
   return res.json({ ok: true });
 });
 
@@ -4318,8 +4522,8 @@ app.post('/rooms/:id/leave', (req, res) => {
     vacateSeat(room, playerId, 'left');
     // Сам вышел из начатой игры — бан на вход за стол (§13d, 23.10.2026): 10 минут за
     // первый выход, дальше +10, не больше часа; 6 часов без выходов — счёт сначала.
-    // Тренировка с ботами никому не мешает — там бана нет.
-    if (!room.practice) {
+    // Тренировка с ботами никому не мешает — там бана нет. Турнир — своё наказание (§19.6).
+    if (!room.practice && !room.tournament) {
       const ban = nextLeaveBan(leaveRecordOf(db, playerId), Date.now());
       setLeaveRecord(db, playerId, ban);
       console.log(`[ROOM ${room.id}] ${me(res).name} вышел из игры — бан ${Math.round((ban.until - ban.lastAt) / 60_000)} мин (${ban.count}-й выход)`);
@@ -4328,6 +4532,14 @@ app.post('/rooms/:id/leave', (req, res) => {
   }
   if (room.status !== 'lobby') {
     return res.status(409).json({ error: 'game already started' });
+  }
+
+  // Турнирный стол до начала игры: встал — место свободно, регистрация остаётся (§19.3).
+  if (room.tournament) {
+    room.players = room.players.filter((p) => p.id !== playerId);
+    room.readyCheck = null;
+    console.log(`[ROOM ${room.id}] ${me(res).name} встал из-за турнирного стола ${room.players.length}/${room.capacity}`);
+    return res.json(publicRoom(room, playerId));
   }
 
   if (playerId === room.creatorId) {
@@ -4352,7 +4564,7 @@ app.post('/rooms/:id/bots', (req, res) => {
   const room = rooms.get(req.params.id);
   if (!room) return res.status(404).json({ error: 'room not found' });
   const playerId = me(res).id;
-  if (room.creatorId !== playerId) return res.status(403).json({ error: 'only creator can add bots' });
+  if (room.creatorId !== playerId || room.tournament) return res.status(403).json({ error: 'only creator can add bots' });
   if (room.status !== 'lobby') return res.status(409).json({ error: 'game already started' });
   if (room.players.length >= room.capacity) return res.status(409).json({ error: 'room is full' });
 
@@ -4479,6 +4691,7 @@ app.post('/rooms/:id/ready', (req, res) => {
 // true — комната изменилась (нужно сохранить и разослать).
 function settleReadyCheck(room: Room): boolean {
   if (room.status !== 'lobby' || !room.readyCheck) return false;
+  if (room.tournament) return settleTournamentReady(room);
   const outcome = readyOutcome(
     room.readyCheck,
     room.players.map((p) => p.id),
@@ -4533,10 +4746,16 @@ function startGame(room: Room) {
   room.stats = Object.fromEntries(room.players.map((p) => [p.id, emptyStats()]));
   room.rating = {};
   for (const p of room.players) ratingState(room, p.id);
+  if (room.tournament) tournamentGameStarted(room);
 
   console.log(
     `[ROOM ${room.id}] GAME STARTED, dealer=${room.game.dealerName}`,
   );
+}
+
+// Стол набрался — пора «ГОТОВ». Турнирный финал с ботами: набрались все люди (§19.7).
+function tableFull(room: Room): boolean {
+  return room.players.length === room.capacity - (room.tournament?.reserveBots ?? 0);
 }
 
 // Для проверок время на «ГОТОВ» можно укоротить.
@@ -4550,12 +4769,13 @@ setInterval(guarded('lobby', () => {
   for (const room of rooms.values()) {
     if (room.status !== 'lobby') continue;
     let changed = false;
-    if (!room.readyCheck && room.players.length === room.capacity) {
+    if (!room.readyCheck && tableFull(room)) {
       room.readyCheck = startReadyCheck(Date.now());
       changed = true;
     }
     if (settleReadyCheck(room)) changed = true;
-    if (room.status === 'lobby' && lobbyExpired(room.createdAt, Date.now(), !!room.readyCheck, lobbyMs)) {
+    // Турнирный стол ждёт игроков весь этап (§19.3), а не 10 минут.
+    if (room.status === 'lobby' && !room.tournament && lobbyExpired(room.createdAt, Date.now(), !!room.readyCheck, lobbyMs)) {
       room.status = 'finished';
       room.lobbyTimedOut = true;
       changed = true;
@@ -4579,6 +4799,12 @@ app.post('/rooms/:id/dealer/continue', (req, res) => {
 
   if (!room.game) {
     return res.status(409).json({ error: 'game not started' });
+  }
+
+  // Турнир между раздачами: вышел час, кто-то выбыл или осталось трое — стол меняется
+  // раньше, чем раздают (§19.4).
+  if (tournamentBetweenDeals(room)) {
+    return res.status(409).json({ error: 'table changed' });
   }
 
   // Карты сдаёт раздающий, а не создатель комнаты. Раздающий определяется тузом,
@@ -4909,6 +5135,10 @@ app.post('/rooms/:id/end-game', (req, res) => {
   if (!room.players.some((p) => p.id === id)) {
     return res.status(403).json({ error: 'player is not in this room' });
   }
+  // Турнирный стол по согласию не заканчивается — только трое осталось или час (§19.4).
+  if (room.tournament) {
+    return res.status(409).json({ error: 'not in tournament' });
+  }
 
   if (choice !== 'yes' && choice !== 'no') {
     return res.status(400).json({ error: 'choice must be yes or no' });
@@ -4954,6 +5184,7 @@ function topUpVoterIds(room: Room, requesterId: string): string[] {
 // «последний кон» (§12.1) смотрим заново. У всех снова не меньше базового кона — кон не последний.
 function recheckClosing(room: Room) {
   const game = room.game!;
+  if (room.tournament) return;
   const closing = someoneBelowBase(room.players.map((p) => p.balance), roomBaseKon(room));
   if (closing !== game.closing) {
     console.log(`[ROOM ${room.id}] ${closing ? 'у кого-то меньше базового кона — последний кон' : 'у всех снова не меньше базового кона — кон не последний'}`);
@@ -5008,6 +5239,7 @@ function topUpAllowed(room: Room, playerId: string): boolean {
   const game = room.game;
   const player = room.players.find((p) => p.id === playerId);
   if (!game || !player || room.status !== 'started' || room.botIds?.includes(playerId)) return false;
+  if (room.tournament) return false; // турнир: докупки нет (§19.4)
   return canRequestTopUp({
     stage: game.stage,
     voteActive: !!game.endVote || !!game.shrinkVote || !!game.topUpVote,
@@ -5085,6 +5317,7 @@ app.post('/rooms/:id/top-up-vote', (req, res) => {
 function shareLimitsFor(room: Room, playerId: string): { min: number; max: number } | null {
   const game = room.game;
   if (!game || room.status !== 'started' || room.botIds?.includes(playerId)) return null;
+  if (room.tournament) return null; // турнир: делиться выигрышем нельзя (§19.4)
   if (!room.players.some((p) => p.id === playerId)) return null;
   return canShare({
     stage: game.stage,
@@ -5328,6 +5561,879 @@ app.post('/rooms/:id/vote', (req, res) => {
   applyVoteIfDecided(room);
 
   return res.json(publicRoom(room, String(playerId)));
+});
+
+// --- Еженедельный турнир (RULES.md §19, решение владельца 28.10 и 31.10.2026) ---
+//
+// Турнир живёт в базе (tournamentDb.ts), столы — обычные комнаты с room.tournament: та же игра,
+// те же проверки и рассылка. Раз в секунду tournamentTick двигает турнир по времени: открыть
+// регистрацию в понедельник 20:00, закрыть её через 24 часа (отменить или создать столы),
+// последний шанс за 30 мин, итоги столов, финалисты, финал, выплата. Каждый шаг меняет
+// состояние только из ожидаемого (moveTournament / moveTable / moveEntry), деньги — только через
+// журнал с уникальным ключом: повторный тик, запрос или перезапуск второй раз ничего не сделает.
+
+// Для проверок сроки укорачиваются переменными окружения; GARBA_TOUR_AUTO=0 — без недельного.
+const envMs = (name: string, fallback: number) => (process.env[name] ? Number(process.env[name]) : fallback);
+const TOUR_TIMES: TournamentTimes = {
+  registrationMs: envMs('GARBA_TOUR_REG_MS', DEFAULT_TIMES.registrationMs),
+  qualificationMs: envMs('GARBA_TOUR_QUAL_MS', DEFAULT_TIMES.qualificationMs),
+  finalMs: envMs('GARBA_TOUR_FINAL_MS', DEFAULT_TIMES.finalMs),
+  tablePlayMs: envMs('GARBA_TOUR_TABLE_MS', DEFAULT_TIMES.tablePlayMs),
+  lastCallLeadMs: envMs('GARBA_TOUR_LASTCALL_LEAD_MS', DEFAULT_TIMES.lastCallLeadMs),
+  lastCallMs: envMs('GARBA_TOUR_LASTCALL_MS', DEFAULT_TIMES.lastCallMs),
+};
+const TOUR_AUTO = process.env.GARBA_TOUR_AUTO !== '0';
+// Взнос турнирного стола — 100 (§19.4). Больший — только живой проверке: за пару минут кто-то
+// успевает обеднеть и выбыть.
+const TOUR_SETTINGS = { ...TOURNAMENT_SETTINGS, ante: envMs('GARBA_TOUR_ANTE', TOURNAMENT_SETTINGS.ante) };
+const TOURNAMENT_ROOM = 'tournament'; // комната сокетов экрана «ТУРНИР»
+
+// Победы в турнире у каждого игрока — для значка и объявления в лобби; меняется только при выплате.
+const winsCache = new Map<string, number>();
+function winsOf(accountId: string): number {
+  if (!winsCache.has(accountId)) winsCache.set(accountId, tournamentWinsOf(db, accountId));
+  return winsCache.get(accountId)!;
+}
+
+// Казна — на каждую рассылку стола; считаем не чаще раза в секунду.
+const treasuryCache = new Map<string, { at: number; value: number }>();
+function treasuryNow(tournamentId: string): number {
+  const now = Date.now();
+  const cached = treasuryCache.get(tournamentId);
+  if (cached && now - cached.at < 1000) return cached.value;
+  const value = treasuryOf(db, tournamentId);
+  treasuryCache.set(tournamentId, { at: now, value });
+  return value;
+}
+
+const playingStatus = (stage: TableStage): EntryStatus => (stage === 'qual' ? 'playing' : 'final_playing');
+const doneStatus = (stage: TableStage): EntryStatus => (stage === 'qual' ? 'played' : 'final_done');
+const seatStatus = (stage: TableStage): EntryStatus => (stage === 'qual' ? 'registered' : 'finalist');
+const botKey = (tr: TournamentRoom, botId: string) => `bot:${tr.id}:${tr.stage}:${tr.tableNo}:${botId}`;
+
+// Движение денег турнира: журнал и кошельки — одной транзакцией. pay — в кошелёк игрока; сидит
+// он за обычным столом — в монеты вне стола (changeCoins), как бонус и подарок.
+function tournamentTx<T>(fn: (pay: (accountId: string, delta: number) => void) => T): T {
+  const undo: (() => void)[] = [];
+  const touched = new Set<Room>();
+  let result: T;
+  try {
+    result = transaction(db, () =>
+      fn((accountId, delta) => {
+        const room = changeCoins(accountId, delta, undo);
+        if (room) touched.add(room);
+      }),
+    );
+  } catch (e) {
+    for (const u of undo.reverse()) u();
+    throw e;
+  }
+  treasuryCache.clear();
+  for (const room of touched) broadcastRoom(room.id).catch((e) => console.error(`[ROOM ${room.id}] broadcast failed:`, e));
+  return result;
+}
+
+// Рейтинг за турнир (§19.10) — один раз. Игрок сидит за обычным столом — поправить и там:
+// иначе следующее сохранение той комнаты вернуло бы старое мастерство.
+function applyTournamentRating(tournamentId: string, accountId: string, delta: number) {
+  if (!rateEntry(db, tournamentId, accountId, delta)) return;
+  const room = activeRoomOf(accountId);
+  const r = room && !room.practice && !room.tournament ? room.rating?.[accountId] : undefined;
+  if (r) r.skill = Math.round(Math.min(8, Math.max(0, r.skill + delta)) * 1000) / 1000;
+}
+
+// Наказание (§19.6): турнирные монеты — в казну, −1.5 рейтинга, бан на 24 часа, исключён.
+// from — из каких статусов (наказать дважды нельзя).
+function penalize(tournamentId: string, accountId: string, coins: number, from: EntryStatus[], why: string) {
+  const done = transaction(db, () => {
+    if (!moveEntry(db, tournamentId, accountId, from, 'penalized', { balance: 0 })) return false;
+    ledgerAdd(db, `penalty:${tournamentId}:${accountId}`, tournamentId, 'penalty', accountId, coins);
+    setTournamentBan(db, accountId, Date.now() + PENALTY_BAN_MS);
+    return true;
+  });
+  if (!done) return;
+  applyTournamentRating(tournamentId, accountId, PENALTY_RATING);
+  treasuryCache.clear();
+  console.log(`[TOURNAMENT ${tournamentId}] ${getAccount(db, accountId)?.name ?? accountId} наказан (${why}): ${coins} в казну, −1.5, бан 24 ч`);
+  notifyTelegram(accountId, `tour-penalty:${tournamentId}`, `Турнир ГАРБЫ: ${why}. Бан на 24 часа, −1.5 рейтинга, турнирные монеты ушли в казну.`);
+}
+
+// Пустой турнирный стол — обычная комната без игроков и без создателя.
+function makeTournamentRoom(tournamentId: string, stage: TableStage, tableNo: number, capacity: number, reserveBots = 0): Room {
+  const room: Room = {
+    id: makeRoomId(),
+    capacity,
+    creatorId: '',
+    settings: { ...TOUR_SETTINGS },
+    players: [],
+    status: 'lobby',
+    createdAt: Date.now(),
+    isPublic: false,
+    tournament: { id: tournamentId, stage, tableNo, reserveBots },
+  };
+  rooms.set(room.id, room);
+  return room;
+}
+
+// Может ли игрок сесть за этот турнирный стол: зарегистрирован и ещё не играл (отбор) или
+// прошёл в финал (финал).
+function tournamentSeatAllowed(room: Room, accountId: string): boolean {
+  const tr = room.tournament;
+  if (!tr) return false;
+  return entryOf(db, tr.id, accountId)?.status === seatStatus(tr.stage);
+}
+
+// Сесть за турнирный стол (§19.3): только участник, со своим турнирным балансом.
+function tournamentSit(room: Room, account: Account, seat?: number): { status: number; body: unknown } {
+  const tr = room.tournament!;
+  const t = activeTournament(db);
+  if (!t || t.id !== tr.id || t.status !== (tr.stage === 'qual' ? 'qualification' : 'final')) {
+    return { status: 409, body: { error: 'tournament stage is over' } };
+  }
+  if (room.players.some((p) => p.id === account.id)) return { status: 200, body: publicRoom(room, account.id) };
+  if (room.status !== 'lobby') return { status: 409, body: { error: 'game already started' } };
+  // «ГОТОВ» последнего шанса уже идёт — дальше садятся только боты (§19.5).
+  if (tr.launch) return { status: 409, body: { error: 'table is starting' } };
+  const entry = entryOf(db, tr.id, account.id);
+  if (!entry) return { status: 403, body: { error: 'not registered' } };
+  if (entry.status !== seatStatus(tr.stage)) return { status: 403, body: { error: 'cannot sit', status: entry.status } };
+  return joinRoom(room, account, seat, undefined, entry.balance);
+}
+
+// Свободные места — ботам (последний шанс §19.5, финал с недобором §19.7). Бот садится
+// с 10 000 от игры: кошелёк бота не трогается, все его монеты потом уйдут в казну.
+function addTournamentBots(room: Room) {
+  const pool = botAccounts(db).filter((b) => !activeRoomOf(b.id));
+  while (room.players.length < room.capacity) {
+    const taken = room.players.map((p) => p.name);
+    let bot = pool.find((b) => !taken.includes(b.name));
+    if (bot) pool.splice(pool.indexOf(bot), 1);
+    else {
+      bot = createAccount(db, freeBotName(taken)).account;
+      markBot(db, bot.id);
+    }
+    const seat = seatFor(room.players.map((p) => p.seat ?? 0), room.capacity);
+    if (seat === null) break;
+    room.players.push({
+      id: bot.id,
+      name: bot.name,
+      ready: true,
+      joinedAt: Date.now(),
+      balance: ENTRY_FEE,
+      reserve: 0,
+      startBalance: ENTRY_FEE,
+      seat,
+    });
+    room.botIds = [...(room.botIds ?? []), bot.id];
+  }
+  sortSeats(room);
+  room.tournament!.reserveBots = 0;
+  console.log(`[ROOM ${room.id}] турнир: боты на свободные места — ${room.players.length}/${room.capacity}`);
+}
+
+// «ГОТОВ» за турнирным столом (§19.3, §19.5). Нажали все — старт (последний шанс и финал
+// с недобором — сначала боты на свободные места). 30 секунд вышли — не нажавшие встают,
+// регистрация у них остаётся; в последний шанс их места отдаются ботам, людей нет — стол
+// не играется.
+function settleTournamentReady(room: Room): boolean {
+  const tr = room.tournament!;
+  const check = room.readyCheck!;
+  const humans = room.players.filter((p) => !room.botIds?.includes(p.id));
+  const allReady = humans.every((p) => check.readyIds.includes(p.id));
+  if (allReady && humans.length > 0 && (tableFull(room) || tr.launch)) {
+    if (room.players.length < room.capacity) addTournamentBots(room);
+    startGame(room);
+    return true;
+  }
+  if (Date.now() - check.startedAt < readyMs) return false;
+
+  const drop = humans.filter((p) => !check.readyIds.includes(p.id)).map((p) => p.id);
+  const names = room.players.filter((p) => drop.includes(p.id)).map((p) => p.name);
+  room.players = room.players.filter((p) => !drop.includes(p.id));
+  room.readyCheck = null;
+  room.readyDroppedIds = drop;
+  console.log(`[ROOM ${room.id}] турнир: не нажали «ГОТОВ» — встали: ${names.join(', ')}`);
+  if (tr.launch) {
+    if (room.players.filter((p) => !room.botIds?.includes(p.id)).length === 0) {
+      room.status = 'finished';
+      console.log(`[ROOM ${room.id}] турнир: последний шанс — людей нет, стол не играется`);
+      return true;
+    }
+    addTournamentBots(room);
+    startGame(room);
+  }
+  return true;
+}
+
+// Игра за турнирным столом началась: состав зафиксирован, пошёл час (§19.3, §19.4).
+function tournamentGameStarted(room: Room) {
+  const tr = room.tournament!;
+  tr.startedAt = Date.now();
+  tr.scores = {};
+  tr.eliminatedIds = [];
+  tr.penalizedIds = [];
+  transaction(db, () => {
+    moveTable(db, tr.id, tr.stage, tr.tableNo, ['waiting'], 'playing', tr.startedAt);
+    for (const p of room.players) {
+      if (room.botIds?.includes(p.id)) continue;
+      moveEntry(db, tr.id, p.id, [seatStatus(tr.stage)], playingStatus(tr.stage), tr.stage === 'qual' ? { tableNo: tr.tableNo } : {});
+    }
+  });
+  console.log(`[TOURNAMENT ${tr.id}] ${tr.stage === 'qual' ? `стол №${tr.tableNo}` : 'финал'} начался: ${room.players.map((p) => p.name).join(', ')}`);
+}
+
+// Игрок уходит из-за турнирного стола: выбыл (меньше взноса), сам вышел или не вернулся.
+// Кон остаётся на столе (§19.4). Выбывший сохраняет свой остаток — это его итог; ушедший
+// наказан (§19.6). Монеты бота — в казну.
+function tournamentDrop(room: Room, playerId: string, why: 'eliminated' | 'left' | 'gone') {
+  const tr = room.tournament!;
+  const game = room.game!;
+  const player = room.players.find((p) => p.id === playerId);
+  if (!player) return;
+  const bot = room.botIds?.includes(playerId) ?? false;
+  const rest = room.players.filter((p) => p.id !== playerId);
+  game.topUpVote = null;
+  if (rest.length > 0) {
+    game.dealerId = dealerAfterLeave(room.players.map((p) => p.id), game.dealerId, playerId);
+    game.dealerName = rest.find((p) => p.id === game.dealerId)?.name ?? game.dealerName;
+  }
+  const rating = shownRating(accountRating(playerId));
+  room.departed = [
+    ...(room.departed ?? []).filter((d) => d.id !== playerId),
+    { id: playerId, name: player.name, startBalance: player.startBalance, balance: player.balance, ratingStart: rating, rating, bot },
+  ];
+  room.departedIds = [...(room.departedIds ?? []).filter((id) => id !== playerId), playerId];
+  room.players = rest;
+  forgetSeat(room, playerId);
+  game.lastLeave = null;
+  tr.lastOut = { name: player.name, reason: why };
+  if (why === 'eliminated') tr.eliminatedIds = [...(tr.eliminatedIds ?? []), playerId];
+  else tr.penalizedIds = [...(tr.penalizedIds ?? []), playerId];
+
+  if (bot) {
+    ledgerAdd(db, botKey(tr, playerId), tr.id, 'bot', playerId, player.balance);
+    treasuryCache.clear();
+  } else if (why === 'eliminated') {
+    const score = tr.scores?.[playerId] ?? { razWins: 0, dvaWins: 0, maxRisk: 0 };
+    transaction(db, () => {
+      writeEntryPlay(db, tr.id, playerId, tr.stage, player.balance, score);
+      moveEntry(db, tr.id, playerId, [playingStatus(tr.stage)], doneStatus(tr.stage), {
+        balance: player.balance,
+        ...(tr.stage === 'qual' ? { qualBalance: player.balance } : {}),
+      });
+    });
+  } else {
+    penalize(tr.id, playerId, player.balance, [playingStatus(tr.stage)], why === 'left' ? 'ты вышел из турнирной игры' : 'ты не вернулся за турнирный стол');
+  }
+  console.log(`[ROOM ${room.id}] турнир: ${player.name} ${why === 'eliminated' ? `выбыл (${player.balance})` : why === 'left' ? 'вышел — наказан' : 'не вернулся — наказан'}, осталось ${rest.length}`);
+}
+
+// После ухода: осталось трое, одни боты или вышел час — стол заканчивается; иначе стол
+// меньше, без голосования (§19.4).
+function finishTournamentLeaving(room: Room) {
+  const tr = room.tournament!;
+  const humans = room.players.filter((p) => !room.botIds?.includes(p.id)).length;
+  const end = tableEndReason(room.players.length, humans, tr.startedAt ?? Date.now(), Date.now(), TOUR_TIMES.tablePlayMs);
+  if (end) closeTournamentTable(room, end);
+  else shrinkTable(room);
+}
+
+// Стол закончился: кон — между оставшимися поровну, остаток — проигравшему больше всех (§19.4).
+function closeTournamentTable(room: Room, reason: TableEnd) {
+  const tr = room.tournament!;
+  tr.endReason = reason;
+  const kon = room.game?.kon ?? 0;
+  // Делить не с кем — кон в казну (за столом никого не осталось).
+  if (room.players.length === 0 && kon > 0) {
+    ledgerAdd(db, `kon:${tr.id}:${tr.stage}:${tr.tableNo}`, tr.id, 'leftover', null, kon);
+    treasuryCache.clear();
+  }
+  closeWithSplit(room, 'tournament_end');
+  console.log(`[TOURNAMENT ${tr.id}] ${tr.stage === 'qual' ? `стол №${tr.tableNo}` : 'финал'} закончен: ${reason}`);
+}
+
+// Между раздачами за турнирным столом (все досмотрели открытые карты): вышел час — стол
+// закрывается, раздачу не начинаем; у кого меньше взноса — выбывают; одни боты — конец.
+// true — стол изменился.
+function tournamentBetweenDeals(room: Room): boolean {
+  const tr = room.tournament;
+  const game = room.game;
+  if (!tr || !game || room.status !== 'started' || !betweenDeals(game.stage)) return false;
+  const now = Date.now();
+  if (handsShownAt(room) > now) return false;
+  if (now - (tr.startedAt ?? now) >= TOUR_TIMES.tablePlayMs) {
+    closeTournamentTable(room, 'time_up');
+    return true;
+  }
+  const out = eliminatedIds(room.players, room.settings.ante);
+  if (out.length > 0) {
+    for (const id of out) tournamentDrop(room, id, 'eliminated');
+    finishTournamentLeaving(room);
+    return true;
+  }
+  if (room.players.every((p) => room.botIds?.includes(p.id))) {
+    closeTournamentTable(room, 'no_humans');
+    return true;
+  }
+  return false;
+}
+
+// Итог сыгранного стола — в турнир: балансы участников, монеты ботов в казну. Один раз
+// (стол «идёт» → «сыгран»). Комната могла уже уйти из памяти — берём из базы.
+function reportTable(t: Tournament, table: TournamentTable): boolean {
+  if (!table.roomId) return false;
+  const room = rooms.get(table.roomId) ?? loadRoom<Room>(db, table.roomId);
+  if (!room || room.status !== 'finished' || !room.tournament) return false;
+  const tr = room.tournament;
+  const done = transaction(db, () => {
+    if (!moveTable(db, t.id, table.stage, table.tableNo, ['playing'], 'finished')) return false;
+    for (const p of room.players) {
+      if (room.botIds?.includes(p.id)) {
+        ledgerAdd(db, botKey(tr, p.id), t.id, 'bot', p.id, p.balance);
+        continue;
+      }
+      writeEntryPlay(db, t.id, p.id, table.stage, p.balance, tr.scores?.[p.id] ?? { razWins: 0, dvaWins: 0, maxRisk: 0 });
+      moveEntry(db, t.id, p.id, [playingStatus(table.stage)], doneStatus(table.stage), {
+        balance: p.balance,
+        ...(table.stage === 'qual' ? { qualBalance: p.balance } : {}),
+      });
+    }
+    for (const d of room.departed ?? []) if (d.bot) ledgerAdd(db, botKey(tr, d.id), t.id, 'bot', d.id, d.balance);
+    return true;
+  });
+  if (done) {
+    treasuryCache.clear();
+    console.log(`[TOURNAMENT ${t.id}] итог ${table.stage === 'qual' ? `стола №${table.tableNo}` : 'финала'}: ${room.players.map((p) => `${p.name} ${p.balance}`).join(', ')}`);
+  }
+  return done;
+}
+
+// Ждущие столы этапа: последний шанс (§19.5) и итоги сыгранных. true — что-то изменилось.
+function stepTables(t: Tournament, stage: TableStage, endsAt: number, now: number): boolean {
+  let changed = false;
+  for (const table of tablesOf(db, t.id, stage)) {
+    if (table.status === 'playing') {
+      if (reportTable(t, table)) changed = true;
+      continue;
+    }
+    if (table.status !== 'waiting' || !table.roomId) continue;
+    const room = rooms.get(table.roomId);
+    if (!room || room.status === 'started') continue;
+    if (room.status === 'finished') {
+      // Последний шанс: людей не было — стол не играется (его +50 000 уже в казне).
+      if (moveTable(db, t.id, stage, table.tableNo, ['waiting'], 'skipped', now)) changed = true;
+      continue;
+    }
+    const tr = room.tournament!;
+    const phase = lastCallPhase(now, endsAt, TOUR_TIMES);
+    if (phase !== 'wait' && !tr.lastCall) {
+      tr.lastCall = true;
+      notifyLastCall(t, stage, room);
+      persistRoom(room);
+      broadcastRoom(room.id).catch((e) => console.error(`[ROOM ${room.id}] broadcast failed:`, e));
+      changed = true;
+    }
+    // Пора стартовать с ботами. «ГОТОВ» нет (только что или после перезапуска сервера,
+    // или кто-то встал во время проверки) — начинаем её заново.
+    if (phase === 'launch' && (!tr.launch || !room.readyCheck)) {
+      tr.launch = true;
+      const name = stage === 'qual' ? `стол №${table.tableNo}` : 'финал';
+      if (room.players.length === 0) {
+        room.status = 'finished';
+        moveTable(db, t.id, stage, table.tableNo, ['waiting'], 'skipped', now);
+        console.log(`[TOURNAMENT ${t.id}] ${name} не собрался — не играется`);
+      } else if (!room.readyCheck) {
+        // Уже идёт «ГОТОВ» (стол только что набрался) — не сбрасываем нажатое.
+        room.readyCheck = startReadyCheck(now);
+        console.log(`[TOURNAMENT ${t.id}] ${name}: последний шанс — «ГОТОВ», пустые места займут боты`);
+      }
+      persistRoom(room);
+      broadcastRoom(room.id).catch((e) => console.error(`[ROOM ${room.id}] broadcast failed:`, e));
+      changed = true;
+    }
+  }
+  return changed;
+}
+
+// Последнее уведомление (§19.5): всем, кто ещё обязан сыграть и не сидит за столом.
+function notifyLastCall(t: Tournament, stage: TableStage, room: Room) {
+  for (const e of entriesOf(db, t.id)) {
+    if (e.status !== seatStatus(stage) || activeRoomOf(e.accountId)?.tournament) continue;
+    notifyTelegram(
+      e.accountId,
+      `tour-last:${t.id}:${stage}`,
+      stage === 'qual'
+        ? 'Турнир ГАРБЫ: последние 10 минут, чтобы сесть за свой стол! Не сыграешь — бан на 24 часа и −1.5 рейтинга.'
+        : 'Финал турнира ГАРБЫ: последние 10 минут, чтобы сесть за финальный стол!',
+      `room_${room.id}`,
+    );
+  }
+}
+
+// Регистрация закончилась (§19.2, §19.3): меньше 8 — отмена и возврат; иначе — столы отбора
+// и +50 000 в казну за каждый.
+function closeRegistration(t: Tournament): boolean {
+  const regs = entriesOf(db, t.id).filter((e) => e.status === 'registered');
+  if (regs.length < MIN_PARTICIPANTS) {
+    const cancelled = tournamentTx((pay) => {
+      if (!moveTournament(db, t.id, 'registration', 'cancelled', { finishedAt: Date.now() })) return false;
+      for (const e of regs) {
+        if (!ledgerAdd(db, `refund:${t.id}:${e.accountId}`, t.id, 'refund', e.accountId, ENTRY_FEE)) continue;
+        moveEntry(db, t.id, e.accountId, ['registered'], 'refunded');
+        pay(e.accountId, ENTRY_FEE);
+      }
+      return true;
+    });
+    if (!cancelled) return false;
+    console.log(`[TOURNAMENT ${t.id}] отменён: участников ${regs.length} из ${MIN_PARTICIPANTS}, всем вернули ${ENTRY_FEE}`);
+    for (const e of regs) {
+      notifyTelegram(e.accountId, `tour-cancel:${t.id}`, `Турнир ГАРБЫ не состоялся: участников меньше ${MIN_PARTICIPANTS}. 10 000 монет вернулись в кошелёк.`);
+    }
+    return true;
+  }
+
+  const sizes = tableSizes(regs.length);
+  const made = sizes.map((capacity, i) => makeTournamentRoom(t.id, 'qual', i + 1, capacity));
+  let ok = false;
+  try {
+    ok = transaction(db, () => {
+      if (!moveTournament(db, t.id, 'registration', 'qualification')) return false;
+      made.forEach((room, i) => {
+        writeRoom(db, room);
+        addTable(db, t.id, 'qual', i + 1, room.capacity, room.id);
+        ledgerAdd(db, `table:${t.id}:qual:${i + 1}`, t.id, 'table', null, TABLE_BONUS);
+      });
+      return true;
+    });
+  } finally {
+    if (!ok) for (const room of made) rooms.delete(room.id);
+  }
+  if (!ok) return false;
+  treasuryCache.clear();
+  console.log(`[TOURNAMENT ${t.id}] регистрация закрыта: ${regs.length} участников, столы ${sizes.join('+')}`);
+  for (const e of regs) {
+    notifyTelegram(e.accountId, `tour-qual:${t.id}`, `Турнир ГАРБЫ: регистрация закрыта, столы готовы — выбери свободное место. На отбор 72 часа.`);
+  }
+  return true;
+}
+
+// Отбор закончился (§19.6, §19.7): не сыгравшие наказаны, общий список, финалисты, остатки
+// не прошедших — в казну, финальный стол и его +50 000.
+function closeQualification(t: Tournament) {
+  for (const e of entriesOf(db, t.id).filter((x) => x.status === 'registered')) {
+    penalize(t.id, e.accountId, e.balance, ['registered'], 'ты не сыграл свой отборочный стол');
+  }
+  const played = entriesOf(db, t.id).filter((e) => e.status === 'played');
+  const { finalists, out, bots } = selectFinalists(played, TOUR_SETTINGS.ante);
+  const finalRoom = finalists.length > 0 ? makeTournamentRoom(t.id, 'final', 1, finalists.length + bots, bots) : null;
+  let ok = false;
+  try {
+    ok = transaction(db, () => {
+      if (!moveTournament(db, t.id, 'qualification', 'final', { finalEndsAt: Date.now() + TOUR_TIMES.finalMs })) return false;
+      for (const e of out) {
+        moveEntry(db, t.id, e.accountId, ['played'], 'out');
+        ledgerAdd(db, `leftover:${t.id}:${e.accountId}`, t.id, 'leftover', e.accountId, e.balance);
+      }
+      for (const e of finalists) moveEntry(db, t.id, e.accountId, ['played'], 'finalist');
+      if (finalRoom) {
+        writeRoom(db, finalRoom);
+        addTable(db, t.id, 'final', 1, finalRoom.capacity, finalRoom.id);
+        ledgerAdd(db, `table:${t.id}:final:1`, t.id, 'table', null, TABLE_BONUS);
+      }
+      return true;
+    });
+  } finally {
+    if (!ok && finalRoom) rooms.delete(finalRoom.id);
+  }
+  if (!ok) return;
+  treasuryCache.clear();
+  console.log(
+    `[TOURNAMENT ${t.id}] отбор закончен. Финалисты: ${finalists.map((e) => `${e.name} ${e.balance}`).join(', ') || 'нет'}` +
+      (bots ? `, ботов ${bots}` : '') + `; казна ${treasuryOf(db, t.id)}`,
+  );
+  for (const e of finalists) {
+    notifyTelegram(e.accountId, `tour-final:${t.id}`, `Ты в финале турнира ГАРБЫ с ${e.balance} монетами! Финальный стол открыт на 48 часов.`, finalRoom ? `room_${finalRoom.id}` : undefined);
+  }
+}
+
+// Финал сыгран (или не состоялся): победитель, выплаты, значок, рейтинг (§19.9, §19.10).
+function finishTournament(t: Tournament) {
+  // Финал не сыгран совсем — за последние 10 минут не сел ни один финалист (§19.13): никого
+  // не наказываем, победитель и места — по общему списку отбора (баланс и ничья — из отбора).
+  const finalTables = tablesOf(db, t.id, 'final');
+  const noFinal = finalTables.length > 0 && finalTables.every((x) => x.status === 'skipped');
+  if (!noFinal) {
+    for (const e of entriesOf(db, t.id).filter((x) => x.status === 'finalist')) {
+      penalize(t.id, e.accountId, e.balance, ['finalist'], 'ты не пришёл на финал');
+    }
+  }
+  const placedFrom: EntryStatus = noFinal ? 'finalist' : 'final_done';
+  const entries = entriesOf(db, t.id);
+  const standings: Standing[] = entries
+    .filter((e) => e.status === placedFrom)
+    .map((e) =>
+      noFinal
+        ? { id: e.accountId, balance: e.balance, razWins: e.razWins, dvaWins: e.dvaWins, maxRisk: e.maxRisk, registeredAt: e.registeredAt }
+        : { id: e.accountId, balance: e.balance, razWins: e.finalRazWins, dvaWins: e.finalDvaWins, maxRisk: e.finalMaxRisk, registeredAt: e.registeredAt },
+    );
+  const ranked = rankStandings(standings);
+  const rated: { id: string; delta: number }[] = [];
+  const result = tournamentTx((pay) => {
+    const treasury = treasuryOf(db, t.id);
+    const { winnerId, payments } = payouts(standings, treasury);
+    const prize = payments.find((p) => p.id === winnerId)?.amount;
+    if (!moveTournament(db, t.id, 'final', 'finished', { winnerId: winnerId ?? undefined, winnerPrize: prize, finishedAt: Date.now() })) {
+      return null;
+    }
+    ranked.forEach((s, i) => moveEntry(db, t.id, s.id, [placedFrom], 'final_done', { finalPlace: i + 1 }));
+    for (const p of payments) {
+      if (!ledgerAdd(db, `payout:${t.id}:${p.id}`, t.id, 'payout', p.id, p.amount)) continue;
+      if (p.amount > 0) pay(p.id, p.amount);
+      if (p.id === winnerId) db.prepare('UPDATE accounts SET tournament_wins = tournament_wins + 1 WHERE id = ?').run(p.id);
+    }
+    // Рейтинг (§19.10) — одна категория; наказанные уже получили −1.5.
+    for (const e of entries) {
+      if (e.status === 'penalized' || e.status === 'refunded') continue;
+      const place = ranked.findIndex((s) => s.id === e.accountId);
+      const delta = tournamentRating(place >= 0 ? place + 1 : null);
+      if (rateEntry(db, t.id, e.accountId, delta)) rated.push({ id: e.accountId, delta });
+    }
+    return { winnerId, prize, treasury };
+  });
+  if (!result) return;
+  // Мастерство у тех, кто сейчас за обычным столом, — и в комнате (иначе её сохранение затрёт).
+  for (const { id, delta } of rated) {
+    const room = activeRoomOf(id);
+    const r = room && !room.practice && !room.tournament ? room.rating?.[id] : undefined;
+    if (r) r.skill = Math.round(Math.min(8, Math.max(0, r.skill + delta)) * 1000) / 1000;
+  }
+  if (result.winnerId) winsCache.delete(result.winnerId);
+  const winner = result.winnerId ? entries.find((e) => e.accountId === result.winnerId) : null;
+  console.log(
+    winner
+      ? `[TOURNAMENT ${t.id}] победитель ${winner.name}${noFinal ? ' (финал не сыгран — по отбору)' : ''}: ${winner.balance} + казна ${result.treasury} = ${result.prize}`
+      : `[TOURNAMENT ${t.id}] закончен без победителя — в финал некого вести, казна ${result.treasury} не выплачена`,
+  );
+  for (const s of ranked) {
+    notifyTelegram(
+      s.id,
+      `tour-done:${t.id}`,
+      (noFinal ? 'Финал турнира ГАРБЫ не сыгран — места по отбору. ' : '') +
+        (s.id === result.winnerId
+          ? `🏆 Ты выиграл турнир ГАРБЫ! ${result.prize} монет — в кошельке.`
+          : `Турнир ГАРБЫ закончен. Победитель — ${winner?.name}. Твои ${s.balance} монет — в кошельке.`),
+    );
+  }
+}
+
+// Раз в секунду: турнир по времени (§19.1–19.9) и турнирные столы между раздачами (§19.4).
+function tournamentTick() {
+  const now = Date.now();
+  let changed = false;
+  if (TOUR_AUTO && weeklyRegistrationOpen(now, TOUR_TIMES) && !activeTournament(db)) {
+    const start = weeklyStartAt(now);
+    if (createTournament(db, tournamentIdFor(start), start, TOUR_TIMES.registrationMs, TOUR_TIMES.qualificationMs)) {
+      console.log(`[TOURNAMENT ${tournamentIdFor(start)}] регистрация открыта`);
+      changed = true;
+    }
+  }
+  const t = activeTournament(db);
+  if (t?.status === 'registration' && now >= t.regEndsAt) {
+    if (closeRegistration(t)) changed = true;
+  } else if (t?.status === 'qualification') {
+    if (stepTables(t, 'qual', t.qualEndsAt, now)) changed = true;
+    const tables = tablesOf(db, t.id, 'qual');
+    if (now >= t.qualEndsAt && tables.every((x) => x.status === 'finished' || x.status === 'skipped')) {
+      closeQualification(t);
+      changed = true;
+    }
+  } else if (t?.status === 'final') {
+    if (stepTables(t, 'final', t.finalEndsAt ?? now, now)) changed = true;
+    if (tablesOf(db, t.id, 'final').every((x) => x.status === 'finished' || x.status === 'skipped')) {
+      finishTournament(t);
+      changed = true;
+    }
+  }
+  for (const room of rooms.values()) {
+    if (!room.tournament || !tournamentBetweenDeals(room)) continue;
+    persistRoom(room);
+    broadcastRoom(room.id).catch((e) => console.error(`[ROOM ${room.id}] broadcast failed:`, e));
+  }
+  if (changed) scheduleTournamentBroadcast();
+}
+setInterval(guarded('tournament', tournamentTick), 1000);
+
+// --- Турнир для экрана ---
+
+// Этап для экрана: финал — ждём финалистов или игра идёт.
+function phaseOf(t: Tournament): string {
+  if (t.status !== 'final') return t.status;
+  const table = tablesOf(db, t.id, 'final')[0];
+  return table?.status === 'playing' ? 'final_playing' : 'final_waiting';
+}
+
+// Турнирный стол для состояния комнаты: этап, номер, сколько осталось от часа, казна.
+function tournamentRoomView(room: Room) {
+  const tr = room.tournament!;
+  const now = Date.now();
+  const t = activeTournament(db) ?? latestTournament(db);
+  const stageEndsAt = t?.id === tr.id ? (tr.stage === 'qual' ? t.qualEndsAt : t.finalEndsAt) : null;
+  return {
+    id: tr.id,
+    stage: tr.stage,
+    tableNo: tr.tableNo,
+    secondsLeft: tr.startedAt ? Math.max(0, Math.ceil((tr.startedAt + TOUR_TIMES.tablePlayMs - now) / 1000)) : null,
+    treasury: treasuryNow(tr.id),
+    eliminatedIds: tr.eliminatedIds ?? [],
+    penalizedIds: tr.penalizedIds ?? [],
+    lastOut: tr.lastOut ?? null,
+    endReason: tr.endReason ?? null,
+    lastCall: !!tr.lastCall,
+    launch: !!tr.launch,
+    // Сколько мест займут боты, когда соберутся люди (финал с недобором).
+    reserveBots: tr.reserveBots ?? 0,
+    stageSecondsLeft: stageEndsAt ? Math.max(0, Math.ceil((stageEndsAt - now) / 1000)) : null,
+  };
+}
+
+// Коротко для главного экрана (/me): идёт ли турнир, зарегистрирован ли я, где мой стол.
+function tournamentBrief(accountId: string) {
+  const t = activeTournament(db);
+  if (!t) return null;
+  const entry = entryOf(db, t.id, accountId);
+  const room = activeRoomOf(accountId);
+  return {
+    id: t.id,
+    phase: phaseOf(t),
+    registered: !!entry && entry.status !== 'refunded',
+    entryStatus: entry?.status ?? null,
+    roomId: room?.tournament?.id === t.id ? room.id : null,
+  };
+}
+
+// Всё о турнире для экрана «ТУРНИР» — одинаковое для всех (личное — tournamentView).
+function tournamentShared(now: number) {
+  const t = activeTournament(db) ?? latestTournament(db);
+  const next = t && t.status !== 'finished' && t.status !== 'cancelled' ? null : (() => {
+    const start = weeklyStartAt(now);
+    return TOUR_AUTO && now < start + TOUR_TIMES.registrationMs && t?.id !== tournamentIdFor(start) ? start : nextWeeklyStartAt(now);
+  })();
+  if (!t) return { t: null, view: null, nextStartsAt: next, entries: [] as Entry[], tables: [] as TournamentTable[] };
+  const entries = entriesOf(db, t.id);
+  const tables = tablesOf(db, t.id);
+  const phase = phaseOf(t);
+  const deadline =
+    t.status === 'registration' ? t.regEndsAt
+    : t.status === 'qualification' ? t.qualEndsAt
+    : t.status === 'final' ? t.finalEndsAt
+    : null;
+  const person = (accountId: string) => {
+    const a = getAccount(db, accountId);
+    return { code: a?.code ?? null, avatar: avatarOf(accountId), frame: frameOf(accountId), wins: winsOf(accountId) };
+  };
+  // Порядок списка (§19.11): после отбора — сверху финалисты; сыгравшие — по общему списку;
+  // ещё не сыгравшие — по времени регистрации.
+  const rank = (e: Entry) => ({ ...e, id: e.accountId, ...(e.status.startsWith('final') ? { razWins: e.finalRazWins, dvaWins: e.finalDvaWins, maxRisk: e.finalMaxRisk } : {}) });
+  const group = (e: Entry) =>
+    ['finalist', 'final_playing', 'final_done'].includes(e.status) ? 0
+    : ['played', 'out', 'playing'].includes(e.status) ? 1
+    : e.status === 'registered' ? 2
+    : 3;
+  const ordered = [...entries].sort((a, b) => group(a) - group(b) || (group(a) < 2 ? compareStandings(rank(a), rank(b)) : a.registeredAt - b.registeredAt));
+  const winner = t.winnerId ? entries.find((e) => e.accountId === t.winnerId) : null;
+  // Кто за каким столом сидит, пока игра не началась (звать его уже не нужно).
+  const seatedAt = new Map<string, number>();
+  for (const table of tables) {
+    const room = table.roomId ? rooms.get(table.roomId) : undefined;
+    if (room?.status === 'lobby') for (const p of room.players) seatedAt.set(p.id, table.tableNo);
+  }
+  const view = {
+    id: t.id,
+    status: t.status,
+    phase,
+    startsAt: t.startsAt,
+    regEndsAt: t.regEndsAt,
+    qualEndsAt: t.qualEndsAt,
+    finalEndsAt: t.finalEndsAt,
+    secondsLeft: deadline ? Math.max(0, Math.ceil((deadline - now) / 1000)) : null,
+    treasury: treasuryNow(t.id),
+    participantsCount: entries.filter((e) => e.status !== 'refunded').length,
+    participants: ordered.map((e) => ({
+      ...person(e.accountId),
+      name: e.name,
+      status: e.status,
+      balance: e.balance,
+      qualBalance: e.qualBalance,
+      tableNo: e.tableNo,
+      seatedAt: seatedAt.get(e.accountId) ?? null,
+      finalPlace: e.finalPlace,
+      ratingDelta: e.ratingDelta,
+    })),
+    tables: tables.map((table) => {
+      const room = table.roomId ? rooms.get(table.roomId) : undefined;
+      const seated = room && room.status !== 'finished' ? room.players : [];
+      return {
+        stage: table.stage,
+        tableNo: table.tableNo,
+        capacity: table.capacity,
+        roomId: table.roomId,
+        status: table.status,
+        players: seated.map((p) => ({ code: codeOf(p.id), name: p.name, bot: room?.botIds?.includes(p.id) ?? false, balance: p.balance })),
+        free: table.status === 'waiting' && room ? Math.max(0, room.capacity - (room.tournament?.reserveBots ?? 0) - room.players.length) : 0,
+        secondsLeft: table.status === 'playing' && table.startedAt ? Math.max(0, Math.ceil((table.startedAt + TOUR_TIMES.tablePlayMs - now) / 1000)) : null,
+        lastCall: !!room?.tournament?.lastCall && table.status === 'waiting',
+        bots: room?.tournament?.reserveBots ?? 0,
+      };
+    }),
+    winner: winner
+      ? {
+          ...person(winner.accountId),
+          name: winner.name,
+          balance: winner.balance,
+          prize: t.winnerPrize,
+          treasury: (t.winnerPrize ?? 0) - winner.balance,
+          // Финал не сыгран — победитель по отбору (§19.13).
+          byQualification: tables.some((x) => x.stage === 'final') && tables.filter((x) => x.stage === 'final').every((x) => x.status === 'skipped'),
+        }
+      : null,
+  };
+  return { t, view, nextStartsAt: next, entries, tables };
+}
+
+// Экран «ТУРНИР» для этого игрока: общее + моё (зарегистрирован ли, мой стол, можно ли).
+function tournamentPersonal(shared: ReturnType<typeof tournamentShared>, accountId: string) {
+  const base = {
+    fee: ENTRY_FEE,
+    minParticipants: MIN_PARTICIPANTS,
+    finalMin: FINAL_MIN,
+    finalMax: FINAL_MAX,
+    qualifyAbove: QUALIFY_ABOVE,
+    nextStartsAt: shared.nextStartsAt,
+    serverNow: Date.now(),
+    tournament: shared.view,
+  };
+  if (!shared.t || !shared.view) return { ...base, me: null };
+  const t = shared.t;
+  const entry = shared.entries.find((e) => e.accountId === accountId) ?? null;
+  const account = getAccount(db, accountId);
+  const wallet = account ? walletSplit(account).balance : 0;
+  const ban = leaveBanOf(accountId);
+  const room = activeRoomOf(accountId);
+  const registerError =
+    t.status !== 'registration' ? 'registration closed'
+    : entry ? 'already registered'
+    : ban ? 'banned'
+    : wallet < ENTRY_FEE ? 'not enough coins'
+    : null;
+  return {
+    ...base,
+    me: {
+      registered: !!entry && entry.status !== 'refunded',
+      status: entry?.status ?? null,
+      balance: entry?.balance ?? null,
+      tableNo: entry?.tableNo ?? null,
+      roomId: room?.tournament?.id === t.id ? room.id : null,
+      wallet,
+      canRegister: registerError === null,
+      registerError,
+      canSit: !!entry && entry.status === (t.status === 'final' ? 'finalist' : 'registered') && !room,
+      banSecondsLeft: ban?.secondsLeft ?? 0,
+      wins: winsOf(accountId),
+      badge: winsBadge(winsOf(accountId)),
+    },
+  };
+}
+
+function tournamentView(accountId: string) {
+  return tournamentPersonal(tournamentShared(Date.now()), accountId);
+}
+
+// Разослать экран «ТУРНИР» всем, кто его смотрит. Частые изменения (садятся за стол) —
+// одной рассылкой раз в 300 мс.
+let tournamentBroadcastTimer: ReturnType<typeof setTimeout> | null = null;
+function scheduleTournamentBroadcast() {
+  if (tournamentBroadcastTimer) return;
+  tournamentBroadcastTimer = setTimeout(() => {
+    tournamentBroadcastTimer = null;
+    broadcastTournament().catch((e) => console.error('[TOURNAMENT] broadcast failed:', e));
+  }, 300);
+}
+
+async function broadcastTournament() {
+  const sockets = await io.in(TOURNAMENT_ROOM).fetchSockets();
+  if (sockets.length === 0) return;
+  const shared = tournamentShared(Date.now());
+  for (const s of sockets) {
+    const id = s.data.tournamentViewer;
+    if (typeof id === 'string') s.emit('tournament', tournamentPersonal(shared, id));
+  }
+}
+
+app.get('/tournament', (req, res) => {
+  const account = accountOf(req);
+  if (!account) return res.status(401).json({ error: 'unauthorized' });
+  return res.json(tournamentView(account.id));
+});
+
+// «ПОДТВЕРДИТЬ УЧАСТИЕ» (§19.2): confirm: true — игрок видел предупреждение. 10 000 из
+// кошелька (сидит за обычным столом — из монет вне стола), один раз.
+app.post('/tournament/register', (req, res) => {
+  const account = accountOf(req);
+  if (!account) return res.status(401).json({ error: 'unauthorized' });
+  if (req.body?.confirm !== true) return res.status(400).json({ error: 'confirm required' });
+  const t = activeTournament(db);
+  if (!t || t.status !== 'registration' || Date.now() >= t.regEndsAt) {
+    return res.status(409).json({ error: 'registration closed' });
+  }
+  const ban = banError(account.id);
+  if (ban) return res.status(403).json(ban);
+  if (entryOf(db, t.id, account.id)) return res.status(409).json({ error: 'already registered' });
+  const wallet = walletSplit(account).balance;
+  if (wallet < ENTRY_FEE) return res.status(400).json({ error: 'not enough coins', balance: wallet, fee: ENTRY_FEE });
+
+  const registered = tournamentTx((pay) => {
+    if (!ledgerAdd(db, `fee:${t.id}:${account.id}`, t.id, 'fee', account.id, -ENTRY_FEE)) return false;
+    addEntry(db, t.id, account.id, account.name, Date.now());
+    pay(account.id, -ENTRY_FEE);
+    return true;
+  });
+  if (!registered) return res.status(409).json({ error: 'already registered' });
+  console.log(`[TOURNAMENT ${t.id}] ${account.name} зарегистрирован`);
+  scheduleTournamentBroadcast();
+  return res.json(tournamentView(account.id));
+});
+
+// «СЕСТЬ» за стол этапа (§19.3): ответ — состояние комнаты, приложение открывает стол.
+app.post('/tournament/tables/:no/sit', (req, res) => {
+  const account = accountOf(req);
+  if (!account) return res.status(401).json({ error: 'unauthorized' });
+  const t = activeTournament(db);
+  const stage: TableStage | null = t?.status === 'qualification' ? 'qual' : t?.status === 'final' ? 'final' : null;
+  if (!t || !stage) return res.status(409).json({ error: 'no tables now' });
+  const table = tablesOf(db, t.id, stage).find((x) => x.tableNo === Number(req.params.no));
+  const room = table?.roomId ? rooms.get(table.roomId) : undefined;
+  if (!table || !room) return res.status(404).json({ error: 'table not found' });
+  if (table.status !== 'waiting') return res.status(409).json({ error: 'game already started' });
+  const wanted = req.body?.seat === undefined ? undefined : Number(req.body.seat);
+  const sat = tournamentSit(room, account, Number.isInteger(wanted) ? wanted : undefined);
+  if (sat.status === 200) {
+    persistRoom(room);
+    broadcastRoom(room.id).catch((e) => console.error(`[ROOM ${room.id}] broadcast failed:`, e));
+  }
+  return res.status(sat.status).json(sat.body);
+});
+
+// Только с этого компьютера — запустить турнир сейчас, не дожидаясь понедельника. Для живой
+// проверки (tests/live-tournament.ts); первый настоящий турнир — по расписанию (§19.1).
+app.post('/admin/tournament/start', (req, res) => {
+  if (!localOnly(req)) return res.status(403).json({ error: 'local only' });
+  if (activeTournament(db)) return res.status(409).json({ error: 'tournament in progress' });
+  const now = Date.now();
+  const id = `test-${now}`;
+  createTournament(db, id, now, TOUR_TIMES.registrationMs, TOUR_TIMES.qualificationMs);
+  console.log(`[TOURNAMENT ${id}] запущен вручную (проверка)`);
+  scheduleTournamentBroadcast();
+  return res.json({ id });
 });
 
 // HTTP и Socket.IO слушают один и тот же порт.

@@ -458,6 +458,8 @@ class _LobbyScreenState extends State<LobbyScreen> {
       );
     }
 
+    final tournament = room!['tournament'] is Map ? Map<String, dynamic>.from(room!['tournament'] as Map) : null;
+
     // Создатель вышел до начала игры — комнаты больше нет.
     if (room!['status']?.toString() == 'finished' && room!['game'] == null) {
       return Scaffold(
@@ -469,7 +471,9 @@ class _LobbyScreenState extends State<LobbyScreen> {
             children: [
               const Spacer(),
               Text(
-                room!['lobbyTimedOut'] == true
+                tournament != null
+                    ? 'Турнирный стол не собрался — играть не будут'
+                    : room!['lobbyTimedOut'] == true
                     ? 'Игра не началась за 10 минут — комната закрыта'
                     : ((room!['readyDroppedIds'] as List?) ?? const []).isNotEmpty
                         ? 'Никто не нажал «ГОТОВ» — комната закрыта'
@@ -513,11 +517,14 @@ class _LobbyScreenState extends State<LobbyScreen> {
                 style: TextStyle(fontSize: 22, fontWeight: FontWeight.w800),
               ),
               const SizedBox(height: 12),
-              const Text(
-                'Вы вышли из комнаты — ваше место ждёт другого игрока. '
-                'Можно зайти снова, если место ещё свободно.',
+              Text(
+                tournament != null
+                    ? 'Ваше место освободилось, регистрация в турнире осталась. Сыграть свой стол '
+                        'всё равно нужно до конца отбора — иначе бан 24 часа и −1.5 рейтинга.'
+                    : 'Вы вышли из комнаты — ваше место ждёт другого игрока. '
+                        'Можно зайти снова, если место ещё свободно.',
                 textAlign: TextAlign.center,
-                style: TextStyle(color: Colors.white70),
+                style: const TextStyle(color: Colors.white70),
               ),
               const Spacer(),
               GarbaButton(
@@ -533,6 +540,13 @@ class _LobbyScreenState extends State<LobbyScreen> {
     // Игра началась, а меня за столом нет (выбыл за «ГОТОВ» или ушёл) — чужая игра.
     if (room!['status']?.toString() == 'started' &&
         !players.any((p) => p['id'].toString() == widget.currentPlayerId)) {
+      if (tournament != null) {
+        return const RoomClosedScreen(
+          title: 'Стол начался без вас',
+          text: 'Выберите другой стол на экране «ТУРНИР». Не сыграете свой стол до конца отбора — '
+              'бан 24 часа и −1.5 рейтинга.',
+        );
+      }
       return const RoomClosedScreen(
         title: 'Игра началась без вас',
         text: 'За этим столом уже играют. Если освободится место — комната появится '
@@ -580,7 +594,9 @@ class _LobbyScreenState extends State<LobbyScreen> {
               children: [
                 Expanded(
                   child: Text(
-                    'Код комнаты: ${widget.roomCode}',
+                    tournament != null
+                        ? (tournament['stage'] == 'final' ? '🏆 Финал турнира' : '🏆 Турнир · стол №${tournament['tableNo']}')
+                        : 'Код комнаты: ${widget.roomCode}',
                     style: const TextStyle(
                       fontSize: 20,
                       color: Color(0xFFD4A94F),
@@ -607,8 +623,12 @@ class _LobbyScreenState extends State<LobbyScreen> {
                 return Padding(
                   padding: const EdgeInsets.only(top: 4),
                   child: Text(
-                    'Взнос ${fmtCoins(v('ante'))} · вход от ${fmtCoins(v('minBalance'))} · ход ${s['turnSeconds'] ?? 20} с · ждём ${s['absenceMinutes'] ?? 5} мин\n'
-                    'Пустых раздач ${v('emptyLimit')} · КОН с ×${v('konThreshold')}',
+                    tournament != null
+                        ? 'Взнос ${fmtCoins(v('ante'))} · ход ${s['turnSeconds']} с · ждём ${s['absenceMinutes']} мин · '
+                            'пустых раздач ${v('emptyLimit')} · КОН с ×${v('konThreshold')}\n'
+                            'Стол играет до 20 минут или пока не останется трое. Начнётся сам, когда все сядут.'
+                        : 'Взнос ${fmtCoins(v('ante'))} · вход от ${fmtCoins(v('minBalance'))} · ход ${s['turnSeconds'] ?? 20} с · ждём ${s['absenceMinutes'] ?? 5} мин\n'
+                            'Пустых раздач ${v('emptyLimit')} · КОН с ×${v('konThreshold')}',
                     style: const TextStyle(color: Colors.white60, fontSize: 13),
                   ),
                 );
@@ -617,6 +637,26 @@ class _LobbyScreenState extends State<LobbyScreen> {
             if (levelsBanner(players) case final banner?) ...[
               const SizedBox(height: 6),
               banner,
+            ],
+            // «В игре есть победитель турнира 🏆» (§19.12) — перед обычной игрой.
+            if (room!['winnerBanner'] is String) ...[
+              const SizedBox(height: 6),
+              WinnerBanner(text: room!['winnerBanner'].toString()),
+            ],
+            // Турнир: казна; последние минуты — пустые места займут боты (§19.5).
+            if (tournament != null) ...[
+              TournamentTableBar(tournament: tournament, receivedAt: readyReceivedAt),
+              if (tournament['lastCall'] == true || ((tournament['reserveBots'] as num?) ?? 0) > 0)
+                Padding(
+                  padding: const EdgeInsets.only(top: 4),
+                  child: Text(
+                    tournament['lastCall'] == true
+                        ? 'Последние минуты отбора: потом «ГОТОВ», пустые места займут боты'
+                        : 'Ещё ${tournament['reserveBots']} места займут боты, когда сядут все финалисты',
+                    textAlign: TextAlign.center,
+                    style: const TextStyle(color: Colors.orangeAccent, fontSize: 13, fontWeight: FontWeight.w700),
+                  ),
+                ),
             ],
             // Мои монеты: на столе, всего и рейтинг (09.10.2026).
             if (myWalletBar(room!) case final bar?) ...[
@@ -656,6 +696,14 @@ class _LobbyScreenState extends State<LobbyScreen> {
               ),
             ),
             const SizedBox(height: 8),
+            // Турнир: позвать любого участника (§19.3); обычная комната — ссылка и друзья.
+            if (tournament != null)
+              OutlinedButton.icon(
+                onPressed: () => showTournamentInviteSheet(context, widget.roomCode, null),
+                icon: const Icon(Icons.group_add, size: 18),
+                label: const Text('ПРИГЛАСИТЬ УЧАСТНИКОВ'),
+              )
+            else
             Row(
               children: [
                 Expanded(
@@ -713,7 +761,7 @@ class _LobbyScreenState extends State<LobbyScreen> {
               ),
             TextButton(
               onPressed: leaveRoom,
-              child: Text(isCreator ? 'ЗАКРЫТЬ КОМНАТУ' : 'ВЫЙТИ ИЗ КОМНАТЫ'),
+              child: Text(tournament != null ? 'ВСТАТЬ ИЗ-ЗА СТОЛА' : isCreator ? 'ЗАКРЫТЬ КОМНАТУ' : 'ВЫЙТИ ИЗ КОМНАТЫ'),
             ),
           ],
         ),

@@ -37,6 +37,7 @@ part 'widgets/cards.dart';
 part 'widgets/common.dart';
 part 'widgets/shop_look.dart';
 part 'screens/shop.dart';
+part 'screens/tournament.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();

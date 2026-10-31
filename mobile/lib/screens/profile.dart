@@ -53,8 +53,10 @@ class StatsView extends StatelessWidget {
 // серая, закрытая. Какие получены — решает сервер.
 class CoinMedalsView extends StatelessWidget {
   final List medals;
+  // Победы в еженедельном турнире (§19.12): один значок 🏆, на нём — сколько раз.
+  final int tournamentWins;
 
-  const CoinMedalsView({super.key, required this.medals});
+  const CoinMedalsView({super.key, required this.medals, this.tournamentWins = 0});
 
   @override
   Widget build(BuildContext context) {
@@ -70,9 +72,67 @@ class CoinMedalsView extends StatelessWidget {
         Wrap(
           spacing: 12,
           runSpacing: 12,
-          children: list.map((m) => _CoinMedal(coins: (m['coins'] as num).toInt(), earned: m['earned'] == true)).toList(),
+          children: [
+            if (tournamentWins > 0) _TournamentBadge(wins: tournamentWins),
+            ...list.map((m) => _CoinMedal(coins: (m['coins'] as num).toInt(), earned: m['earned'] == true)),
+          ],
         ),
       ],
+    );
+  }
+}
+
+// Значок победителя турнира: 🏆, со второй победы — число на нём (🏆×2, 🏆×3…).
+class _TournamentBadge extends StatelessWidget {
+  final int wins;
+
+  const _TournamentBadge({required this.wins});
+
+  @override
+  Widget build(BuildContext context) {
+    const gold = Color(0xFFD4A94F);
+    return Semantics(
+      label: 'Победитель турнира: $wins',
+      child: SizedBox(
+        width: 72,
+        child: Column(
+          children: [
+            Stack(
+              clipBehavior: Clip.none,
+              children: [
+                Container(
+                  width: 58,
+                  height: 58,
+                  alignment: Alignment.center,
+                  decoration: BoxDecoration(
+                    shape: BoxShape.circle,
+                    gradient: const RadialGradient(colors: [Color(0xFFFFE6A0), gold, Color(0xFF8A6A22)]),
+                    border: Border.all(color: const Color(0xFFFFE6A0), width: 2),
+                    boxShadow: const [BoxShadow(color: Color(0x88D4A94F), blurRadius: 10)],
+                  ),
+                  child: const Text('🏆', style: TextStyle(fontSize: 28)),
+                ),
+                if (wins > 1)
+                  Positioned(
+                    right: -4,
+                    bottom: -2,
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 1),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFF3B2A00),
+                        borderRadius: BorderRadius.circular(10),
+                        border: Border.all(color: gold),
+                      ),
+                      child: Text('×$wins', style: const TextStyle(fontWeight: FontWeight.w900, color: gold, fontSize: 13)),
+                    ),
+                  ),
+              ],
+            ),
+            const SizedBox(height: 4),
+            const Text('Турнир', style: TextStyle(fontSize: 12, color: gold, fontWeight: FontWeight.w700)),
+          ],
+        ),
+      ),
     );
   }
 }
@@ -320,7 +380,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
                 ),
                 const Divider(height: 32),
                 if (p['medals'] is List) ...[
-                  CoinMedalsView(medals: p['medals'] as List),
+                  CoinMedalsView(medals: p['medals'] as List, tournamentWins: (p['tournamentWins'] as num?)?.toInt() ?? 0),
                   const Divider(height: 32),
                 ],
                 StatsView(stats: Map<String, dynamic>.from(p['stats'] as Map)),
@@ -1003,7 +1063,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
                 ),
                 const Divider(height: 32),
                 if (p['medals'] is List) ...[
-                  CoinMedalsView(medals: p['medals'] as List),
+                  CoinMedalsView(medals: p['medals'] as List, tournamentWins: (p['tournamentWins'] as num?)?.toInt() ?? 0),
                   const Divider(height: 32),
                 ],
                 StatsView(stats: Map<String, dynamic>.from(p['stats'] as Map)),

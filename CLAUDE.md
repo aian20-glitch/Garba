@@ -56,6 +56,8 @@
 | `leaveBan.ts` | **Новый** (23.10.2026). Бан за выход из начатой игры (§13d): 10, 20 … 60 минут, 6 часов без выходов — счёт сначала. Чистые функции. |
 | `shop.ts` | **Новый** (13.10.2026). Магазин (RULES.md §17): витрина и цены, наборы смайликов, что куплено и надето (таблицы `purchases`, `equipped`), продажи. Рисунки — в приложении. |
 | `spectators.ts` | **Новый** (28.10.2026). Наблюдатели (RULES.md §18): какие идущие столы в списке (`liveRoomsFor`), кому нельзя смотреть (`spectateRefusal`), счётчик 👁 (`spectatorCount`). Чистые функции. |
+| `tournament.ts` | **Новый** (31.10.2026). Еженедельный турнир (RULES.md §19): расписание (пн 20:00 UTC+5), столы `tableSizes` (n÷4), выбывание, конец стола, последний шанс, общий список и ничья, финалисты `selectFinalists`, выплаты `payouts`, рейтинг за турнир, значок 🏆×N. Чистые функции. |
+| `tournamentDb.ts` | **Новый** (31.10.2026). Турнир в базе: `tournaments`, `tournament_entries`, `tournament_tables`, журнал денег `tournament_ledger` (уникальный ключ на каждое движение — двойных списаний/выплат нет), казна `treasuryOf`. |
 | `special.ts` | **Новый** (этап 7). Спецкарты: какая карта, очередь, множители, итог борьбы, первый ход. |
 | `rules.ts` | **Используются** `canPlayCard`, `trickWinner` (этап 3) и `isGarba` (этап 6) — сверены с RULES.md. `specialKind`, `canDeclareMain` — ещё не проверены. |
 
@@ -107,6 +109,9 @@ cd ~/Garba/mobile && flutter analyze
 - `tests/live-audit.ts` — порт 3095 (28.09.2026, находки последнего аудита): закрытая комната не
   трогает аккаунты, пропавший главный проигрывает сразу, «закончить игру» — только за столом,
   лимит сокетов и частоты `watch`. (Ещё `tests/live-bots.ts` — порт 3096, боты сервера.)
+- `tests/live-tournament.ts` — порт 3092 (31.10.2026): турнир целиком — отмена при 7 и возврат, 9 → столы 4+5,
+  посадка и приглашения, выбывание, последний шанс с ботом, наказание неявки, финал, выплата, финал не сыгран — победитель по отбору, перезапуск сервера
+  дважды, сверка журнала денег; сроки укорочены (`GARBA_TOUR_*`), взнос 1 600 (`GARBA_TOUR_ANTE`) — чтобы выбывали;
 - `tests/live-table.ts` — порт 3093 (22.10.2026): докупка с согласия всех (§9.1c), 3 секунды открытых
   карт после раздачи (§10.8), часть выигрыша другому (§11.8) — четверо играют логикой ботов сервера;
   с 23.10.2026 — бан за выход (§13d), рейтинг по монетам и ТОП-3 недели (§16.8);
@@ -498,6 +503,39 @@ GET  /admin/shop                 → { sales: [{ itemId, name, count, coins }], 
 tools/shop_art.py, он же печатает долю дырки у рамок → frameHole в widgets/shop_look.dart).
 Новую вещь добавлять в три места: SHOP_ITEMS (shop.ts), картинку, _knownItem в screens/shop.dart.
 
+— еженедельный турнир (31.10.2026, RULES.md §19, tournament.ts, tournamentDb.ts) —
+GET  /tournament                 → { fee, minParticipants, finalMin, finalMax, qualifyAbove, nextStartsAt, serverNow,
+                                 tournament: null | { id, status: registration|cancelled|qualification|final|finished,
+                                 phase (ещё final_waiting|final_playing), startsAt, regEndsAt, qualEndsAt, finalEndsAt,
+                                 secondsLeft, treasury, participantsCount, participants: [{ code, name, avatar, frame, wins,
+                                 status, balance, qualBalance, tableNo, seatedAt, finalPlace, ratingDelta }], tables: [{ stage:
+                                 qual|final, tableNo, capacity, roomId, status: waiting|playing|finished|skipped, players, free,
+                                 secondsLeft, lastCall, bots }], winner: { code, name, avatar, balance, treasury, prize, wins, byQualification } },
+                                 me: { registered, status, balance, tableNo, roomId, wallet, canRegister, registerError, canSit,
+                                 banSecondsLeft, wins, badge } }
+                                 status участника: registered | playing | played | finalist | out | final_playing | final_done |
+                                 penalized | refunded
+POST /tournament/register        { confirm: true } — после предупреждения; 10 000 из кошелька (за обычным столом — из монет
+                                 вне стола); 400 confirm required | not enough coins; 409 registration closed | already
+                                 registered; 403 banned for leaving
+POST /tournament/tables/:no/sit  { seat? } → состояние комнаты; 403 not registered | cannot sit; 409 game already started |
+                                 table is starting | already in another room. /rooms/:id/join за турнирный стол — то же самое
+POST /rooms/:id/invite           за турнирный стол — любого участника, который может сесть (403 not a tournament participant);
+                                 в /me roomInvites у такого приглашения tableNo
+комната турнирного стола         → tournament: { id, stage, tableNo, secondsLeft (до конца часа), treasury, eliminatedIds,
+                                 penalizedIds, lastOut, endReason: three_left|time_up|no_humans, lastCall, launch, reserveBots,
+                                 stageSecondsLeft }; game.closeReason 'tournament_end'. Обычная комната → winnerBanner
+                                 («В игре есть победитель турнира 🏆»), у игроков players[].tournamentWins
+/me                              → ещё tournament: { id, phase, registered, entryStatus, roomId } | null, tournamentWins;
+                                 leaveBan.tournament — бан за турнир (24 ч, accounts.tournament_ban_until).
+                                 За турнирным столом tableBalance — null: турнирные монеты — не кошелёк
+/me/profile, /players/:code      → ещё tournamentWins
+DELETE /me                       → 409 finish your tournament first, пока в незаконченном турнире
+сокет: клиент → 'watch_tournament' { token }; сервер → 'tournament' <то же, что GET /tournament> после каждого изменения
+POST /admin/tournament/start     только с этого компьютера — турнир сейчас (для live-tournament); настоящий — по расписанию
+Сроки для проверок: GARBA_TOUR_REG_MS, _QUAL_MS, _FINAL_MS, _TABLE_MS, _LASTCALL_LEAD_MS, _LASTCALL_MS; GARBA_TOUR_AUTO=0 —
+без недельного; GARBA_TOUR_ANTE — взнос стола (по умолчанию 100).
+
 — служебное, только с этого компьютера (23.09.2026) —
 POST /admin/coins                { code | id, amount }  → { name, amount, balance }; через moveCoins;
                                  с X-Forwarded-For (из интернета через Caddy) — 403 local only
@@ -875,6 +913,12 @@ PowerShell 5.1 срезает кавычки в `-d`. Файл сохранён 
 
 ## 5. Что работает сейчас
 
+- с 31.10.2026 — **еженедельный турнир** (RULES.md §19): плитка «ТУРНИР НЕДЕЛИ» на главном, экран
+  `screens/tournament.dart` (регистрация с предупреждением, столы с «СЕСТЬ» / «ПРИГЛАСИТЬ», общий список, финалисты,
+  победитель), турнирный стол — обычная комната с `room.tournament` (кошелёк не трогает, стол до 20 минут или до трёх (кон никому не по карману — делится, играют дальше),
+  выбывание при балансе меньше взноса, последний шанс с ботами), казна и выплаты — через журнал `tournament_ledger`,
+  значок 🏆×N в «ДОСТИЖЕНИЯХ», объявление о победителе турнира перед обычной игрой. **Не выложено на сервер.**
+  Финал не сыгран (не сел ни один финалист) — победитель по отбору, без наказаний (§19.13, `winner.byQualification`);
 - с 28.10.2026 — **наблюдатели** (RULES.md §18): идущие столы в «Открытых комнатах» — «Игра идёт»,
   «НАБЛЮДАТЬ», при свободном месте «СЕСТЬ»; зритель видит только открытое всем, смайлики не шлёт;
   у всех за столом «👁 N»; сам в начатой игре — смотреть нельзя;
