@@ -36,6 +36,11 @@ class _GameTableScreenState extends State<GameTableScreen> {
   // от него на экране идёт обратный отсчёт, раз в секунду.
   DateTime pauseReceivedAt = DateTime.now();
   Timer? pauseTicker;
+  // Время стола (RULES.md §20): чем кончилось последнее голосование за продление — надпись
+  // на несколько секунд. При первом открытии стола старый итог только запоминаем.
+  String? clockVoteKey;
+  DateTime? clockVoteAt;
+  bool sendingExtend = false;
   // Смайлики (RULES.md §14): какой смайлик сейчас висит у игрока, и номер
   // последней показанной реакции — старые при входе в комнату не всплывают.
   final Map<String, String> flyingEmoji = {};
@@ -127,7 +132,7 @@ class _GameTableScreenState extends State<GameTableScreen> {
     sitting = true;
     try {
       final minBalance = ((data['settings'] as Map?)?['minBalance'] as num?)?.toInt() ?? 0;
-      final buyIn = await askBuyIn(context, minBalance: minBalance);
+      final buyIn = await askBuyIn(context, minBalance: minBalance, settings: data['settings'] as Map?);
       if (buyIn == null) return;
       final response = await apiRequest(http.post(
         Uri.parse('${roomUrl()}/join'),
@@ -285,6 +290,7 @@ class _GameTableScreenState extends State<GameTableScreen> {
     updateDealPresentation(data);
     holdRoundResult(data);
     holdGameOver(data);
+    noteClockVote(data);
     setState(() {
       room = data;
       pauseReceivedAt = DateTime.now();
@@ -310,6 +316,7 @@ class _GameTableScreenState extends State<GameTableScreen> {
             (gameRaw['endVote'] is Map ||
                 gameRaw['shrinkVote'] is Map ||
                 gameRaw['topUpVote'] is Map ||
+                (gameRaw['tableClock'] is Map && data['status'] == 'started') ||
                 gameRaw['turnSecondsLeft'] != null))) {
       pauseTicker ??= Timer.periodic(const Duration(seconds: 1), (_) {
         if (mounted) setState(() {});
@@ -794,6 +801,155 @@ class _GameTableScreenState extends State<GameTableScreen> {
     } finally {
       if (mounted) setState(() => sendingSpecial = false);
     }
+  }
+
+  // Голосование за продление закончилось — запомнить, когда, чтобы показать итог (§20).
+  void noteClockVote(Map<String, dynamic> data) {
+    final g = data['game'];
+    final clock = g is Map ? g['tableClock'] : null;
+    final last = clock is Map ? clock['lastVote'] : null;
+    final key = last is Map ? '${last['forEndsAt']}:${last['result']}' : null;
+    if (key == clockVoteKey) return;
+    final first = room == null;
+    clockVoteKey = key;
+    clockVoteAt = first || key == null ? null : DateTime.now();
+  }
+
+  // «Продлить +10 минут» / «Не продлевать» (§20). Голос — к этому вопросу (forEndsAt):
+  // вопрос сменился или уже ответил — сервер откажет, просто обновляем стол.
+  Future<void> sendExtendVote(String choice, Object? forEndsAt) async {
+    if (sendingExtend) return;
+    setState(() => sendingExtend = true);
+    try {
+      final response = await apiRequest(http.post(
+        Uri.parse('$apiBase/rooms/${widget.roomCode}/extend-vote'),
+        headers: authHeaders(),
+        body: jsonEncode({'choice': choice, 'forEndsAt': forEndsAt}),
+      ));
+      if (response.statusCode != 409 && (response.statusCode < 200 || response.statusCode >= 300)) {
+        throw ApiFailure.fromResponse(response);
+      }
+      await refreshRoom();
+    } catch (e) {
+      if (mounted) showGarbaError(context, e);
+    } finally {
+      if (mounted) setState(() => sendingExtend = false);
+    }
+  }
+
+  // Время стола (§20): часы, «осталась 1 минута», «время вышло — доигрываем», вопрос о
+  // продлении (кнопки — только тому, чей голос нужен и кто ещё не ответил), итог голосования.
+  Widget tableClockBar(Map<String, dynamic> clock, bool roomDone) {
+    final left = math.max(0, ((clock['secondsLeft'] as num?)?.toInt() ?? 0) -
+        DateTime.now().difference(pauseReceivedAt).inSeconds);
+    final reached = clock['reached'] == true || left == 0;
+    final vote = clock['vote'] is Map ? Map<String, dynamic>.from(clock['vote'] as Map) : null;
+    final game = room?['game'] as Map?;
+    final canVote = game?['myCanVoteExtend'] == true;
+    final myVote = game?['myExtendVote']?.toString();
+    final last = clock['lastVote'] is Map ? Map<String, dynamic>.from(clock['lastVote'] as Map) : null;
+    final showResult = last != null && clockVoteAt != null &&
+        DateTime.now().difference(clockVoteAt!) < const Duration(seconds: 8);
+    final warn = !reached && left <= 60;
+    const gold = Color(0xFFE6B74F);
+    final lines = <Widget>[];
+    void line(String text, Color color) => lines.add(Padding(
+          padding: const EdgeInsets.only(top: 2),
+          child: Text(text, textAlign: TextAlign.center, style: TextStyle(fontSize: 12, color: color)),
+        ));
+    if (roomDone) return const SizedBox.shrink();
+    if (reached) {
+      line('Время стола вышло — доигрываем раздачу, новой не будет', Colors.orangeAccent);
+    } else if (warn && vote == null) {
+      line('До окончания стола осталась 1 минута', Colors.orangeAccent);
+    }
+    if (showResult) {
+      line(
+        switch (last['result']) {
+          'approved' => 'Все игроки согласились. Время игры продлено на 10 минут.',
+          'rejected' => 'Продление отклонено. Игра завершится через оставшееся время.',
+          _ => 'Ответили не все — время не продлено.',
+        },
+        last['result'] == 'approved' ? Colors.greenAccent : Colors.white70,
+      );
+    }
+    return Padding(
+      padding: const EdgeInsets.only(top: 4),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Center(
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 2),
+              decoration: BoxDecoration(
+                color: Colors.black.withValues(alpha: 0.35),
+                borderRadius: BorderRadius.circular(10),
+                border: Border.all(color: (warn || reached ? Colors.orangeAccent : gold).withValues(alpha: 0.6)),
+              ),
+              child: Text(
+                '⏱ ${fmtTableClock(left)}',
+                style: TextStyle(
+                  fontSize: 13,
+                  fontWeight: FontWeight.w900,
+                  fontFeatures: const [FontFeature.tabularFigures()],
+                  color: warn || reached ? Colors.orangeAccent : gold,
+                ),
+              ),
+            ),
+          ),
+          ...lines,
+          if (vote != null && !reached)
+            Container(
+              margin: const EdgeInsets.only(top: 4),
+              padding: const EdgeInsets.fromLTRB(10, 6, 10, 6),
+              decoration: BoxDecoration(
+                color: const Color(0xFF13232E),
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(color: gold.withValues(alpha: 0.6)),
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  Text(
+                    canVote
+                        ? 'До окончания стола осталось ${math.max(1, (left / 60).ceil())} мин. Продлить игру ещё на 10 минут?'
+                        : myVote == 'yes'
+                            ? 'Вы за продление на 10 минут. Ждём остальных.'
+                            : 'Игроки решают, продлить ли игру на 10 минут.',
+                    textAlign: TextAlign.center,
+                    style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w700),
+                  ),
+                  Text(
+                    'Проголосовали: ${vote['votedCount']} из ${vote['voterCount']} · продлим, только если согласны все',
+                    textAlign: TextAlign.center,
+                    style: const TextStyle(fontSize: 11, color: Colors.white60),
+                  ),
+                  if (canVote) ...[
+                    const SizedBox(height: 4),
+                    Row(
+                      children: [
+                        Expanded(
+                          child: FilledButton(
+                            onPressed: sendingExtend ? null : () => sendExtendVote('yes', vote['forEndsAt']),
+                            child: const FittedBox(child: Text('ПРОДЛИТЬ +10 МИН')),
+                          ),
+                        ),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: OutlinedButton(
+                            onPressed: sendingExtend ? null : () => sendExtendVote('no', vote['forEndsAt']),
+                            child: const FittedBox(child: Text('НЕ ПРОДЛЕВАТЬ')),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ],
+                ],
+              ),
+            ),
+        ],
+      ),
+    );
   }
 
   // Выйти из игры между раздачами (RULES.md §13b): кон делят оставшиеся, рейтинг −1.0,
@@ -1479,9 +1635,10 @@ class _GameTableScreenState extends State<GameTableScreen> {
             ),
           ),
           // Кон никто не мог взять или все устали и согласились закончить —
-          // его поделили поровну (RULES.md §12.2, §12.3).
+          // его поделили поровну (RULES.md §12.2, §12.3). Вышло время стола — так же (§20).
           if ((game['closeReason'] == 'nobody_can_play' ||
-                  game['closeReason'] == 'agreed_end') &&
+                  game['closeReason'] == 'agreed_end' ||
+                  game['closeReason'] == 'time_limit') &&
               game['split'] is Map)
             Builder(builder: (_) {
               final split = Map<String, dynamic>.from(game['split'] as Map);
@@ -1496,7 +1653,11 @@ class _GameTableScreenState extends State<GameTableScreen> {
               return Padding(
                 padding: const EdgeInsets.only(top: 6),
                 child: Text(
-                  '${game['closeReason'] == 'agreed_end' ? 'Все согласились закончить игру. Кон ${fmtCoins(splitKon)}' : 'Кон ${fmtCoins(splitKon)} не по карману никому'} — '
+                  '${switch (game['closeReason']) {
+                    'agreed_end' => 'Все согласились закончить игру. Кон ${fmtCoins(splitKon)}',
+                    'time_limit' => 'Время стола вышло — игра окончена. Кон ${fmtCoins(splitKon)}',
+                    _ => 'Кон ${fmtCoins(splitKon)} не по карману никому',
+                  }} — '
                   'поделили поровну: по ${fmtCoins(perPlayer)}'
                   '${remainder > 0 ? ', остаток ${fmtCoins(remainder)} — $remainderName' : ''}',
                   textAlign: TextAlign.center,
@@ -2430,6 +2591,7 @@ class _GameTableScreenState extends State<GameTableScreen> {
     Widget? gameOverPopup;
     if (isRoomDone && !gameOverClosed && !gameOverHeld) {
       gameOverPopup = GameOverPopup(
+        reason: game['closeReason'] == 'time_limit' ? 'Время стола вышло — игра окончена, выйти можно без штрафа' : null,
         lines: [
           for (final p in playersForResults(room!))
             (
@@ -2599,6 +2761,9 @@ class _GameTableScreenState extends State<GameTableScreen> {
                   tournament: Map<String, dynamic>.from(data['tournament'] as Map),
                   receivedAt: pauseReceivedAt,
                 ),
+              // Время стола (§20): часы и вопрос о продлении — над столом, ничего не закрывают.
+              if (game['tableClock'] is Map)
+                tableClockBar(Map<String, dynamic>.from(game['tableClock'] as Map), isRoomDone),
               if (closing && !isRoomDone)
                 Padding(
                   padding: const EdgeInsets.only(top: 6),

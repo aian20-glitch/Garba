@@ -146,11 +146,11 @@ class _OpenRoomsScreenState extends State<OpenRoomsScreen> {
     }
   }
 
-  Future<void> join(String roomId, int minBalance) async {
+  Future<void> join(String roomId, int minBalance, Map settings) async {
     if (joining) return;
     setState(() => joining = true);
     try {
-      final buyIn = await askBuyIn(context, minBalance: minBalance);
+      final buyIn = await askBuyIn(context, minBalance: minBalance, settings: settings);
       if (buyIn == null) return;
       final response = await apiRequest(http.post(
         Uri.parse('$apiBase/rooms/$roomId/join'),
@@ -204,6 +204,7 @@ class _OpenRoomsScreenState extends State<OpenRoomsScreen> {
             const SizedBox(height: 4),
             Text(
               'Игра идёт${deal > 0 ? ' · раздача $deal' : ''} · взнос ${fmtCoins(v('ante'))}'
+              '\nВремя игры: ${fmtTimeLimit(s['timeLimitMinutes'])}'
               '${vacancies > 0 ? '\nОсвободилось место · вход от ${fmtCoins(v('minBalance'))}' : ''}',
               style: const TextStyle(color: Colors.white70),
             ),
@@ -219,7 +220,7 @@ class _OpenRoomsScreenState extends State<OpenRoomsScreen> {
                 if (r['canSit'] == true) ...[
                   const SizedBox(width: 8),
                   FilledButton(
-                    onPressed: joining ? null : () => join(id, v('minBalance')),
+                    onPressed: joining ? null : () => join(id, v('minBalance'), s),
                     child: const Text('СЕСТЬ'),
                   ),
                 ],
@@ -279,11 +280,12 @@ class _OpenRoomsScreenState extends State<OpenRoomsScreen> {
                     ),
                     subtitle: Text(
                       'Взнос ${fmtCoins(v('ante'))} · вход от ${fmtCoins(v('minBalance'))}\n'
+                      'Время игры: ${fmtTimeLimit(s['timeLimitMinutes'])}\n'
                       '${r['started'] == true ? 'Идёт игра · освободилось место' : free == 1 ? 'Ждут одного игрока' : 'Свободно мест: $free'}',
                     ),
                     isThreeLine: true,
                     trailing: FilledButton(
-                      onPressed: joining ? null : () => join(r['id'].toString(), v('minBalance')),
+                      onPressed: joining ? null : () => join(r['id'].toString(), v('minBalance'), s),
                       child: const Text('ВОЙТИ'),
                     ),
                   ),

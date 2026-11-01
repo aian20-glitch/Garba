@@ -28,6 +28,8 @@ class GameOverPopup extends StatelessWidget {
   final String myId;
   final bool practice;
   final VoidCallback onClose;
+  // Почему игра закончилась, если стоит сказать (вышло время стола, §20), — под заголовком.
+  final String? reason;
 
   const GameOverPopup({
     super.key,
@@ -36,6 +38,7 @@ class GameOverPopup extends StatelessWidget {
     required this.myId,
     required this.practice,
     required this.onClose,
+    this.reason,
   });
 
   static const gold = Color(0xFFD4A94F);
@@ -198,6 +201,15 @@ class GameOverPopup extends StatelessWidget {
                       color: gold,
                     ),
                   ),
+                  if (reason != null)
+                    Padding(
+                      padding: const EdgeInsets.only(top: 4),
+                      child: Text(
+                        reason!,
+                        textAlign: TextAlign.center,
+                        style: const TextStyle(fontSize: 13, color: Colors.white70),
+                      ),
+                    ),
                   if (practice)
                     const Padding(
                       padding: EdgeInsets.only(top: 4),

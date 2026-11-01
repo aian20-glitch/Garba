@@ -49,6 +49,27 @@ const _specialNames = <String, String>{
 
 String specialName(String kind) => _specialNames[kind] ?? kind;
 
+// Время игры стола (RULES.md §20, 01.11.2026): 60 → «60 мин», 80 → «1 ч 20 мин»,
+// null — «без ограничения». Числа — как в backend/src/tableTimer.ts.
+const tableTimePresets = [30, 60, 90];
+const tableTimeMin = 15;
+const tableTimeMax = 180;
+String fmtTimeLimit(Object? minutes) {
+  if (minutes is! num) return 'без ограничения';
+  final m = minutes.toInt();
+  if (m <= 60) return '$m мин';
+  final h = m ~/ 60, rest = m % 60;
+  return rest == 0 ? '$h ч' : '$h ч $rest мин';
+}
+
+// Остаток времени стола: 3582 → «59:42», 4782 → «1:19:42».
+String fmtTableClock(int seconds) {
+  final s = seconds < 0 ? 0 : seconds;
+  final h = s ~/ 3600, m = (s % 3600) ~/ 60, sec = s % 60;
+  String two(int x) => x.toString().padLeft(2, '0');
+  return h > 0 ? '$h:${two(m)}:${two(sec)}' : '${two(m)}:${two(sec)}';
+}
+
 // 12500 → «12 500».
 // Монеты коротко (просьба владельца, 09.10.2026): 900, 11.9k, 1.25M.
 // Монеты ходят сотнями — одной цифры после точки обычно хватает; остаток

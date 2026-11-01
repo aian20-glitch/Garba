@@ -24,6 +24,9 @@ class _CreateRoomScreenState extends State<CreateRoomScreen> {
   int turnSeconds = 20;
   // Запас на отлучку за игру: 1…5 минут (RULES.md §13, 08.10.2026), по умолчанию 1.
   int absenceMinutes = 1;
+  // Время игры (RULES.md §20, 01.11.2026): 30 / 60 / 90 минут, своё 15…180 или null —
+  // без ограничения. По умолчанию 60.
+  int? timeLimit = 60;
   // Открытая — видна всем в «Открытых комнатах», войти можно без кода.
   bool isPublic = false;
   bool loading = false;
@@ -52,6 +55,17 @@ class _CreateRoomScreenState extends State<CreateRoomScreen> {
     if (value != null && mounted) setState(() => minBalance = value);
   }
 
+  // Своё время игры: 15…180 минут. null — передумал.
+  Future<void> askCustomTime() async {
+    final value = await showDialog<int>(
+      context: context,
+      builder: (_) => _CustomTimeDialog(
+        initial: timeLimit != null && !tableTimePresets.contains(timeLimit) ? timeLimit : null,
+      ),
+    );
+    if (value != null && mounted) setState(() => timeLimit = value);
+  }
+
   Future<void> createRoom() async {
     if (loading) return;
     setState(() => loading = true);
@@ -71,6 +85,7 @@ class _CreateRoomScreenState extends State<CreateRoomScreen> {
           'minBalance': minBalance,
           'turnSeconds': turnSeconds,
           'absenceMinutes': absenceMinutes,
+          'timeLimitMinutes': timeLimit,
           'isPublic': isPublic,
           'buyIn': buyIn,
         }),
@@ -86,6 +101,17 @@ class _CreateRoomScreenState extends State<CreateRoomScreen> {
             'Недостаточно монет: минимум комнаты ${fmtCoins((err['minBalance'] as num).toInt())}, '
             'у вас ${fmtCoins((err['balance'] as num).toInt())}',
           );
+        }
+      }
+
+      // Время игры вне 15…180 — сервер скажет то же, что окно «Своё время» (§20).
+      if (response.statusCode == 400) {
+        final err = jsonDecode(response.body);
+        if (err is Map && err['error'] == 'time limit too short') {
+          throw Exception('Минимальное время стола — $tableTimeMin минут');
+        }
+        if (err is Map && err['error'] == 'time limit too long') {
+          throw Exception('Максимальное время стола — 3 часа');
         }
       }
 
@@ -159,6 +185,46 @@ class _CreateRoomScreenState extends State<CreateRoomScreen> {
                   onSelected: (_) => setState(() => capacity = n),
                 );
               }).toList(),
+            ),
+            const SizedBox(height: 24),
+            const Text(
+              'Время игры',
+              style: TextStyle(fontSize: 20, fontWeight: FontWeight.w800),
+            ),
+            const SizedBox(height: 12),
+            Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              children: [
+                ...tableTimePresets.map((n) {
+                  return ChoiceChip(
+                    label: Text('$n мин'),
+                    selected: timeLimit == n,
+                    onSelected: (_) => setState(() => timeLimit = n),
+                  );
+                }),
+                ChoiceChip(
+                  label: Text(timeLimit != null && !tableTimePresets.contains(timeLimit)
+                      ? fmtTimeLimit(timeLimit)
+                      : 'СВОЁ ВРЕМЯ'),
+                  avatar: const Icon(Icons.edit, size: 16),
+                  selected: timeLimit != null && !tableTimePresets.contains(timeLimit),
+                  onSelected: (_) => askCustomTime(),
+                ),
+                ChoiceChip(
+                  label: const Text('Без ограничения'),
+                  selected: timeLimit == null,
+                  onSelected: (_) => setState(() => timeLimit = null),
+                ),
+              ],
+            ),
+            const SizedBox(height: 6),
+            Text(
+              timeLimit == null
+                  ? 'Играете, пока кон не заберут или не решите закончить'
+                  : 'Время пойдёт с первой раздачи. За 5 минут до конца все решают, продлить ли на 10 минут — '
+                      'только если согласны все. Время вышло посреди раздачи — её доигрывают',
+              style: const TextStyle(color: Colors.white60),
             ),
             const SizedBox(height: 24),
             const Text(
@@ -373,6 +439,7 @@ class _JoinRoomScreenState extends State<JoinRoomScreen> {
         buyIn = await askBuyIn(
           context,
           minBalance: ((info['settings'] as Map)['minBalance'] as num).toInt(),
+          settings: info['settings'] as Map,
         );
         if (buyIn == null) return;
       }
@@ -524,6 +591,76 @@ class _CustomEntryDialogState extends State<_CustomEntryDialog> {
             'Кратно 1 000, не меньше ${fmtPrice(widget.lowest)}. С этой суммой игроки садятся за стол; '
             'у кого меньше — в комнату не войдёт.',
             style: const TextStyle(fontSize: 13, color: Colors.white60),
+          ),
+        ],
+      ),
+      actions: [
+        TextButton(onPressed: () => Navigator.pop(context), child: const Text('ОТМЕНА')),
+        FilledButton(onPressed: submit, child: const Text('ГОТОВО')),
+      ],
+    );
+  }
+}
+
+// Окно «Своё время игры»: 15…180 минут (§20). Поле живёт, пока живёт окно, — как у своей суммы.
+class _CustomTimeDialog extends StatefulWidget {
+  final int? initial;
+
+  const _CustomTimeDialog({required this.initial});
+
+  @override
+  State<_CustomTimeDialog> createState() => _CustomTimeDialogState();
+}
+
+class _CustomTimeDialogState extends State<_CustomTimeDialog> {
+  late final controller = TextEditingController(text: widget.initial?.toString() ?? '');
+  String? error;
+
+  @override
+  void dispose() {
+    controller.dispose();
+    super.dispose();
+  }
+
+  void submit() {
+    final v = int.tryParse(controller.text.trim());
+    if (v == null) {
+      setState(() => error = 'Впишите число минут');
+    } else if (v < tableTimeMin) {
+      setState(() => error = 'Минимальное время стола — $tableTimeMin минут');
+    } else if (v > tableTimeMax) {
+      setState(() => error = 'Максимальное время стола — 3 часа');
+    } else {
+      Navigator.pop(context, v);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: const Text('Своё время игры'),
+      content: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          TextField(
+            controller: controller,
+            autofocus: true,
+            keyboardType: TextInputType.number,
+            inputFormatters: [FilteringTextInputFormatter.digitsOnly],
+            onSubmitted: (_) => submit(),
+            decoration: InputDecoration(
+              hintText: 'например, 45',
+              suffixText: 'минут',
+              errorText: error,
+              errorMaxLines: 2,
+              border: const OutlineInputBorder(),
+            ),
+          ),
+          const SizedBox(height: 8),
+          const Text(
+            'От $tableTimeMin минут до 3 часов ($tableTimeMax минут).',
+            style: TextStyle(fontSize: 13, color: Colors.white60),
           ),
         ],
       ),

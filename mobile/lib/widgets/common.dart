@@ -806,7 +806,8 @@ class RoomClosedScreen extends StatelessWidget {
 // сколько монет взять с собой: от минимума комнаты до всего баланса. За столом он играет
 // только ими, остальное остаётся на балансе. Докупить за столом — только с согласия всех
 // (§9.1c, 22.10.2026; TopUpDialog). Проверяет сервер (buyIn.ts) — здесь только выбор. null — передумал.
-Future<int?> askBuyIn(BuildContext context, {required int minBalance}) async {
+// settings — условия стола, если известны: тогда в окне видно время игры (§20).
+Future<int?> askBuyIn(BuildContext context, {required int minBalance, Map? settings}) async {
   final response = await apiRequest(http.get(Uri.parse('$apiBase/me'), headers: authHeaders()));
   expectStatus(response, const [200]);
   final balance = ((jsonDecode(response.body) as Map)['balance'] as num).toInt();
@@ -816,7 +817,11 @@ Future<int?> askBuyIn(BuildContext context, {required int minBalance}) async {
   if (!context.mounted) return null;
   return showDialog<int>(
     context: context,
-    builder: (_) => BuyInDialog(minBalance: minBalance, balance: balance),
+    builder: (_) => BuyInDialog(
+      minBalance: minBalance,
+      balance: balance,
+      timeLimit: settings == null ? null : fmtTimeLimit(settings['timeLimitMinutes']),
+    ),
   );
 }
 
@@ -824,7 +829,9 @@ class BuyInDialog extends StatefulWidget {
   final int minBalance;
   final int balance;
 
-  const BuyInDialog({super.key, required this.minBalance, required this.balance});
+  final String? timeLimit; // «60 мин», «без ограничения» — заранее видно, на сколько садишься
+
+  const BuyInDialog({super.key, required this.minBalance, required this.balance, this.timeLimit});
 
   @override
   State<BuyInDialog> createState() => _BuyInDialogState();
@@ -847,6 +854,15 @@ class _BuyInDialogState extends State<BuyInDialog> {
         mainAxisSize: MainAxisSize.min,
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
+          if (widget.timeLimit != null)
+            Padding(
+              padding: const EdgeInsets.only(bottom: 10),
+              child: Text(
+                'Время игры: ${widget.timeLimit}',
+                textAlign: TextAlign.center,
+                style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w700, color: Color(0xFFE6B74F)),
+              ),
+            ),
           Row(
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
