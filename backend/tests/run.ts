@@ -35,6 +35,11 @@ import './spectators.test.js';
 import './tournament.test.js';
 import './tableTimer.test.js';
 import './personalPause.test.js';
+// Игра ШАХ (ветка shah, 04.11.2026) — SHAH_RULES.md.
+import './shah-cards.test.js';
+import './shah-score.test.js';
+import './shah-engine.test.js';
+import './shah-sim.test.js';
 import { summary } from './check.js';
 
 process.exit(summary() === 0 ? 0 : 1);
