@@ -225,6 +225,7 @@ class _ShahHomeScreenState extends State<ShahHomeScreen> with RouteAware {
   String? shahRoomId;
   String? garbaRoomId;
   int? balance;
+  double? shahRating; // рейтинг ШАХ (§19) — свой, не рейтинг Гарбы
 
   @override
   void initState() {
@@ -258,6 +259,7 @@ class _ShahHomeScreenState extends State<ShahHomeScreen> with RouteAware {
         shahRoomId = me['shahRoomId']?.toString();
         garbaRoomId = me['roomId']?.toString();
         balance = (me['balance'] as num?)?.toInt();
+        shahRating = (me['shahRating'] as num?)?.toDouble();
       });
     } catch (_) {}
   }
@@ -306,6 +308,17 @@ class _ShahHomeScreenState extends State<ShahHomeScreen> with RouteAware {
                   ],
                 ),
               ),
+            // Рейтинг ШАХ (§19) — свой, отдельно от Гарбы.
+            if (shahRating != null)
+              Padding(
+                padding: const EdgeInsets.only(top: 4),
+                child: Row(
+                  children: [
+                    const Text('Рейтинг ШАХ ', style: TextStyle(color: Colors.white70)),
+                    RatingText(shahRating, fontSize: 15),
+                  ],
+                ),
+              ),
             const SizedBox(height: 16),
             if (shahRoomId != null) ...[
               GarbaButton(label: 'ВЕРНУТЬСЯ ЗА СТОЛ ШАХ #$shahRoomId', onTap: () => openShahLobby(context, shahRoomId!)),
@@ -327,9 +340,10 @@ class _ShahHomeScreenState extends State<ShahHomeScreen> with RouteAware {
               HomeTile(icon: Icons.pin_outlined, label: 'ВОЙТИ ПО КОДУ', onTap: () => go(const JoinRoomScreen())),
             ),
             tileRow(
+              HomeTile(icon: Icons.emoji_events_outlined, label: 'РЕЙТИНГ ШАХ', onTap: () => go(const ShahRatingScreen())),
               HomeTile(icon: Icons.menu_book_outlined, label: 'ПРАВИЛА ШАХ', onTap: () => go(const ShahRulesScreen())),
-              HomeTile(icon: Icons.smart_toy_outlined, label: 'ТРЕНИРОВКА С БОТАМИ', onTap: () => go(const ShahCreateScreen(practiceHint: true))),
             ),
+            HomeTile(icon: Icons.smart_toy_outlined, label: 'ТРЕНИРОВКА С БОТАМИ', onTap: () => go(const ShahCreateScreen(practiceHint: true))),
           ],
         ),
       ),
@@ -1155,6 +1169,201 @@ class _ShahLobbyScreenState extends State<ShahLobbyScreen> {
   }
 }
 
+// В профиле и карточке игрока — рейтинг ШАХ и матчи (/me/profile, /players/:code → shah).
+class ShahProfileLine extends StatelessWidget {
+  final Map<String, dynamic> shah;
+
+  const ShahProfileLine({super.key, required this.shah});
+
+  @override
+  Widget build(BuildContext context) {
+    final matches = (shah['matches'] as num?)?.toInt() ?? 0;
+    return Padding(
+      padding: const EdgeInsets.only(top: 4),
+      child: Column(
+        children: [
+          Row(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              const Text('Рейтинг ШАХ: ',
+                  style: TextStyle(fontSize: 17, fontWeight: FontWeight.w900, color: Color(0xFFD4A94F))),
+              RatingText(shah['rating'], fontSize: 17),
+            ],
+          ),
+          Text(
+            matches == 0
+                ? 'В ШАХ ещё не играл'
+                : 'ШАХ: матчей $matches · побед ${shah['wins']} · поражений ${shah['losses']}',
+            style: const TextStyle(color: Colors.white70),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+// Рейтинг ШАХ (SHAH_RULES.md §19): свой, отдельно от рейтинга Гарбы — друзья и все, кто сыграл матч.
+class ShahRatingScreen extends StatelessWidget {
+  const ShahRatingScreen({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    return DefaultTabController(
+      length: 2,
+      initialIndex: 1,
+      child: Scaffold(
+        appBar: backOnlyAppBar(
+          bottom: const TabBar(tabs: [Tab(text: 'ДРУЗЬЯ'), Tab(text: 'ВСЕ')]),
+        ),
+        body: Column(
+          children: [
+            Container(
+              width: double.infinity,
+              margin: const EdgeInsets.fromLTRB(16, 12, 16, 0),
+              padding: const EdgeInsets.fromLTRB(12, 10, 12, 10),
+              decoration: BoxDecoration(
+                color: const Color(0x22D4A94F),
+                borderRadius: BorderRadius.circular(14),
+                border: Border.all(color: const Color(0xFFD4A94F), width: 1.2),
+              ),
+              child: const Column(
+                children: [
+                  Text('РЕЙТИНГ ШАХ',
+                      style: TextStyle(color: Color(0xFFD4A94F), fontWeight: FontWeight.w900, letterSpacing: 1.2)),
+                  SizedBox(height: 4),
+                  Text(
+                    'Свой, отдельно от Гарбы. Командная игра дороже: 1×1 < 1×1×1 < 2×2 < 3×3. '
+                    'Меньше 10 минут за столом — не меняется, полностью — с часа игры.',
+                    textAlign: TextAlign.center,
+                    style: TextStyle(color: Colors.white70, fontSize: 13),
+                  ),
+                ],
+              ),
+            ),
+            const Expanded(
+              child: TabBarView(children: [ShahRatingList(scope: 'friends'), ShahRatingList(scope: 'all')]),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class ShahRatingList extends StatefulWidget {
+  final String scope;
+
+  const ShahRatingList({super.key, required this.scope});
+
+  @override
+  State<ShahRatingList> createState() => _ShahRatingListState();
+}
+
+class _ShahRatingListState extends State<ShahRatingList> {
+  Map<String, dynamic>? board;
+  String? error;
+
+  @override
+  void initState() {
+    super.initState();
+    load();
+  }
+
+  Future<void> load() async {
+    try {
+      final response = await http.get(Uri.parse('$apiBase/shah/rating?scope=${widget.scope}'), headers: authHeaders());
+      expectStatus(response, const [200]);
+      if (!mounted) return;
+      setState(() => board = jsonDecode(response.body) as Map<String, dynamic>);
+    } catch (e) {
+      if (mounted) setState(() => error = userErrorMessage(e));
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final b = board;
+    if (b == null) return Center(child: error == null ? const CircularProgressIndicator() : Text(error!));
+    final players = (b['players'] as List).map((e) => Map<String, dynamic>.from(e as Map)).toList();
+    final myPlace = b['myPlace'];
+    final total = b['total'];
+    final header = widget.scope == 'friends'
+        ? 'Ваше место среди друзей: $myPlace из $total'
+        : myPlace == null
+            ? 'Сыграйте матч ШАХ (не тренировку) — и попадёте в рейтинг'
+            : 'Ваше место: $myPlace из $total';
+
+    return Column(
+      children: [
+        Padding(
+          padding: const EdgeInsets.all(16),
+          child: Column(
+            children: [
+              Text(header, textAlign: TextAlign.center, style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w700)),
+              const SizedBox(height: 4),
+              Wrap(
+                alignment: WrapAlignment.center,
+                crossAxisAlignment: WrapCrossAlignment.center,
+                children: [
+                  Text('Ваш рейтинг ШАХ · матчей ${b['myMatches'] ?? 0}   ', style: const TextStyle(color: Colors.white70)),
+                  RatingText(b['myRating'], fontSize: 16),
+                ],
+              ),
+            ],
+          ),
+        ),
+        if (widget.scope == 'friends' && total == 1)
+          const Padding(
+            padding: EdgeInsets.symmetric(horizontal: 16),
+            child: Text('Добавьте друзей по коду — и увидите, кто из вас сильнее в ШАХ.',
+                style: TextStyle(color: Colors.white54)),
+          ),
+        Expanded(
+          child: ListView(
+            children: players.map((p) {
+              final isMe = p['me'] == true;
+              final matches = (p['matches'] as num?)?.toInt() ?? 0;
+              return ListTile(
+                tileColor: isMe ? const Color(0x33D4A94F) : null,
+                leading: SizedBox(
+                  width: 76,
+                  child: Row(
+                    children: [
+                      SizedBox(
+                        width: 28,
+                        child: Text(
+                          '${p['place']}',
+                          style: TextStyle(
+                            fontWeight: FontWeight.w800,
+                            color: widget.scope != 'friends' && (p['place'] as num) <= 10
+                                ? topColor((p['place'] as num).toInt())
+                                : null,
+                          ),
+                        ),
+                      ),
+                      AvatarView(avatar: p['avatar']?.toString(), name: p['name'].toString(), frame: p['frame']?.toString()),
+                    ],
+                  ),
+                ),
+                title: Text(isMe ? '${p['name']} (вы)' : p['name'].toString()),
+                subtitle: Text(matches == 0 ? 'ещё не играл в ШАХ' : 'матчей $matches · побед ${p['wins']}',
+                    style: const TextStyle(color: Colors.white60)),
+                trailing: RatingText(p['rating'], fontSize: 18),
+                onTap: isMe
+                    ? null
+                    : () => Navigator.push(
+                          context,
+                          MaterialPageRoute(builder: (_) => PlayerScreen(code: p['code'].toString())),
+                        ),
+              );
+            }).toList(),
+          ),
+        ),
+      ],
+    );
+  }
+}
+
 // Правила ШАХ для игроков — по SHAH_RULES.md (как сейчас работает сервер).
 class ShahRulesScreen extends StatelessWidget {
   const ShahRulesScreen({super.key});
@@ -1228,6 +1437,16 @@ class ShahRulesScreen extends StatelessWidget {
       'Штрафы копятся. Кто первым дошёл до −24 или ниже — проиграл матч. Монеты: в начале каждый '
           'кладёт взнос, победители делят банк. Время стола вышло — партию доигрывают, выигрывает '
           'сторона с меньшими штрафами (поровну — взносы назад). Вышел из матча — его сторона проиграла.',
+    ),
+    (
+      'Рейтинг ШАХ',
+      'Свой, отдельно от Гарбы, начинается с 4.0. За партию: без штрафа +0.03, −2 — −0.01, −4 — −0.02, '
+          '−12 — −0.04, ничья — 0. За матч: победа +0.10, поражение −0.06, вся команда — одинаково.\n\n'
+          'Командная игра дороже: 1×1 ×0.8, 1×1×1 ×1.0, 2×2 ×1.2, 3×3 ×1.4. Обыграл сильнее себя — получаешь '
+          'больше, проиграл слабым — теряешь больше (как в Гарбе).\n\n'
+          'За столом рейтинг не меняется — всё считается в конце матча по времени игры: меньше 10 минут — '
+          'не меняется, 10 минут ×0.3, 20 ×0.5, 30 ×0.7, 45 ×0.85, с часа — полностью. За один стол рейтинг '
+          'падает не больше чем на 0.25. Тренировка с ботами рейтинг не меняет.',
     ),
   ];
 

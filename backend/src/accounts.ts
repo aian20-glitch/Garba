@@ -17,6 +17,7 @@ import { START_SKILL } from './rating.js';
 import { deleteModerationData, ensureModerationTables } from './moderation.js';
 import { deleteShopData, ensureShopTables } from './shop.js';
 import { anonymizeEntries, ensureTournamentTables } from './tournamentDb.js';
+import { deleteShahData } from './shah/db.js';
 
 export type Account = {
   id: string;
@@ -630,6 +631,7 @@ export function deleteAccountData(db: DatabaseSync, id: string) {
   db.prepare('DELETE FROM room_stats WHERE player_id = ?').run(id);
   db.prepare('DELETE FROM week_coins WHERE player_id = ?').run(id);
   db.prepare('DELETE FROM room_activity WHERE player_id = ?').run(id);
+  deleteShahData(db, id, DELETED_NAME); // игра ШАХ: рейтинг, итоги матчей, имя в комнатах ШАХ
   anonymizeEntries(db, id, DELETED_NAME);
   db.prepare('UPDATE accounts SET invited_by = NULL WHERE invited_by = ?').run(id);
 

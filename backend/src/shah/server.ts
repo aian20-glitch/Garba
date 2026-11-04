@@ -1,6 +1,6 @@
 // Сервер игры ШАХ (SHAH_PLAN.md, этап 2, 04.11.2026): комнаты, лобби, «ГОТОВ», раздача, ходы,
 // время на ход, отключение и пауза, время стола и продление, личная пауза, смайлики,
-// боты-тренировка, монеты матча.
+// боты-тренировка, монеты матча; с этапа 4 (05.11.2026) — рейтинг ШАХ (shah/rating.ts, SHAH_RULES.md §19).
 //
 // Отдельно от комнат Гарбы: своя карта комнат, своя таблица shah_rooms, свои запросы /shah/...
 // и сокет-события watch_shah → shah_room. Общее с Гарбой — аккаунты, кошелёк, бан за выход,
@@ -19,16 +19,19 @@ import {
   findAccountByToken,
   getAccount,
   leaveRecordOf,
+  listFriends,
   markBot,
   setLeaveRecord,
   tokenFromHeader,
   transaction,
   type Account,
+  DELETED_NAME,
 } from '../accounts.js';
 import { shuffle } from '../deck.js';
 import { nextLeaveBan } from '../leaveBan.js';
 import { lobbyExpired, lobbySecondsLeft, LOBBY_MS } from '../lobbyTimer.js';
 import { pauseRefusal, pauseSecondsLeft, pausesLeft, startPause, GAME_PAUSES, type PersonalPause } from '../personalPause.js';
+import { shownRating } from '../rating.js';
 import {
   absenceMsFor,
   absenceStep,
@@ -56,7 +59,20 @@ import {
   type TurnClock,
 } from '../turnTimer.js';
 import { createShahDeck } from './cards.js';
-import { chargeCoins, creditCoins, debitUpTo, ensureShahTables, loadUnfinishedShahRooms, saveShahRoom, shahRoomIdTaken } from './db.js';
+import {
+  anonymizeShah,
+  chargeCoins,
+  creditCoins,
+  debitUpTo,
+  ensureShahTables,
+  loadUnfinishedShahRooms,
+  saveShahRoom,
+  shahLeaders,
+  shahRoomIdTaken,
+  shahSkillOf,
+  shahStatsOf,
+  writeShahResult,
+} from './db.js';
 import {
   act,
   awaitedOf,
@@ -86,10 +102,15 @@ import {
   type SeatOutcome,
   type ShahSettings,
 } from './rooms.js';
+import { matchRatingDeltas, partyDeltas, settleShah, shahTimeMultiplier, type ShahRated } from './rating.js';
 import type { SideResult } from './score.js';
 import { shahView } from './view.js';
 
 export type ShahPlayer = { id: string; name: string; seat: number; joinedAt: number; bot?: boolean };
+
+// Рейтинг ШАХ игрока за этим столом (§19): мастерство на начало матча, накопленное за партии и
+// матч, реальное время игры (без лобби и пауз), итог — после конца матча.
+export type ShahRatingState = { start: number; pending: number; activeMs: number; end?: number };
 
 export type ShahCloseReason =
   | 'match_over' // кто-то дошёл до −24
@@ -137,6 +158,7 @@ export type ShahRoom = {
     leftIds: string[];
     totals: number[] | null;
   } | null;
+  rating?: Record<string, ShahRatingState> | null; // §19; тренировка — null (рейтинг не меняется)
   reactions: ReactionEntry[];
   version: number;
   finishedAt: number | null;
@@ -153,7 +175,6 @@ export type ShahContext = {
   avoidIds: (accountId: string) => Set<string>; // блокировки в обе стороны
   ownedPacks: (accountId: string) => string[]; // наборы смайликов из магазина
   lookOf: (accountId: string) => { avatar: string | null; frame: string | null; cardBack: string | null };
-  ratingOf: (accountId: string) => number;
   notify?: (accountId: string, key: string, text: string, startParam?: string) => void;
   // Позвать друга за стол ШАХ (этап 3): приглашение — в общем списке /me → roomInvites (kind 'shah').
   invite: (from: Account, code: string, roomId: string, memberIds: string[]) => { status: number; body: Record<string, unknown> };
@@ -168,6 +189,8 @@ const TEST_ABSENCE_MS = process.env.GARBA_DISCONNECT_MS ? Number(process.env.GAR
 const TEST_TURN_MS = process.env.GARBA_TURN_MS ? Number(process.env.GARBA_TURN_MS) : null;
 const TABLE_MINUTE_MS = env('GARBA_TABLE_MINUTE_MS', 60_000);
 const PAUSE_MS = env('GARBA_PERSONAL_PAUSE_MS', 10_000);
+// «Минута» для времени в рейтинге ШАХ (§19.3): в живых проверках матч идёт секунды — минута короче.
+const RATING_MINUTE_MS = env('GARBA_SHAH_RATING_MINUTE_MS', 60_000);
 // После партии 3 секунды все смотрят итог — раздать нельзя (как §10.8 Гарбы).
 export const PARTY_SHOW_MS = env('GARBA_SHAH_SHOW_MS', 3_000);
 const BOT_DELAY_MS = env('GARBA_SHAH_BOT_MS', 900);
@@ -253,6 +276,7 @@ export function registerShah(ctx: ShahContext) {
       transaction(db, () => {
         if (settling) {
           applySettlement(room);
+          applyRating(room);
           room.settled = true;
         }
         saveShahRoom(db, room);
@@ -333,6 +357,39 @@ export function registerShah(ctx: ShahContext) {
     return code;
   }
 
+  // ——— рейтинг ШАХ (§19) ———
+
+  // Мастерство ШАХ из базы. Меняется только в конце матча (applyRating) — там кеш и сбрасывается.
+  const skills = new Map<string, number>();
+  function skillOf(id: string): number {
+    const known = skills.get(id);
+    if (known !== undefined) return known;
+    const skill = shahSkillOf(db, id);
+    skills.set(id, skill);
+    return skill;
+  }
+
+  // Рейтинг игрока за этим столом. Заводится при старте матча; у комнат, начатых до этапа 4, — при
+  // первом обращении. Тренировка рейтинг не меняет — null.
+  function ratingState(room: ShahRoom, id: string): ShahRatingState | null {
+    if (room.practice) return null;
+    room.rating ??= {};
+    return (room.rating[id] ??= { start: skillOf(id), pending: 0, activeMs: 0 });
+  }
+
+  // Игроки матча с мастерством на начало — для силы соперника и стабильности (как в Гарбе).
+  function ratedPlayers(room: ShahRoom): ShahRated[] {
+    if (room.practice || !room.match) return [];
+    return room.match.players.map((id, seat) => ({ id, seat, skill: ratingState(room, id)!.start }));
+  }
+
+  function addPending(room: ShahRoom, deltas: Record<string, number>) {
+    for (const [id, d] of Object.entries(deltas)) {
+      const r = ratingState(room, id);
+      if (r) r.pending += d;
+    }
+  }
+
   // Сам сидит в другой начатой игре (Гарбы или ШАХ) — смотреть чужой стол нельзя: свой встал
   // бы на паузу (§18 Гарбы, «зрители — как в Гарбе»).
   function playingElsewhere(accountId: string, room: ShahRoom): boolean {
@@ -366,12 +423,16 @@ export function registerShah(ctx: ShahContext) {
     }
     sortSeats(room);
     const now = Date.now();
-    const before = { status: room.status, match: room.match, charged: room.charged, readyCheck: room.readyCheck };
+    const before = { status: room.status, match: room.match, charged: room.charged, readyCheck: room.readyCheck, rating: room.rating };
     room.match = createMatch(room.players.map((p) => p.id), shuffle(createShahDeck()), room.options);
     room.status = 'started';
     room.startedAt = now;
     room.readyCheck = null;
     room.readyDroppedIds = [];
+    // Рейтинг ШАХ (§19): мастерство на начало матча; тренировка — без рейтинга.
+    room.rating = room.practice
+      ? null
+      : Object.fromEntries(room.players.map((p) => [p.id, { start: skillOf(p.id), pending: 0, activeMs: 0 }]));
     room.version++;
     try {
       transaction(db, () => {
@@ -423,6 +484,47 @@ export function registerShah(ctx: ShahContext) {
     turnClocks.delete(room.id);
     const text = ids.map((id, i) => `${nameOf(room, id)} ${outcomes[i]} ${deltas[i] >= 0 ? '+' : ''}${deltas[i]}`).join(', ');
     log(room, `МАТЧ ОКОНЧЕН (${reason}${room.practice ? ', тренировка' : ''}): ${text}`);
+    settleRating(room);
+  }
+
+  // Рейтинг в конце матча (§19.2, §19.3): + итог матча, всё накопленное × время игры, потеря не
+  // больше 0.25. В базу — в persist, одной транзакцией с монетами (applyRating).
+  function settleRating(room: ShahRoom) {
+    const rated = ratedPlayers(room);
+    if (rated.length === 0 || !room.result) return;
+    addPending(room, matchRatingDeltas(room.capacity, rated, room.result.outcomes));
+    const text: string[] = [];
+    for (const p of rated) {
+      const r = ratingState(room, p.id)!;
+      r.end = settleShah(r.start, r.pending, r.activeMs, RATING_MINUTE_MS);
+      const minutes = Math.round(r.activeMs / RATING_MINUTE_MS);
+      text.push(`${nameOf(room, p.id)} ${r.start.toFixed(2)} → ${r.end.toFixed(2)} (${minutes} мин ×${shahTimeMultiplier(r.activeMs, RATING_MINUTE_MS)})`);
+    }
+    log(room, `рейтинг ШАХ: ${text.join(', ')}`);
+  }
+
+  // Итог матча и новое мастерство — в базу (внутри транзакции persist, один раз: room.settled).
+  function applyRating(room: ShahRoom) {
+    const r = room.result!;
+    const now = room.finishedAt ?? Date.now();
+    for (const id of room.match!.players) {
+      const st = room.rating?.[id];
+      if (!st || st.end === undefined) continue;
+      writeShahResult(db, {
+        roomId: room.id,
+        playerId: id,
+        format: room.capacity,
+        outcome: r.outcomes[id] ?? 'none',
+        coins: r.deltas[id] ?? 0,
+        parties: room.match!.history.length,
+        skillBefore: st.start,
+        skillAfter: st.end,
+        activeMs: st.activeMs,
+        finishedAt: now,
+      });
+      // Кеш — заново из базы: транзакция прошла — новое мастерство, откатилась — прежнее.
+      skills.delete(id);
+    }
   }
 
   // Выплата итога (внутри транзакции persist). «а»: банк — победителям; «б»: проигравший платит
@@ -463,6 +565,8 @@ export function registerShah(ctx: ShahContext) {
       room.partyDoneFor = party.number;
       room.partyDoneAt = Date.now();
       const res = party.result!;
+      // Рейтинг за партию (§19.1) — копится до конца матча; partyDoneFor не даёт засчитать дважды.
+      addPending(room, partyDeltas(room.capacity, ratedPlayers(room), res));
       log(room, `партия ${res.number}: очки ${res.points.join(':')}, штрафы ${res.penalties.join('/')}, счёт ${res.totals.join('/')}${res.draw ? ', ничья — следующая ×' + match.multiplier : ''}`);
     }
     if (match.over) return finishMatch(room, 'match_over', match.result);
@@ -587,7 +691,10 @@ export function registerShah(ctx: ShahContext) {
         side: sideOf(room.capacity, p.seat),
         bot: !!p.bot,
         ready: room.readyCheck?.readyIds.includes(p.id) ?? false,
-        rating: ctx.ratingOf(p.id),
+        // Рейтинг ШАХ (§19): за столом не меняется — на начало матча, после матча — итог;
+        // ratingStart — для «4.0 → 4.1» в итогах. В лобби и на тренировке — как в базе.
+        rating: shownRating(room.rating?.[p.id] ? (room.rating[p.id].end ?? room.rating[p.id].start) : skillOf(p.id)),
+        ratingStart: room.rating?.[p.id] ? shownRating(room.rating[p.id].start) : null,
         ...ctx.lookOf(p.id),
       })),
       readyCheck: room.readyCheck
@@ -856,6 +963,38 @@ export function registerShah(ctx: ShahContext) {
       spectators,
     }));
   }
+
+  // Рейтинг ШАХ (§19.5): друзья — я и друзья (кто не играл — 4.0), все — кто сыграл хотя бы один
+  // матч, первые 50. Как /rating Гарбы, но свой список.
+  app.get('/shah/rating', (req, res) => {
+    const account = me(res);
+    const friendsOnly = req.query.scope === 'friends';
+    const list = friendsOnly
+      ? shahLeaders(db, [account.id, ...listFriends(db, account.id).map((f) => f.id)])
+      : shahLeaders(db);
+    const places = list.map((p, i) => {
+      const look = ctx.lookOf(p.id);
+      return {
+        place: i + 1,
+        code: p.code,
+        name: p.name,
+        avatar: look.avatar,
+        frame: look.frame,
+        rating: shownRating(p.skill),
+        matches: p.matches,
+        wins: p.wins,
+        me: p.id === account.id,
+      };
+    });
+    return res.json({
+      scope: friendsOnly ? 'friends' : 'all',
+      total: places.length,
+      myPlace: places.find((p) => p.me)?.place ?? null,
+      myRating: shownRating(skillOf(account.id)),
+      myMatches: shahStatsOf(db, account.id).matches,
+      players: friendsOnly ? places : places.slice(0, 50),
+    });
+  });
 
   // «Быстрая игра»: сесть в самую заполненную открытую комнату (того же размера, если прислали),
   // нет такой — создать открытую: capacity (без него — 4), взнос 100.
@@ -1190,6 +1329,23 @@ export function registerShah(ctx: ShahContext) {
     }
   }), 1000);
 
+  // Реальное время игры для рейтинга (§19.3, как §16.1 Гарбы): раз в секунду — всем за начатым
+  // столом, если игра не на паузе (отключился, «ушёл»). Лобби и тренировка не считаются. Сервер
+  // стоял — разрыв больше 5 секунд не засчитываем. В базу — вместе с комнатой при следующем сохранении.
+  let lastActiveTick = Date.now();
+  setInterval(guarded('active time', () => {
+    const now = Date.now();
+    const dt = Math.min(5_000, Math.max(0, now - lastActiveTick));
+    lastActiveTick = now;
+    for (const room of rooms.values()) {
+      if (room.status !== 'started' || room.practice || !room.match || isPaused(room)) continue;
+      for (const id of room.match.players) {
+        const r = ratingState(room, id);
+        if (r) r.activeMs += dt;
+      }
+    }
+  }), 1000);
+
   // Время на ход (§13a): не успел — сервер ходит сам (вопрос 24 «а»), два пропуска — «ушёл».
   // Боты таймера не ждут — за них ходит driveBots.
   setInterval(guarded('turns', () => {
@@ -1273,6 +1429,20 @@ export function registerShah(ctx: ShahContext) {
     hasSeatFor: (roomId: string, accountId: string) => {
       const room = rooms.get(roomId);
       return !!room && room.status === 'lobby' && room.players.length < room.capacity && !isMember(room, accountId);
+    },
+    // Рейтинг ШАХ (§19) — для /me; рейтинг и статистика — для профиля и карточки игрока.
+    ratingOf: (accountId: string) => shownRating(skillOf(accountId)),
+    profileOf: (accountId: string) => ({ rating: shownRating(skillOf(accountId)), ...shahStatsOf(db, accountId) }),
+    // Аккаунт удалён (index.ts, deleteAccountEverywhere): в базе его ШАХ уже стёрт (deleteShahData),
+    // а закрытые комнаты ещё полчаса в памяти и сохраняются заново — имя меняем и там.
+    forgetAccount: (accountId: string) => {
+      for (const room of rooms.values()) {
+        if (!room.players.some((p) => p.id === accountId) && !room.rating?.[accountId]) continue;
+        Object.assign(room, anonymizeShah(room, accountId, DELETED_NAME));
+        delete room.rating?.[accountId];
+      }
+      skills.delete(accountId);
+      codes.delete(accountId);
     },
     // Для страницы-приглашения /r/:id: что за стол.
     summary: (roomId: string) => {

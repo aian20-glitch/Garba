@@ -620,7 +620,25 @@ String shahCloseReasonText(Map<String, dynamic> room) {
   };
 }
 
-// Окно итога матча: кто выиграл, монеты, счёт.
+// «Рейтинг ШАХ 4.0 → 4.1 (+0.1)» — цветом: плюс зелёный, минус красный. Время за столом меньше
+// 10 минут — рейтинг не меняется (§19.3), тогда «4.0 → 4.0 (0.0)».
+Widget shahRatingChange(Object? start, Object? end) {
+  final from = (start as num).toDouble();
+  final to = ((end as num?) ?? from).toDouble();
+  final change = ((to - from) * 10).round() / 10;
+  final color = change > 0
+      ? Colors.greenAccent
+      : change < 0
+          ? Colors.redAccent
+          : Colors.white60;
+  return Text(
+    'Рейтинг ШАХ ${fmtRating(from)} → ${fmtRating(to)} '
+    '(${change > 0 ? '+' : change < 0 ? '−' : ''}${change.abs().toStringAsFixed(1)})',
+    style: TextStyle(fontSize: 12, fontWeight: FontWeight.w700, color: color),
+  );
+}
+
+// Окно итога матча: кто выиграл, монеты, счёт, рейтинг ШАХ.
 class ShahMatchOverPopup extends StatelessWidget {
   final Map<String, dynamic> room;
   final String myId;
@@ -700,6 +718,8 @@ class ShahMatchOverPopup extends StatelessWidget {
                           fontWeight: FontWeight.w900,
                           color: won ? gold : outcome == 'lose' ? Colors.redAccent : Colors.white60,
                         )),
+                    // Рейтинг ШАХ (§19 SHAH_RULES.md) — как в итогах Гарбы; тренировка его не меняет.
+                    if (!practice && p['ratingStart'] is num) shahRatingChange(p['ratingStart'], p['rating']),
                   ],
                 ),
               ),

@@ -1112,6 +1112,7 @@ function deleteAccountEverywhere(account: Account) {
       delete r.stats?.[account.id];
     }
   }
+  shah?.forgetAccount(account.id);
   console.log(`[ACCOUNT] deleted ${account.name} (${account.id})`);
   looks.delete(account.id);
   dropSocketsOf(account.id);
@@ -1167,6 +1168,8 @@ app.get('/me', (req, res) => {
     shahRoomId: shah?.roomOf(account.id)?.id ?? null,
     // Включён ли ШАХ на сервере (GARBA_SHAH=1) — без него приложение плитку «ШАХ» не показывает.
     shahEnabled: shah !== null,
+    // Рейтинг ШАХ (этап 4, SHAH_RULES.md §19) — свой, отдельно от rating Гарбы; без ШАХ — null.
+    shahRating: shah?.ratingOf(account.id) ?? null,
     daily: {
       claimedToday: !claim.claimable,
       streak: claim.streak,
@@ -1436,6 +1439,8 @@ app.get('/me/profile', (req, res) => {
     medals: coinMedals(peakBalanceOf(db, account.id)),
     // Победы в еженедельном турнире (§19.12): значок 🏆×N в «ДОСТИЖЕНИЯХ».
     tournamentWins: winsOf(account.id),
+    // ШАХ (этап 4): рейтинг ШАХ и матчи — только когда ШАХ включён на сервере.
+    shah: shah?.profileOf(account.id) ?? null,
     friendsCount: listFriends(db, account.id).length,
     hasRecoveryCode: hasRecoveryCode(db, account.id),
   });
@@ -1463,6 +1468,7 @@ app.get('/players/:code', (req, res) => {
     stats: profileStats(db, player.id),
     medals: coinMedals(peakBalanceOf(db, player.id)),
     tournamentWins: winsOf(player.id),
+    shah: shah?.profileOf(player.id) ?? null,
     isFriend: areFriends(db, me.id, player.id),
     // friends | outgoing (я позвал) | incoming (он зовёт меня) | none
     friendStatus: friendStatus(db, me.id, player.id),
@@ -2121,7 +2127,6 @@ const shah =
         avoidIds: (id) => avoidIds(db, id),
         ownedPacks: (id) => ownedItems(db, id),
         lookOf: (id) => ({ avatar: avatarOf(id), frame: frameOf(id), cardBack: lookFor(id).back }),
-        ratingOf: (id) => shownRating(accountRating(id)),
         notify: notifyTelegram,
         invite: inviteToShah,
       })

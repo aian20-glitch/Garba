@@ -42,6 +42,7 @@ import './shah-engine.test.js';
 import './shah-sim.test.js';
 import './shah-rooms.test.js';
 import './shah-view.test.js';
+import './shah-rating.test.js';
 import { summary } from './check.js';
 
 process.exit(summary() === 0 ? 0 : 1);

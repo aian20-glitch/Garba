@@ -10,6 +10,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { io, type Socket } from 'socket.io-client';
 import { check, section, summary } from './check.js';
+import { shownRating } from '../src/rating.js';
+import { matchRatingDeltas, partyDeltas, settleShah } from '../src/shah/rating.js';
 
 const PORT = 3090;
 const BASE = `http://127.0.0.1:${PORT}`;
@@ -34,6 +36,7 @@ async function startServer(port = PORT, shah = true) {
       GARBA_SHAH_BOT_TICK_MS: '40',
       GARBA_TABLE_MINUTE_MS: '400', // «минута» стола — 0,4 с (только у столов с временем игры)
       GARBA_PERSONAL_PAUSE_MS: '1000',
+      GARBA_SHAH_RATING_MINUTE_MS: '10', // «минута» рейтинга ШАХ — 10 мс: матч в секунды идёт «больше часа»
     },
     stdio: 'ignore',
   });
@@ -190,6 +193,7 @@ async function main() {
   check('/me: стол ШАХ — отдельным полем, roomId Гарбы пуст', [(await request('GET', '/me', a.token)).body.shahRoomId, (await request('GET', '/me', a.token)).body.roomId], [roomId, null]);
   check('/me: ШАХ включён', (await request('GET', '/me', a.token)).body.shahEnabled, true);
   check('у игрока за столом — код (карточка игрока)', created.body.players[0].code, a.code);
+  check('в лобби — рейтинг ШАХ 4.0 (матча ещё нет)', [created.body.players[0].rating, created.body.players[0].ratingStart], [4, null]);
   const page = await fetch(`${BASE}/r/${roomId}`);
   check('страница-приглашение на стол ШАХ', [page.status, (await page.text()).includes('ШАХ')], [200, true]);
 
@@ -266,6 +270,33 @@ async function main() {
   check('итог в монетах: +500 и −500', [final.result.deltas[winner.id], final.result.deltas[loser.id]], [500, -500]);
   check('банк выплачен: 30 500 и 29 500', [await balanceOf(winner), await balanceOf(loser)], [30_500, 29_500]);
   check('штрафы: проигравший −24 или ниже', Math.min(...final.result.totals) <= -24, true);
+
+  section('ШАХ: рейтинг ШАХ (этап 4) — свой, Гарбу не трогает');
+  // Тот же расчёт по истории партий и итогу матча: соперники равны (4.0), время ×1.0.
+  const rated = final.players.map((p: any) => ({ id: p.id, seat: p.seat, skill: 4 }));
+  const pending: Record<string, number> = { [a.id]: 0, [b.id]: 0 };
+  for (const party of final.game.history) {
+    const d = partyDeltas(2, rated, party);
+    for (const id of Object.keys(pending)) pending[id] += d[id];
+  }
+  const md = matchRatingDeltas(2, rated, final.result.outcomes);
+  for (const id of Object.keys(pending)) pending[id] += md[id];
+  const expected = (id: string) => shownRating(settleShah(4, pending[id], 3_600_000));
+  const ratingIn = (st: any, p: P) => st.players.find((x: any) => x.id === p.id);
+  check('итоги матча: рейтинг ШАХ на начало — 4.0 у обоих', [ratingIn(final, a).ratingStart, ratingIn(final, b).ratingStart], [4, 4]);
+  check('итоги матча: рейтинг ШАХ после — по партиям и матчу', [ratingIn(final, a).rating, ratingIn(final, b).rating], [expected(a.id), expected(b.id)]);
+  check('победитель матча — в плюсе', pending[winner.id] > 0, true);
+  const board = (await request('GET', '/shah/rating?scope=all', a.token)).body;
+  check('/shah/rating: оба в списке, мой рейтинг и место', [board.total, board.players.find((p: any) => p.me)?.rating, board.myRating, board.myMatches], [2, expected(a.id), expected(a.id), 1]);
+  check('/shah/rating: первым — у кого выше', board.players[0].rating >= board.players[1].rating, true);
+  const friendsBoard = (await request('GET', '/shah/rating?scope=friends', b.token)).body;
+  check('/shah/rating друзья: я и друг', [friendsBoard.scope, friendsBoard.total, friendsBoard.players.map((p: any) => p.code).sort()], ['friends', 2, [a.code, b.code].sort()]);
+  const meA = (await request('GET', '/me', a.token)).body;
+  check('/me: рейтинг ШАХ — отдельным полем, рейтинг Гарбы прежний', [meA.shahRating, meA.rating], [expected(a.id), 4]);
+  const profileW = (await request('GET', '/me/profile', winner.token)).body;
+  check('профиль: матчей 1, побед 1, рейтинг ШАХ', [profileW.shah?.matches, profileW.shah?.wins, profileW.shah?.rating], [1, 1, expected(winner.id)]);
+  const cardL = (await request('GET', `/players/${loser.code}`, winner.token)).body;
+  check('карточка соперника: матчей 1, поражений 1', [cardL.shah?.matches, cardL.shah?.losses, cardL.shah?.parties], [1, 1, final.game.history.length]);
   check('после матча — снова свободен', (await request('GET', '/me', a.token)).body.shahRoomId, null);
   const garbaNow = await request('POST', '/rooms', a.token, { capacity: 4, ante: 100, emptyLimit: 5, konThreshold: 10, minBalance: 1000 });
   check('Гарба после ШАХ работает: стол создан', garbaNow.status, 201);
@@ -414,6 +445,9 @@ async function main() {
   check('боты доиграли матч с человеком', [practiceEnd.status, practiceEnd.result?.reason], ['finished', 'match_over']);
   check('сыграно несколько партий', practiceEnd.game.history.length >= 2, true);
   check('тренировка: монеты не двигались', await balanceOf(g), 30_000);
+  const gMe = (await request('GET', '/me/profile', g.token)).body;
+  check('тренировка: рейтинг ШАХ и матчи не изменились', [gMe.shah?.rating, gMe.shah?.matches, practiceEnd.players[0].ratingStart], [4, 0, null]);
+  check('тренировки нет в рейтинге ШАХ', (await request('GET', '/shah/rating?scope=all', g.token)).body.players.some((p: any) => p.code === g.code), false);
 
   section('ШАХ: перезапуск сервера посреди матча');
   const h = await account('Хадиша');

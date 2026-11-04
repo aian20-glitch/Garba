@@ -37,6 +37,7 @@ import {
   setDaily,
   tokenFromHeader,
 } from '../src/accounts.js';
+import { ensureShahTables, saveShahRoom, shahSkillOf, shahStatsOf, writeShahResult } from '../src/shah/db.js';
 
 const db = openDb(':memory:');
 
@@ -164,6 +165,27 @@ section('удалить аккаунт навсегда (требование Ap
   check('в старой комнате имя заменено, у остальных — как было',
     [saved.players[0].name, saved.players[1].name, saved.game.dealerName, saved.game.mains[0].playerName],
     [DELETED_NAME, 'Остаётся', DELETED_NAME, DELETED_NAME]);
+  check('ШАХ на сервере не включали — удаление не падает', getAccount(db2, stays.id)?.name, 'Остаётся');
+}
+{
+  // Игра ШАХ (этап 4): рейтинг, итоги матчей и имя в комнатах ШАХ.
+  const db3 = openDb(':memory:');
+  ensureShahTables(db3);
+  const gone = createAccount(db3, 'Уходящий').account;
+  const stays = createAccount(db3, 'Остаётся').account;
+  const row = { roomId: '54321', format: 2, outcome: 'win', coins: 100, parties: 5, skillBefore: 4, skillAfter: 4.2, activeMs: 3_600_000, finishedAt: 0 };
+  writeShahResult(db3, { ...row, playerId: gone.id });
+  writeShahResult(db3, { ...row, playerId: stays.id, outcome: 'lose', coins: -100, skillAfter: 3.9 });
+  const shahRoom = { id: '54321', kind: 'shah', players: [{ id: gone.id, name: 'Уходящий' }, { id: stays.id, name: 'Остаётся' }],
+    lastPersonalPause: { playerId: gone.id, name: 'Уходящий', early: false } };
+  saveShahRoom(db3, { ...shahRoom, status: 'finished' });
+  deleteAccountData(db3, gone.id);
+  check('ШАХ: рейтинг и итоги удалённого стёрты, у второго остались',
+    [shahSkillOf(db3, gone.id), shahStatsOf(db3, gone.id).matches, shahSkillOf(db3, stays.id), shahStatsOf(db3, stays.id).matches],
+    [4, 0, 3.9, 1]);
+  const kept = JSON.parse((db3.prepare("SELECT data FROM shah_rooms WHERE id = '54321'").get() as { data: string }).data);
+  check('ШАХ: в комнате имя заменено (и в личной паузе), у второго — как было',
+    [kept.players[0].name, kept.players[1].name, kept.lastPersonalPause.name], [DELETED_NAME, 'Остаётся', DELETED_NAME]);
 }
 
 section('заявки в друзья — только с согласия (решение владельца, 19.09.2026)');
