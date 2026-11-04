@@ -91,7 +91,7 @@ export function matchCovers(covers: Card[], targets: Card[], trump: Suit): numbe
 }
 
 // Дешевле — то, чем жальче бить последним: обычные карты по старшинству, потом козыри, ШАХ — в конце.
-function coverCost(card: Card, trump: Suit): number {
+export function coverCost(card: Card, trump: Suit): number {
   if (isShah(card)) return 100;
   return (card.suit === trump ? 50 : 0) + rankPower(card.rank);
 }

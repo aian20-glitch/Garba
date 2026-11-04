@@ -1165,6 +1165,8 @@ app.get('/me', (req, res) => {
     roomId: activeRoomOf(account.id)?.id ?? null,
     // Незаконченный стол ШАХ (04.11.2026) — отдельным полем: старые приложения о ШАХ не знают.
     shahRoomId: shah?.roomOf(account.id)?.id ?? null,
+    // Включён ли ШАХ на сервере (GARBA_SHAH=1) — без него приложение плитку «ШАХ» не показывает.
+    shahEnabled: shah !== null,
     daily: {
       claimedToday: !claim.claimable,
       streak: claim.streak,
@@ -1260,6 +1262,19 @@ function invitePage(title: string, text: string, appLink: string, code: string, 
 app.get('/r/:roomId', (req, res) => {
   const roomId = req.params.roomId;
   const room = isRoomCode(roomId) ? rooms.get(roomId) : undefined;
+  // Стол ШАХ (ветка shah): та же ссылка — приложение само поймёт, какая игра.
+  const shahTable = !room && isRoomCode(roomId) ? shah?.summary(roomId) : undefined;
+  if (shahTable) {
+    return res.type('html').send(
+      invitePage(
+        'Приглашение в ШАХ',
+        `${shahTable.creatorName} зовёт вас играть в ШАХ: стол на ${shahTable.capacity}, сейчас ${shahTable.players}.`,
+        `garba://room/${roomId}`,
+        roomId,
+        'Если приложение не открылось — нажмите «Войти по коду» и введите номер стола:',
+      ),
+    );
+  }
   if (!room || room.status === 'finished') {
     return res.status(404).type('html').send(
       invitePage('ГАРБА', 'Эта комната уже закрыта или её нет.', 'garba://', '', 'Создайте новую комнату в приложении.'),
@@ -1597,6 +1612,8 @@ app.get('/friends', (req, res) => {
       stats: profileStats(db, f.id),
       // В какой комнате сейчас сидит — чтобы можно было зайти к другу.
       roomId: activeRoomOf(f.id)?.id ?? null,
+      // За каким столом ШАХ (ветка shah) — отдельным полем, как в /me.
+      shahRoomId: shah?.roomOf(f.id)?.id ?? null,
     })),
   });
 });
@@ -2106,6 +2123,7 @@ const shah =
         lookOf: (id) => ({ avatar: avatarOf(id), frame: frameOf(id), cardBack: lookFor(id).back }),
         ratingOf: (id) => shownRating(accountRating(id)),
         notify: notifyTelegram,
+        invite: inviteToShah,
       })
     : null;
 if (!shah) app.use('/shah', (_req, res) => res.status(404).json({ error: 'shah disabled' }));
@@ -2148,7 +2166,8 @@ function spectateRefusalFor(room: Room, accountId: string) {
   return spectateRefusal({
     member,
     status: room.status,
-    playingElsewhere: elsewhere !== undefined && elsewhere.status === 'started',
+    // Сидит за начатым столом Гарбы или ШАХ — свой стол встал бы на паузу.
+    playingElsewhere: (elsewhere !== undefined && elsewhere.status === 'started') || shah?.roomOf(accountId)?.status === 'started',
     blocked: room.players.some((p) => avoid.has(p.id)),
   });
 }
@@ -4497,7 +4516,8 @@ app.post('/rooms/:id/join', (req, res) => {
 // видно у друга на главном экране 10 минут (без push-уведомлений: приложение должно быть
 // открыто). Живёт в памяти: после перезапуска сервера пропадает — не страшно.
 const INVITE_TTL_MS = 10 * 60_000;
-const roomInvites = new Map<string, { roomId: string; fromId: string; fromName: string; at: number }[]>();
+// kind 'shah' — зовут за стол ШАХ (ветка shah): номера столов ШАХ с Гарбой не совпадают.
+const roomInvites = new Map<string, { roomId: string; fromId: string; fromName: string; at: number; kind?: 'shah' }[]>();
 
 // Раз в час забываем старые адреса и просроченные приглашения — иначе карты росли бы вечно.
 setInterval(guarded('cleanup', () => {
@@ -4522,18 +4542,34 @@ function roomHasSeat(room: Room): boolean {
 function invitesFor(accountId: string) {
   const now = Date.now();
   const list = (roomInvites.get(accountId) ?? []).filter((inv) => {
+    if (now - inv.at >= INVITE_TTL_MS) return false;
+    if (inv.kind === 'shah') return !!shah?.hasSeatFor(inv.roomId, accountId);
     const room = rooms.get(inv.roomId);
-    return now - inv.at < INVITE_TTL_MS && !!room && roomHasSeat(room) &&
-      !room.players.some((p) => p.id === accountId);
+    return !!room && roomHasSeat(room) && !room.players.some((p) => p.id === accountId);
   });
   roomInvites.set(accountId, list);
   // tableNo — зовут за турнирный стол (§19.3): приложение сажает без суммы за стол.
+  // kind — какая игра: garba | shah (старые приложения поле не читают).
   return list.map((inv) => ({
     roomId: inv.roomId,
     fromName: inv.fromName,
     at: inv.at,
-    tableNo: rooms.get(inv.roomId)?.tournament?.tableNo ?? null,
+    kind: inv.kind ?? 'garba',
+    tableNo: inv.kind === 'shah' ? null : rooms.get(inv.roomId)?.tournament?.tableNo ?? null,
   }));
+}
+
+// Позвать друга за стол ШАХ (ветка shah, этап 3) — как за стол Гарбы: только друга.
+function inviteToShah(from: Account, code: string, roomId: string, memberIds: string[]) {
+  const friend = findAccountByCode(db, normalizeCode(code) ?? '');
+  if (!friend) return { status: 404, body: { error: 'player not found' } };
+  if (!areFriends(db, from.id, friend.id)) return { status: 403, body: { error: 'not a friend' } };
+  if (memberIds.includes(friend.id)) return { status: 409, body: { error: 'already in this room' } };
+  const list = (roomInvites.get(friend.id) ?? []).filter((inv) => inv.roomId !== roomId);
+  roomInvites.set(friend.id, [...list, { roomId, fromId: from.id, fromName: from.name, at: Date.now(), kind: 'shah' }]);
+  console.log(`[SHAH ${roomId}] ${from.name} зовёт друга ${friend.name}`);
+  notifyTelegram(friend.id, `invite:${roomId}`, `${from.name} зовёт тебя за стол ШАХ — #${roomId}.`, `room_${roomId}`);
+  return { status: 200, body: { ok: true } };
 }
 
 app.post('/rooms/:id/invite', (req, res) => {

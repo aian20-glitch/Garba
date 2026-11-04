@@ -170,6 +170,8 @@ async function main() {
   const offUser = (await request('POST', '/accounts', undefined, { name: 'Выкл' }, 'http://127.0.0.1:3089')).body;
   const offRes = await request('POST', '/shah/rooms', offUser.token, { capacity: 2, ante: 100 }, 'http://127.0.0.1:3089');
   check('без GARBA_SHAH=1 запросов ШАХ нет', [offRes.status, offRes.body.error], [404, 'shah disabled']);
+  const offMe = (await request('GET', '/me', offUser.token, undefined, 'http://127.0.0.1:3089')).body;
+  check('/me: ШАХ выключен — приложение плитку не покажет', [offMe.shahEnabled, offMe.shahRoomId], [false, null]);
   await stopServer(off);
 
   server = await startServer();
@@ -186,6 +188,19 @@ async function main() {
   check('комната ШАХ: 201, номер из 5 цифр, лобби', [created.status, /^\d{5}$/.test(roomId), created.body.kind, created.body.status], [201, true, 'shah', 'lobby']);
   check('настройки сохранены', created.body.settings, { ante: 500, absenceMinutes: 3, turnSeconds: 40, timeLimitMinutes: null });
   check('/me: стол ШАХ — отдельным полем, roomId Гарбы пуст', [(await request('GET', '/me', a.token)).body.shahRoomId, (await request('GET', '/me', a.token)).body.roomId], [roomId, null]);
+  check('/me: ШАХ включён', (await request('GET', '/me', a.token)).body.shahEnabled, true);
+  check('у игрока за столом — код (карточка игрока)', created.body.players[0].code, a.code);
+  const page = await fetch(`${BASE}/r/${roomId}`);
+  check('страница-приглашение на стол ШАХ', [page.status, (await page.text()).includes('ШАХ')], [200, true]);
+
+  section('ШАХ: позвать друга за стол');
+  check('не друга — нельзя', (await request('POST', `/shah/rooms/${roomId}/invite`, a.token, { code: b.code })).body.error, 'not a friend');
+  await request('POST', '/friends', a.token, { code: b.code });
+  await request('POST', `/friends/requests/${a.code}/accept`, b.token);
+  const invited = await request('POST', `/shah/rooms/${roomId}/invite`, a.token, { code: b.code });
+  const bInvites = (await request('GET', '/me', b.token)).body.roomInvites;
+  check('друга — можно: приглашение у него на главном', [invited.status, bInvites.map((i: any) => [i.roomId, i.kind, i.fromName])], [200, [[roomId, 'shah', a.name]]]);
+  check('у друга в списке друзей видно мой стол ШАХ', (await request('GET', '/friends', b.token)).body.friends.find((f: any) => f.code === a.code)?.shahRoomId, roomId);
   const garbaBusy = await request('POST', '/rooms', a.token, { capacity: 4, ante: 100, emptyLimit: 5, konThreshold: 10, minBalance: 1000 });
   check('одна комната за раз: за столом ШАХ стол Гарбы не создать', [garbaBusy.status, garbaBusy.body.roomId, garbaBusy.body.kind], [409, roomId, 'shah']);
   check('вторую комнату ШАХ — тоже нет', (await request('POST', '/shah/rooms', a.token, { capacity: 2, ante: 100 })).body.kind, 'shah');
@@ -195,6 +210,7 @@ async function main() {
   section('ШАХ: вход и «ГОТОВ»');
   const joined = await request('POST', `/shah/rooms/${roomId}/join`, b.token);
   check('второй сел — стол полный', [joined.status, joined.body.players.length, joined.body.players.map((p: any) => p.seat)], [200, 2, [0, 1]]);
+  check('сел — приглашение пропало', (await request('GET', '/me', b.token)).body.roomInvites, []);
   const quickGarba = await request('POST', '/rooms/quick', b.token, {});
   check('за столом ШАХ «Быструю игру» Гарбы не начать', [quickGarba.status, quickGarba.body.kind], [409, 'shah']);
   await wait(1300);
@@ -205,6 +221,7 @@ async function main() {
   s = await stateOf(roomId, a);
   check('оба готовы — матч начался, ждём сдающего', [s.status, s.stage, [a.id, b.id].includes(s.dealerId)], ['started', 'awaiting_deal', true]);
   check('первый сдающий — через туза: последняя открытая карта — туз', s.game.firstDealer.reveals.at(-1).card.rank, 'A');
+  check('сколько ещё идёт вскрытие — числом', typeof s.revealShowLeftMs, 'number');
   check('взнос 500 списан при старте («а» вопроса 17)', [await balanceOf(a), await balanceOf(b), s.money.pot], [29_500, 29_500, 1000]);
   const notDealer = s.dealerId === a.id ? b : a;
   check('раздать может только сдающий', (await request('POST', `/shah/rooms/${roomId}/deal`, notDealer.token)).status, 403);
@@ -234,6 +251,8 @@ async function main() {
   const leader = s.game.party.turnSeat === s.game.mySeat ? a : b;
   const other = leader === a ? b : a;
   const lState = await stateOf(roomId, leader);
+  check('заходящему — варианты захода, каждый из своих карт', [lState.game.myLeadOptions.length > 0, lState.game.myLeadOptions.flat().every((id: string) => lState.game.myHand.some((c: any) => c.id === id))], [true, true]);
+  check('второму вариантов нет', (await stateOf(roomId, other)).game.myLeadOptions, []);
   check('ход не в свою очередь — 409', (await request('POST', `/shah/rooms/${roomId}/move`, other.token, { type: 'lead', cardIds: [bHand[0]] })).status, 409);
   check('чужой картой — 400', (await request('POST', `/shah/rooms/${roomId}/move`, leader.token, { type: 'lead', cardIds: [(leader === a ? bHand : aHand)[0]] })).status, 400);
   check('неизвестный ход — 400', (await request('POST', `/shah/rooms/${roomId}/move`, leader.token, { type: 'jump', cardIds: [lState.game.myHand[0].id] })).status, 400);
@@ -264,6 +283,18 @@ async function main() {
   const leaveRoom = await startedRoom(c, d, 100);
   const midParty = await stateOf(leaveRoom, c);
   check('матч начался — взнос 100 списан', [await balanceOf(c), midParty.money.pot], [29_900, 200]);
+
+  section('ШАХ: «ИДУТ СЕЙЧАС» и зрители');
+  const x = await account('Ислам');
+  const y = await account('Йеркин');
+  const xyRoom = await startedRoom(x, y, 100);
+  const liveIds = (await request('GET', '/shah/rooms/open', spectator.token)).body.live.map((r: any) => r.id);
+  check('идущие матчи — в списке у зрителя', [liveIds.includes(leaveRoom), liveIds.includes(xyRoom)], [true, true]);
+  check('свой матч в списке не показываем', (await request('GET', '/shah/rooms/open', x.token)).body.live.some((r: any) => r.id === xyRoom), false);
+  check('сам в начатой игре — чужой стол смотреть нельзя', (await request('GET', `/shah/rooms/${leaveRoom}`, x.token)).body.error, 'playing elsewhere');
+  check('зрителю без игры — можно', (await request('GET', `/shah/rooms/${leaveRoom}`, spectator.token)).status, 200);
+  await request('POST', `/shah/rooms/${xyRoom}/leave`, x.token);
+  check('вышел из своей игры — смотреть можно', (await request('GET', `/shah/rooms/${leaveRoom}`, x.token)).status, 200);
   const dealerCD = midParty.dealerId === c.id ? c : d;
   await request('POST', `/shah/rooms/${leaveRoom}/deal`, dealerCD.token);
   check('посреди партии выйти нельзя', (await request('POST', `/shah/rooms/${leaveRoom}/leave`, c.token)).status, 409);

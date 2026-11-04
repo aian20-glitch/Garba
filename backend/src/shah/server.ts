@@ -43,6 +43,7 @@ import { addReaction, type ReactionEntry } from '../reactions.js';
 import { markReady, readyOutcome, readySecondsLeft, startReadyCheck, READY_MS, type ReadyCheck } from '../readyCheck.js';
 import { freeBotName } from '../serverBots.js';
 import { seatFor } from '../seats.js';
+import { liveRoomsFor as liveRoomsForList, spectateRefusal } from '../spectators.js';
 import { ask, cast, playedMs, remainingMs, roundDue, setRunning, settle, startClock, type TableClock } from '../tableTimer.js';
 import {
   addMiss,
@@ -145,8 +146,8 @@ export type ShahContext = {
   app: express.Express;
   io: SocketServer;
   db: DatabaseSync;
-  // Незаконченная комната Гарбы игрока — «одна комната за раз».
-  garbaRoomOf: (accountId: string) => { id: string } | undefined;
+  // Незаконченная комната Гарбы игрока — «одна комната за раз»; начата ли она — для зрителей (§18).
+  garbaRoomOf: (accountId: string) => { id: string; status: string } | undefined;
   garbaIdTaken: (id: string) => boolean;
   banError: (accountId: string) => { error: string; secondsLeft: number; count: number } | null;
   avoidIds: (accountId: string) => Set<string>; // блокировки в обе стороны
@@ -154,6 +155,8 @@ export type ShahContext = {
   lookOf: (accountId: string) => { avatar: string | null; frame: string | null; cardBack: string | null };
   ratingOf: (accountId: string) => number;
   notify?: (accountId: string, key: string, text: string, startParam?: string) => void;
+  // Позвать друга за стол ШАХ (этап 3): приглашение — в общем списке /me → roomInvites (kind 'shah').
+  invite: (from: Account, code: string, roomId: string, memberIds: string[]) => { status: number; body: Record<string, unknown> };
 };
 
 const env = (name: string, fallback: number) => (process.env[name] ? Number(process.env[name]) : fallback);
@@ -266,9 +269,10 @@ export function registerShah(ctx: ShahContext) {
     const sockets = await io.in(channel(roomId)).fetchSockets();
     for (const s of sockets) {
       const viewer = typeof s.data.playerId === 'string' ? (s.data.playerId as string) : null;
-      if (viewer && !isMember(room, viewer) && blockedWith(room, viewer)) {
+      const refusal = viewer ? watchRefusal(room, viewer) : null;
+      if (refusal) {
         s.leave(channel(roomId));
-        s.emit('shah_room_error', { error: 'blocked' });
+        s.emit('shah_room_error', { error: refusal });
         continue;
       }
       s.emit('shah_room', publicRoom(room, viewer));
@@ -318,6 +322,31 @@ export function registerShah(ctx: ShahContext) {
   }
 
   const nameOf = (room: ShahRoom, id: string) => room.players.find((p) => p.id === id)?.name ?? id;
+
+  // Код игрока — для его карточки из-за стола (в друзья, подарок). Код не меняется — помним.
+  const codes = new Map<string, string>();
+  function codeOf(id: string): string | null {
+    const known = codes.get(id);
+    if (known) return known;
+    const code = getAccount(db, id)?.code ?? null;
+    if (code) codes.set(id, code);
+    return code;
+  }
+
+  // Сам сидит в другой начатой игре (Гарбы или ШАХ) — смотреть чужой стол нельзя: свой встал
+  // бы на паузу (§18 Гарбы, «зрители — как в Гарбе»).
+  function playingElsewhere(accountId: string, room: ShahRoom): boolean {
+    if (ctx.garbaRoomOf(accountId)?.status === 'started') return true;
+    const other = roomOf(accountId);
+    return other !== undefined && other.id !== room.id && other.status === 'started';
+  }
+
+  // Почему этому аккаунту нельзя смотреть стол; null — можно (или он за столом).
+  function watchRefusal(room: ShahRoom, accountId: string): string | null {
+    if (isMember(room, accountId)) return null;
+    if (blockedWith(room, accountId)) return 'blocked';
+    return spectateRefusal({ member: false, status: room.status, playingElsewhere: playingElsewhere(accountId, room), blocked: false });
+  }
 
   // ——— начало матча ———
 
@@ -549,6 +578,7 @@ export function registerShah(ctx: ShahContext) {
       players: room.players.map((p) => ({
         id: p.id,
         name: p.name,
+        code: codeOf(p.id),
         seat: p.seat,
         side: sideOf(room.capacity, p.seat),
         bot: !!p.bot,
@@ -563,6 +593,11 @@ export function registerShah(ctx: ShahContext) {
       lobbySecondsLeft: room.status === 'lobby' ? lobbySecondsLeft(room.createdAt, now, LOBBY_WAIT_MS) : null,
       dealerId: dealerOf(room)?.id ?? null,
       partyShowLeftMs: showLeft,
+      // Вскрытие на туза в начале матча: сколько ещё идёт анимация (открыл стол позже — догоняет).
+      revealShowLeftMs:
+        room.status === 'started' && room.match && !room.match.party
+          ? Math.max(0, (room.startedAt ?? 0) + revealMs(room.match.firstDealer.reveals.length) - now)
+          : 0,
       dealShowLeftMs: Math.max(0, (room.dealShownAt ?? 0) - now),
       awaitedIds: a ? [a.playerId] : [],
       turnSecondsLeft: turnLeft,
@@ -786,8 +821,37 @@ export function registerShah(ctx: ShahContext) {
         settings: r.settings,
         money: { mode: r.moneyMode, ante: r.settings.ante, maxLoss: lossOf(r) },
       })),
+      live: liveRoomsFor(account),
     });
   });
+
+  // Идущие матчи — смотреть (как «ИДУТ СЕЙЧАС» Гарбы, §18): все начатые, и открытые, и по коду;
+  // без моих и без тех, где игрок, с которым у меня блок. Больше зрителей — выше.
+  function liveRoomsFor(account: Account) {
+    return liveRoomsForList(
+      [...rooms.values()].map((r) => ({
+        room: r,
+        id: r.id,
+        status: r.status,
+        memberIds: r.players.map((p) => p.id),
+        spectators: spectatorsOf(r),
+        createdAt: r.createdAt,
+      })),
+      account.id,
+      ctx.avoidIds(account.id),
+    ).map(({ room, spectators }) => ({
+      id: room.id,
+      capacity: room.capacity,
+      players: room.players.length,
+      names: room.players.map((p) => p.name),
+      creatorName: room.players.find((p) => p.id === room.creatorId)?.name ?? '',
+      settings: room.settings,
+      practice: room.practice,
+      partyNumber: room.match?.party?.number ?? 0,
+      totals: room.match?.totals ?? [],
+      spectators,
+    }));
+  }
 
   // «Быстрая игра»: сесть в самую заполненную открытую комнату (того же размера, если прислали),
   // нет такой — создать открытую: capacity (без него — 4), взнос 100.
@@ -813,8 +877,18 @@ export function registerShah(ctx: ShahContext) {
     const room = roomFor(req, res);
     if (!room) return;
     const id = me(res).id;
-    if (!isMember(room, id) && blockedWith(room, id)) return res.status(403).json({ error: 'blocked' });
+    const refusal = watchRefusal(room, id);
+    if (refusal) return res.status(403).json({ error: refusal });
     return res.json(publicRoom(room, id));
+  });
+
+  // Позвать друга за стол (как в Гарбе, 25.09.2026): только из лобби со свободным местом.
+  // Друг увидит приглашение на главном экране (/me → roomInvites, kind 'shah').
+  app.post('/shah/rooms/:id/invite', (req, res) => {
+    const room = roomFor(req, res);
+    if (!room || !seatedOrRefuse(room, res)) return;
+    if (room.status !== 'lobby' || room.players.length >= room.capacity) return res.status(409).json({ error: 'no free seat' });
+    return send(res, ctx.invite(me(res), String(req.body?.code ?? ''), room.id, room.players.map((p) => p.id)));
   });
 
   app.post('/shah/rooms/:id/join', (req, res) => {
@@ -993,9 +1067,8 @@ export function registerShah(ctx: ShahContext) {
       if (!account) return void socket.emit('shah_room_error', { error: 'unauthorized' });
       const room = rooms.get(String(payload?.roomId ?? ''));
       if (!room) return void socket.emit('shah_room_error', { error: 'room not found' });
-      if (!isMember(room, account.id) && blockedWith(room, account.id)) {
-        return void socket.emit('shah_room_error', { error: 'blocked' });
-      }
+      const refusal = watchRefusal(room, account.id);
+      if (refusal) return void socket.emit('shah_room_error', { error: refusal });
       // Один сокет — одна комната (как в Гарбе); экран «ТУРНИР» не трогаем.
       for (const joined of socket.rooms) {
         if (joined !== socket.id && joined !== channel(room.id) && joined !== TOURNAMENT_ROOM) socket.leave(joined);
@@ -1192,6 +1265,21 @@ export function registerShah(ctx: ShahContext) {
       return room ? { id: room.id, status: room.status } : undefined;
     },
     idTaken,
+    // Приглашение ещё в силе: лобби со свободным местом, а друг за ним не сидит.
+    hasSeatFor: (roomId: string, accountId: string) => {
+      const room = rooms.get(roomId);
+      return !!room && room.status === 'lobby' && room.players.length < room.capacity && !isMember(room, accountId);
+    },
+    // Для страницы-приглашения /r/:id: что за стол.
+    summary: (roomId: string) => {
+      const room = rooms.get(roomId);
+      if (!room || room.status === 'finished') return undefined;
+      return {
+        capacity: room.capacity,
+        players: room.players.length,
+        creatorName: room.players.find((p) => p.id === room.creatorId)?.name ?? 'Друг',
+      };
+    },
   };
 }
 

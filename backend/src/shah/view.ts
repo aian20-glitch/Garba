@@ -8,10 +8,45 @@
 //   вычислить закрытые карты). Сами стопки — в конце партии, если revealPilesAtEnd (вопрос 13).
 // Зритель (viewerId = null или не за столом) видит то же, что игрок, но без своей руки.
 
-import type { Card } from '../types.js';
-import { findBeat } from './cards.js';
+import type { Card, Suit } from '../types.js';
+import { coverCost, findBeat, isLegalLead, matchCovers } from './cards.js';
 import { awaitedOf, isTeamFormat, sideCount, sideOf, type ShahMatch, type TrickMove } from './engine.js';
 import { MATCH_LIMIT } from './score.js';
+
+// Рука больше не бывает (§3, §11: по 6, добор не больше заложенного) — на всякий случай
+// подсказки не считаем для руки больше этого, чтобы не перебирать 2^n.
+const OPTIONS_HAND_LIMIT = 10;
+
+// Все наборы карт руки размером от min до max — в порядке руки.
+function subsets(hand: Card[], min: number, max: number): Card[][] {
+  const out: Card[][] = [];
+  const total = 1 << hand.length;
+  for (let mask = 1; mask < total; mask++) {
+    const pick = hand.filter((_, i) => mask & (1 << i));
+    if (pick.length >= min && pick.length <= max) out.push(pick);
+  }
+  return out;
+}
+
+// Какими картами можно зайти (§6): одна любая, несколько одной масти или одного достоинства,
+// не больше max (вопрос 8). Сервер решает — приложение только включает кнопку «ЗАЙТИ».
+export function leadOptions(hand: Card[], max: number): string[][] {
+  if (hand.length > OPTIONS_HAND_LIMIT) return [];
+  return subsets(hand, 1, max)
+    .filter(isLegalLead)
+    .map((set) => set.map((c) => c.id));
+}
+
+// Какими наборами из n карт можно побить верхнюю комбинацию (§7): каждую карту — своей.
+// Сначала самые дешёвые (как findBeat): обычные карты, потом козыри, ШАХ — последним.
+export function beatOptions(hand: Card[], top: Card[], trump: Suit): string[][] {
+  if (hand.length > OPTIONS_HAND_LIMIT || top.length === 0) return [];
+  const cost = (set: Card[]) => set.reduce((sum, c) => sum + coverCost(c, trump), 0);
+  return subsets(hand, top.length, top.length)
+    .filter((set) => matchCovers(set, top, trump) !== null)
+    .sort((a, b) => cost(a) - cost(b))
+    .map((set) => set.map((c) => c.id));
+}
 
 export type PublicMove =
   | { seat: number; kind: 'lead'; cards: Card[] }
@@ -97,6 +132,10 @@ export function shahView(match: ShahMatch, viewerId: string | null) {
     myMax: mine?.max ?? 0,
     // Есть ли чем побить верхнюю комбинацию — только самому игроку, чтобы включить «ПОБИТЬ».
     myCanBeat: mine?.awaiting === 'beat' && p?.trick ? findBeat(hand, p.trick.topCards, p.trump) !== null : false,
+    // Наборы карт, которыми сейчас можно зайти / побить, — только тому, чей ход. Приложение
+    // включает «ЗАЙТИ» и «ПОБИТЬ», только когда выбранные карты совпали с одним из наборов.
+    myLeadOptions: mine?.awaiting === 'lead' ? leadOptions(hand, mine.max) : [],
+    myBeatOptions: mine?.awaiting === 'beat' && p?.trick ? beatOptions(hand, p.trick.topCards, p.trump) : [],
   };
 }
 
