@@ -67,7 +67,7 @@ import { STARTING_COINS } from './config.js';
 import { BOT_STEP_MS, botAction, botTopUp, freeBotName, type BotAction } from './serverBots.js';
 import { loadRoom, loadUnfinishedRooms, playerExperience, profileStats, ratedPlayers, roomIdTaken, saveRoom, weekCoins, writeRoom } from './roomDb.js';
 import {
-  compareStandings,
+  compareListed,
   DEFAULT_TIMES,
   eliminatedIds,
   ENTRY_FEE,
@@ -6600,15 +6600,9 @@ function tournamentShared(now: number) {
     const a = getAccount(db, accountId);
     return { code: a?.code ?? null, avatar: avatarOf(accountId), frame: frameOf(accountId), wins: winsOf(accountId) };
   };
-  // Порядок списка (§19.11): после отбора — сверху финалисты; сыгравшие — по общему списку;
-  // ещё не сыгравшие — по времени регистрации.
-  const rank = (e: Entry) => ({ ...e, id: e.accountId, ...(e.status.startsWith('final') ? { razWins: e.finalRazWins, dvaWins: e.finalDvaWins, maxRisk: e.finalMaxRisk } : {}) });
-  const group = (e: Entry) =>
-    ['finalist', 'final_playing', 'final_done'].includes(e.status) ? 0
-    : ['played', 'out', 'playing'].includes(e.status) ? 1
-    : e.status === 'registered' ? 2
-    : 3;
-  const ordered = [...entries].sort((a, b) => group(a) - group(b) || (group(a) < 2 ? compareStandings(rank(a), rank(b)) : a.registeredAt - b.registeredAt));
+  // Порядок списка (§19.11) — compareListed (tournament.ts): финалисты по отбору, сыгравшие финал —
+  // по финалу, места розданы — по местам (с ними сходятся приз и рейтинг).
+  const ordered = [...entries].sort((a, b) => compareListed({ ...a, id: a.accountId }, { ...b, id: b.accountId }));
   const winner = t.winnerId ? entries.find((e) => e.accountId === t.winnerId) : null;
   // Кто за каким столом сидит, пока игра не началась (звать его уже не нужно).
   const seatedAt = new Map<string, number>();
