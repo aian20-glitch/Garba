@@ -83,19 +83,19 @@ check('8…307 участников: всех рассадили, за стол�
 
 section('турнир: выбывание и конец стола (§19.4)');
 check('меньше 100 — выбыл, 100 — играет', eliminatedIds([{ id: 'a', balance: 0 }, { id: 'b', balance: 99 }, { id: 'c', balance: 100 }], 100), ['a', 'b']);
-check('6 игроков, 19 минут — играем', tableEndReason(6, 6, 0, 19 * 60_000), null);
+check('6 игроков, 39 минут — играем', tableEndReason(6, 6, 0, 39 * 60_000), null);
 check('выбыл один — 5 — играем', tableEndReason(5, 5, 0, 10), null);
 check('ещё один — 4 — играем', tableEndReason(4, 4, 0, 10), null);
 check('осталось 3 — стол заканчивается', tableEndReason(3, 3, 0, 10), 'three_left');
-check('прошло ровно 20 минут — стол заканчивается', tableEndReason(5, 5, 0, 20 * 60_000), 'time_up');
+check('прошло ровно 40 минут — стол заканчивается', tableEndReason(5, 5, 0, 40 * 60_000), 'time_up');
 check('одни боты — стол заканчивается', tableEndReason(4, 0, 0, 10), 'no_humans');
 
-section('турнир: последний шанс за 30 мин (§19.5)');
+section('турнир: последний шанс за 50 мин (§19.5)');
 const end = 100 * H;
-check('за 31 мин — обычный сбор', lastCallPhase(end - 31 * 60_000, end), 'wait');
-check('за 30 мин — последние 10 минут', lastCallPhase(end - 30 * 60_000, end), 'last_call');
-check('за 21 мин — ещё последние 10 минут', lastCallPhase(end - 21 * 60_000, end), 'last_call');
-check('за 20 минут — старт с ботами', lastCallPhase(end - 20 * 60_000, end), 'launch');
+check('за 51 мин — обычный сбор', lastCallPhase(end - 51 * 60_000, end), 'wait');
+check('за 50 мин — последние 10 минут', lastCallPhase(end - 50 * 60_000, end), 'last_call');
+check('за 41 мин — ещё последние 10 минут', lastCallPhase(end - 41 * 60_000, end), 'last_call');
+check('за 40 минут — старт с ботами', lastCallPhase(end - 40 * 60_000, end), 'launch');
 
 section('турнир: финалисты (§19.7)');
 // Пример владельца: стол из 5 — 20 000, 15 000, 9 000, 6 000, 0.

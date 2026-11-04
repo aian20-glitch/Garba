@@ -2755,7 +2755,7 @@ class _GameTableScreenState extends State<GameTableScreen> {
                   ],
                 ],
               ),
-              // Турнирный стол (§19.4): стол №, до конца часа, казна, кто выбыл.
+              // Турнирный стол (§19.4): стол №, до конца времени стола, казна, кто выбыл.
               if (data['tournament'] is Map)
                 TournamentTableBar(
                   tournament: Map<String, dynamic>.from(data['tournament'] as Map),

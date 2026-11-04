@@ -539,7 +539,7 @@ POST /tournament/tables/:no/sit  { seat? } → состояние комнаты
                                  table is starting | already in another room. /rooms/:id/join за турнирный стол — то же самое
 POST /rooms/:id/invite           за турнирный стол — любого участника, который может сесть (403 not a tournament participant);
                                  в /me roomInvites у такого приглашения tableNo
-комната турнирного стола         → tournament: { id, stage, tableNo, secondsLeft (до конца часа), treasury, eliminatedIds,
+комната турнирного стола         → tournament: { id, stage, tableNo, secondsLeft (до конца 40 минут стола), treasury, eliminatedIds,
                                  penalizedIds, lastOut, endReason: three_left|time_up|no_humans, lastCall, launch, reserveBots,
                                  stageSecondsLeft }; game.closeReason 'tournament_end'. Обычная комната → winnerBanner
                                  («В игре есть победитель турнира 🏆»), у игроков players[].tournamentWins
@@ -936,7 +936,7 @@ PowerShell 5.1 срезает кавычки в `-d`. Файл сохранён 
   без штрафа. Выложено 01.11.2026 (23d2ab7).
 - с 31.10.2026 — **еженедельный турнир** (RULES.md §19): плитка «ТУРНИР НЕДЕЛИ» на главном, экран
   `screens/tournament.dart` (регистрация с предупреждением, столы с «СЕСТЬ» / «ПРИГЛАСИТЬ», общий список, финалисты,
-  победитель), турнирный стол — обычная комната с `room.tournament` (кошелёк не трогает, стол до 20 минут или до трёх (кон никому не по карману — делится, играют дальше),
+  победитель), турнирный стол — обычная комната с `room.tournament` (кошелёк не трогает, стол до 40 минут (с 02.11.2026) или до трёх (кон никому не по карману — делится, играют дальше),
   выбывание при балансе меньше взноса, последний шанс с ботами), казна и выплаты — через журнал `tournament_ledger`,
   значок 🏆×N в «ДОСТИЖЕНИЯХ», объявление о победителе турнира перед обычной игрой. Выложено 01.11.2026 (f16b5b8), первый настоящий турнир — пн 02.11.2026 20:00.
   Финал не сыгран (не сел ни один финалист) — победитель по отбору, без наказаний (§19.13, `winner.byQualification`);

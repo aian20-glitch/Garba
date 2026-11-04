@@ -793,7 +793,7 @@ class TournamentTile extends StatelessWidget {
   }
 }
 
-// Шапка турнирного стола (§19.4): этап и номер, сколько осталось от часа, казна; кто выбыл.
+// Шапка турнирного стола (§19.4): этап и номер, сколько осталось от 40 минут, казна; кто выбыл.
 class TournamentTableBar extends StatelessWidget {
   final Map<String, dynamic> tournament;
   final DateTime receivedAt;

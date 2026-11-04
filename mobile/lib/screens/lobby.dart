@@ -626,7 +626,7 @@ class _LobbyScreenState extends State<LobbyScreen> {
                     tournament != null
                         ? 'Взнос ${fmtCoins(v('ante'))} · ход ${s['turnSeconds']} с · ждём ${s['absenceMinutes']} мин · '
                             'пустых раздач ${v('emptyLimit')} · КОН с ×${v('konThreshold')}\n'
-                            'Стол играет до 20 минут или пока не останется трое. Начнётся сам, когда все сядут.'
+                            'Стол играет до 40 минут или пока не останется трое. Начнётся сам, когда все сядут.'
                         : 'Взнос ${fmtCoins(v('ante'))} · вход от ${fmtCoins(v('minBalance'))} · ход ${s['turnSeconds'] ?? 20} с · ждём ${s['absenceMinutes'] ?? 5} мин\n'
                             'Пустых раздач ${v('emptyLimit')} · КОН с ×${v('konThreshold')}\n'
                             'Время игры: ${fmtTimeLimit(s['timeLimitMinutes'])}${s['timeLimitMinutes'] is num ? ' — пойдёт с первой раздачи' : ''}',

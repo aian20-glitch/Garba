@@ -26,8 +26,8 @@ export const HOUR_MS = 3_600_000;
 export const REGISTRATION_MS = 24 * HOUR_MS;
 export const QUALIFICATION_MS = 72 * HOUR_MS;
 export const FINAL_MS = 48 * HOUR_MS;
-export const TABLE_PLAY_MS = 20 * 60_000; // стол играет не больше 20 минут (31.10.2026, было 1 час)
-export const LAST_CALL_LEAD_MS = 30 * 60_000; // за 30 мин до конца этапа — последний шанс (10 мин посадки + 20 мин стола)
+export const TABLE_PLAY_MS = 40 * 60_000; // стол играет не больше 40 минут (02.11.2026; 31.10 — 20 минут, до того 1 час)
+export const LAST_CALL_LEAD_MS = 50 * 60_000; // за 50 мин до конца этапа — последний шанс (10 мин посадки + 40 мин стола)
 export const LAST_CALL_MS = 10 * 60_000; // последние 10 минут на посадку
 export const PENALTY_RATING = -1.5;
 export const PENALTY_BAN_MS = 24 * HOUR_MS;
@@ -107,7 +107,7 @@ export function eliminatedIds(players: { id: string; balance: number }[], ante: 
 
 export type TableEnd = 'three_left' | 'time_up' | 'no_humans' | null;
 
-// Почему стол заканчивается (между раздачами): осталось трое (втроём не играют), вышел час,
+// Почему стол заканчивается (между раздачами): осталось трое (втроём не играют), вышло время стола,
 // за столом одни боты (последний шанс, §19.5). null — играем дальше.
 export function tableEndReason(
   players: number,
