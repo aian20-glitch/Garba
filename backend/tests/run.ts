@@ -34,6 +34,7 @@ import './leaders.test.js';
 import './spectators.test.js';
 import './tournament.test.js';
 import './tableTimer.test.js';
+import './personalPause.test.js';
 import { summary } from './check.js';
 
 process.exit(summary() === 0 ? 0 : 1);

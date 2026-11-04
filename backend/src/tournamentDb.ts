@@ -106,6 +106,9 @@ export function ensureTournamentTables(db: DatabaseSync) {
     )
   `);
   db.exec('CREATE INDEX IF NOT EXISTS tournament_entries_account ON tournament_entries (account_id)');
+  // Личная пауза — одна на весь турнир (§20a, 04.11.2026): когда потрачена.
+  const cols = (db.prepare('PRAGMA table_info(tournament_entries)').all() as { name: string }[]).map((c) => c.name);
+  if (!cols.includes('pause_used_at')) db.exec('ALTER TABLE tournament_entries ADD COLUMN pause_used_at INTEGER');
   db.exec(`
     CREATE TABLE IF NOT EXISTS tournament_tables (
       tournament_id  TEXT NOT NULL,
@@ -284,6 +287,22 @@ export function entryOf(db: DatabaseSync, tournamentId: string, accountId: strin
   const row = db.prepare('SELECT * FROM tournament_entries WHERE tournament_id = ? AND account_id = ?')
     .get(tournamentId, accountId) as Record<string, unknown> | undefined;
   return row ? toEntry(row) : null;
+}
+
+// Турнирная пауза (§20a): потрачена ли. Одна на весь турнир — хранится у участника, не у стола.
+export function tournamentPauseUsed(db: DatabaseSync, tournamentId: string, accountId: string): boolean {
+  const row = db.prepare('SELECT pause_used_at FROM tournament_entries WHERE tournament_id = ? AND account_id = ?')
+    .get(tournamentId, accountId) as { pause_used_at: number | null } | undefined;
+  return !!row && row.pause_used_at !== null;
+}
+
+// Потратить турнирную паузу. true — потрачена сейчас; false — уже была потрачена (или не участник):
+// два одновременных нажатия не дадут двух пауз.
+export function useTournamentPause(db: DatabaseSync, tournamentId: string, accountId: string, at: number): boolean {
+  const r = db
+    .prepare('UPDATE tournament_entries SET pause_used_at = ? WHERE tournament_id = ? AND account_id = ? AND pause_used_at IS NULL')
+    .run(at, tournamentId, accountId);
+  return Number(r.changes) === 1;
 }
 
 // Сменить статус, только если сейчас он один из from. true — сменился.

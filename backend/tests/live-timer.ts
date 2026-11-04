@@ -20,7 +20,7 @@ const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 let server: ChildProcess | null = null;
 
-async function startServer() {
+async function startServer(extra: Record<string, string> = {}) {
   server = spawn(process.execPath, ['--import', 'tsx', 'src/index.ts'], {
     env: {
       ...process.env,
@@ -30,6 +30,8 @@ async function startServer() {
       // Связь и время на ход — длинные: проверяем только часы стола.
       GARBA_GRACE_MS: '600000',
       GARBA_TURN_MS: '600000',
+      GARBA_PERSONAL_PAUSE_MS: '3000',
+      ...extra,
     },
     stdio: 'ignore',
   });
@@ -137,7 +139,7 @@ async function extendAndExpire() {
   check('за 5 минут до конца — вопрос всем', [!!forEndsAt, s.game.tableClock.secondsLeft <= 10, s.game.myCanVoteExtend], [true, true, true]);
   for (const p of players.slice(0, 3)) await vote(roomId, p, 'yes', forEndsAt);
   s = await view(roomId, players[3]);
-  check('трое «да» — «проголосовали 3 из 4», время прежнее', [s.game.tableClock.vote?.votedCount, s.game.tableClock.vote?.voterCount, s.game.tableClock.endsAt], [3, 4, forEndsAt]);
+  check('трое «да» — «проголосовали 3 из 4», время прежнее', [s.game.tableClock.vote?.votedCount, s.game.tableClock.vote?.voterCount, s.game.tableClock.limitMs], [3, 4, forEndsAt]);
   check('голос ещё не принят — четвёртый видит вопрос (как после переподключения, сценарий 12)', [s.game.myCanVoteExtend, s.game.myExtendVote], [true, null]);
   const mine = await view(roomId, players[0]);
   check('уже проголосовал — кнопок нет, видно «да» (сценарий 13)', [mine.game.myCanVoteExtend, mine.game.myExtendVote], [false, 'yes']);
@@ -149,11 +151,11 @@ async function extendAndExpire() {
   s = await view(roomId, players[3]);
   check('после перезапуска: тот же вопрос, 3 из 4, мой голос ещё нужен',
     [s.game.tableClock?.vote?.forEndsAt, s.game.tableClock?.vote?.votedCount, s.game.myCanVoteExtend], [forEndsAt, 3, true]);
-  check('часы не сбросились', s.game.tableClock?.endsAt, forEndsAt);
+  check('часы не сбросились', s.game.tableClock?.limitMs, forEndsAt);
 
   const last = await vote(roomId, players[3], 'yes', forEndsAt);
   check('четвёртый «да» — все согласны: +10 минут ровно один раз',
-    [last.status, last.body.game.tableClock.endsAt - forEndsAt, last.body.game.tableClock.extensions, last.body.game.tableClock.lastVote?.result, last.body.game.tableClock.vote],
+    [last.status, last.body.game.tableClock.limitMs - forEndsAt, last.body.game.tableClock.extensions, last.body.game.tableClock.lastVote?.result, last.body.game.tableClock.vote],
     [200, 10 * MINUTE, 1, 'approved', null]);
   check('нажатие на старый вопрос — уже не считается', (await vote(roomId, players[0], 'yes', forEndsAt)).status, 409);
 
@@ -163,7 +165,7 @@ async function extendAndExpire() {
   await vote(roomId, players[0], 'yes', newEnd);
   const no = await vote(roomId, players[2], 'no', newEnd);
   check('один «не продлевать» — отказ сразу, время прежнее (сценарий 6)',
-    [no.body.game.tableClock.lastVote?.result, no.body.game.tableClock.vote, no.body.game.tableClock.endsAt], ['rejected', null, newEnd]);
+    [no.body.game.tableClock.lastVote?.result, no.body.game.tableClock.vote, no.body.game.tableClock.limitMs], ['rejected', null, newEnd]);
   check('остальным голосовать уже не о чем', (await vote(roomId, players[1], 'yes', newEnd)).body.error, 'no extension vote');
 
   s = await until(roomId, players[0], (x) => x.status === 'finished', 15_000);
@@ -187,7 +189,7 @@ async function midDeal() {
   // Четвёртый молчит. Раздача стоит на торгах — 00:00 наступает посреди раздачи.
   s = await until(roomId, players[0], (x) => !!x.game.tableClock?.reached, 15_000);
   check('3 из 4 «да», четвёртый не ответил — в 00:00 продления нет (сценарий 4)',
-    [s.game.tableClock.lastVote?.result, s.game.tableClock.endsAt, s.game.tableClock.extensions], ['expired', forEndsAt, 0]);
+    [s.game.tableClock.lastVote?.result, s.game.tableClock.limitMs, s.game.tableClock.extensions], ['expired', forEndsAt, 0]);
   check('раздача не оборвана — стол ещё идёт', [s.status, ['bidding', 'special'].includes(s.game.stage)], ['started', true]);
   await passAll(roomId, players);
   s = await until(roomId, players[0], (x) => x.status === 'finished', 5_000);
@@ -207,6 +209,93 @@ async function leaveDuringVote() {
   const me = (await request('GET', '/me', players[3].token)).body;
   check('вышел во время вопроса — бан за выход и −1.0 рейтинга',
     [left.status, me.leaveBan?.count, me.leaveBan?.secondsLeft > 0, Math.round((ratingBefore - me.rating) * 10) / 10], [200, 1, true, 1]);
+}
+
+async function personalPauses() {
+  section('личная пауза: 3 по 10 секунд за партию, часы стоят, раздавать нельзя (§20a)');
+  const { players, roomId } = await fourAtTable('П', { timeLimitMinutes: 60 });
+  let s = await until(roomId, players[0], (x) => x.game.dealShowLeftMs === 0, 15_000);
+  check('до первой раздачи — «Пауза 3/3»', [s.game.pauseLimit, s.game.myPausesLeft, s.game.myCanPause], [3, 3, true]);
+  await post(roomId, dealer(s, players), 'dealer/continue');
+  await wait(300);
+  check('посреди раздачи паузу не взять', (await post(roomId, players[1], 'pause')).body.error, 'cannot pause now');
+  await passAll(roomId, players);
+  s = await until(roomId, players[0], (x) => x.game.stage === 'awaiting_deal' && x.game.dealShowLeftMs === 0, 10_000);
+  const p1 = players[1];
+  let r = await post(roomId, p1, 'pause');
+  check('между раздачами — пауза: видно, кто взял и сколько секунд; «Пауза 2/3»',
+    [r.status, r.body.game.personalPause?.name, r.body.game.personalPause?.secondsLeft, r.body.game.myPausesLeft], [200, p1.name, 3, 2]);
+  check('часы стола стоят', r.body.game.tableClock.paused, true);
+  const frozen = r.body.game.tableClock.secondsLeft;
+  check('раздающий раздать не может', (await post(roomId, dealer(s, players), 'dealer/continue')).body.error, 'personal pause in progress');
+  check('вторую паузу одновременно — нельзя', (await post(roomId, players[2], 'pause')).body.error, 'pause in progress');
+  check('закончить чужую паузу — нельзя', (await post(roomId, players[2], 'pause/end')).status, 403);
+  await wait(1_500);
+  check('за паузу время стола не ушло', (await view(roomId, players[0])).game.tableClock.secondsLeft, frozen);
+  s = await until(roomId, players[0], (x) => !x.game.personalPause, 5_000);
+  check('через 10 секунд игра продолжается сама, часы снова идут',
+    [s.game.personalPause, s.game.lastPersonalPause?.early, s.game.tableClock.paused], [null, false, false]);
+  r = await post(roomId, p1, 'pause');
+  check('вторая пауза — «Пауза 1/3»', [r.status, r.body.game.myPausesLeft], [200, 1]);
+  r = await post(roomId, p1, 'pause/end');
+  check('закончил раньше — пауза всё равно потрачена', [r.status, r.body.game.personalPause, r.body.game.myPausesLeft, r.body.game.lastPersonalPause?.early], [200, null, 1, true]);
+  r = await post(roomId, p1, 'pause');
+  check('третья — «Пауза 0/3»', [r.status, r.body.game.myPausesLeft], [200, 0]);
+  await post(roomId, p1, 'pause/end');
+  r = await post(roomId, p1, 'pause');
+  check('четвёртая — 409 «no pauses left», кнопки нет', [r.status, r.body.error, (await view(roomId, p1)).game.myCanPause], [409, 'no pauses left', false]);
+  check('у остальных паузы свои — 3/3', (await view(roomId, players[2])).game.myPausesLeft, 3);
+  s = await view(roomId, players[0]);
+  check('после паузы раздающий раздаёт', (await post(roomId, dealer(s, players), 'dealer/continue')).status, 200);
+}
+
+async function secondQuestion() {
+  section('не продлили за 5 минут — за 1 минуту вопрос ещё раз (§20, 04.11.2026)');
+  const { players, roomId } = await fourAtTable('Д', { timeLimitMinutes: 15 });
+  let s = await until(roomId, players[0], (x) => x.game.dealShowLeftMs === 0, 15_000);
+  await post(roomId, dealer(s, players), 'dealer/continue');
+  s = await until(roomId, players[0], (x) => !!x.game.tableClock?.vote, 30_000);
+  const v1 = s.game.tableClock.vote;
+  check('первый вопрос — за 5 минут', v1.round, 1);
+  const no = await post(roomId, players[2], 'extend-vote', { choice: 'no', forEndsAt: v1.forEndsAt, round: 1 });
+  check('один «нет» — отказ', no.body.game.tableClock.lastVote?.result, 'rejected');
+  s = await until(roomId, players[0], (x) => x.game.tableClock?.vote?.round === 2, 15_000);
+  check('за 1 минуту — второй вопрос, к тому же сроку', [s.game.tableClock.vote?.round, s.game.tableClock.vote?.forEndsAt, s.game.myCanVoteExtend], [2, v1.forEndsAt, true]);
+  check('нажатие к первому вопросу — не считается',
+    (await post(roomId, players[0], 'extend-vote', { choice: 'yes', forEndsAt: v1.forEndsAt, round: 1 })).body.error, 'stale extension vote');
+  let last: any = null;
+  for (const p of players) last = await post(roomId, p, 'extend-vote', { choice: 'yes', forEndsAt: v1.forEndsAt, round: 2 });
+  check('во второй раз все «да» — +10 минут один раз', [last.body.game.tableClock.extensions, last.body.game.tableClock.limitMs - v1.forEndsAt], [1, 10 * MINUTE]);
+  check('к старому сроку больше не спрашивают', last.body.game.tableClock.vote, null);
+}
+
+async function disconnectStopsClock() {
+  section('стол ждёт отключившегося — часы стоят, вернулся — идут дальше (§13, §20)');
+  await stopServer();
+  await startServer({ GARBA_GRACE_MS: '1500' });
+  const { players, roomId } = await fourAtTable('О', { timeLimitMinutes: 60 });
+  // Трое на связи (запрос к своей комнате — тоже связь), четвёртый пропал.
+  let online = players;
+  const keep = setInterval(() => { for (const p of online) view(roomId, p).catch(() => {}); }, 400);
+  try {
+    let s = await until(roomId, players[0], (x) => x.game.dealShowLeftMs === 0, 15_000);
+    await post(roomId, dealer(s, players), 'dealer/continue');
+    await passAll(roomId, players);
+    s = await until(roomId, players[0], (x) => x.game.stage === 'awaiting_deal', 5_000);
+    online = players.slice(0, 3);
+    s = await until(roomId, players[0], (x) => !!x.pause && x.game.tableClock?.paused, 10_000);
+    check('отключился — «Ожидание игрока»: имя и отсчёт, часы стола стоят',
+      [s.pause?.players?.[0]?.name, s.pause?.players?.[0]?.secondsLeft > 0, s.game.tableClock.paused], [players[3].name, true, true]);
+    check('личную паузу во время ожидания не взять', (await post(roomId, players[0], 'pause')).status, 409);
+    const frozen = s.game.tableClock.secondsLeft;
+    await wait(2_000);
+    check('пока ждём — время стола не уходит', (await view(roomId, players[0])).game.tableClock.secondsLeft, frozen);
+    online = players;
+    s = await until(roomId, players[0], (x) => !x.pause && x.game.tableClock?.paused === false, 5_000);
+    check('вернулся — пауза снята, часы снова идут', [s.pause, s.game.tableClock.paused, s.game.tableClock.secondsLeft <= frozen], [null, false, true]);
+  } finally {
+    clearInterval(keep);
+  }
 }
 
 async function unlimited() {
@@ -231,6 +320,9 @@ try {
   await leaveDuringVote();
   await midDeal();
   await extendAndExpire();
+  await personalPauses();
+  await secondQuestion();
+  await disconnectStopsClock();
 } catch (e) {
   console.error(e);
   check('проверка дошла до конца без ошибок', String(e), 'ok');

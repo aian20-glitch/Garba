@@ -111,8 +111,10 @@ import {
   rateEntry,
   tablesOf,
   treasuryOf,
+  tournamentPauseUsed,
   tournamentWinsOf,
   unfinishedEntryOf,
+  useTournamentPause,
   writeEntryPlay,
   type Entry,
   type EntryStatus,
@@ -241,12 +243,25 @@ import {
   checkTimeLimit,
   TIME_LIMIT_MAX,
   TIME_LIMIT_MIN,
+  isRunning as clockRunning,
+  normalizeClock,
+  remainingMs as clockRemainingMs,
   secondsLeft as clockSecondsLeft,
+  setRunning as setClockRunning,
   settle as settleClock,
   shouldAsk as shouldAskExtension,
   startClock,
   type TableClock,
 } from './tableTimer.js';
+import {
+  pauseLimit,
+  pauseOver,
+  pauseRefusal,
+  pausesLeft,
+  pauseSecondsLeft,
+  startPause,
+  type PersonalPause,
+} from './personalPause.js';
 import { rateCheck } from './rateLimit.js';
 import { openRoomsFor, QUICK_ROOM } from './openRooms.js';
 import { liveRoomsFor, spectateRefusal, spectatorCount } from './spectators.js';
@@ -491,7 +506,12 @@ type GameState = {
   // time_limit — вышло время стола (§20, 01.11.2026).
   closeReason: 'kon_taken' | 'nobody_can_play' | 'player_left' | 'agreed_end' | 'seat_empty' | 'tournament_end' | 'time_limit' | null;
   // Часы стола (§20): идут с первой раздачи, если хозяин выбрал время игры. Нет — без ограничения.
+  // У турнирного стола — всегда (40 минут, §19.4). На паузах (§13, §20a) стоят.
   tableClock?: TableClock | null;
+  // Личная пауза (§20a): идущая и сколько пауз потратил каждый (в турнире — в базе, на весь турнир).
+  personalPause?: PersonalPause | null;
+  pausesUsed?: Record<string, number>;
+  lastPersonalPause?: { playerId: string; name: string; early: boolean } | null;
   // Пропали на 5 минут посреди раздачи: за них доигрывает таймер, после раздачи —
   // место свободно (24.09.2026).
   goneIds?: string[];
@@ -2540,6 +2560,8 @@ app.use('/rooms/:id', (req, res, next) => {
   if (req.method === 'POST' && req.path === '/shrink-vote') return next();
   // Продлить время — тоже: часы стола на паузе идут (§20).
   if (req.method === 'POST' && req.path === '/extend-vote') return next();
+  // Закончить свою личную паузу раньше — можно и когда стол ждёт отключившегося (§20a).
+  if (req.method === 'POST' && req.path === '/pause/end') return next();
   if (req.method === 'POST' && !LOBBY_ACTIONS.includes(req.path) && isPaused(room)) {
     return res.status(409).json({ error: 'game paused', pause: publicPause(room) });
   }
@@ -2644,8 +2666,8 @@ function awaitedMoves(room: Room): { key: string; moves: TimedMove[] } | null {
     case 'awaiting_deal':
     case 'round_done':
       // Пока голосуют «закончить игру», «играть без ушедшего» или «докупить», раздавать
-      // нельзя (§12.3, §13c, §9.1c).
-      if (g.endVote || g.shrinkVote || g.topUpVote) return null;
+      // нельзя (§12.3, §13c, §9.1c); и пока идёт личная пауза (§20a).
+      if (g.endVote || g.shrinkVote || g.topUpVote || g.personalPause) return null;
       return {
         key: `deal:${g.stage}:${g.dealerId}:${g.kon}:${g.emptyStreak}`,
         moves: [{ playerId: g.dealerId, path: 'dealer/continue', body: {} }],
@@ -3189,6 +3211,8 @@ function beginBidding(room: Room) {
     game.tableClock = startClock(limit, Date.now(), TABLE_MINUTE_MS);
     console.log(`[ROOM ${room.id}] время стола пошло: ${limit} мин`);
   }
+  // Турнирный стол — те же часы на 40 минут, с продлением по согласию (§19.4, 04.11.2026).
+  if (room.tournament) clockOf(room);
 
   game.trumpSuit = null;
   game.mains = [];
@@ -3888,7 +3912,7 @@ function publicRoom(room: Room, viewerId?: string) {
         !room.tournament &&
         canProposeEnd({
           stage: room.game.stage,
-          voteActive: !!room.game.endVote || !!room.game.shrinkVote || !!room.game.topUpVote,
+          voteActive: !!room.game.endVote || !!room.game.shrinkVote || !!room.game.topUpVote || !!room.game.personalPause,
           proposedIds: room.game.endProposedIds ?? [],
           playerId: seatedId,
         }),
@@ -3948,6 +3972,21 @@ function publicRoom(room: Room, viewerId?: string) {
       myCanVoteExtend:
         !!room.game.tableClock?.vote && seatedId !== undefined && extensionVoterIds(room).includes(seatedId) &&
         !room.game.tableClock.vote.yes.includes(seatedId) && !room.game.tableClock.vote.no.includes(seatedId),
+      // Личная пауза (§20a): чья идёт и сколько секунд; сколько пауз осталось у меня, могу ли взять.
+      personalPause: room.game.personalPause
+        ? {
+            playerId: room.game.personalPause.playerId,
+            name: room.players.find((p) => p.id === room.game!.personalPause!.playerId)?.name ?? '',
+            secondsLeft: pauseSecondsLeft(room.game.personalPause, Date.now()),
+          }
+        : null,
+      lastPersonalPause: room.game.lastPersonalPause ?? null,
+      pauseLimit: pauseLimit(!!room.tournament),
+      myPausesLeft:
+        seatedId !== undefined && !room.botIds?.includes(seatedId)
+          ? pausesLeft(pausesUsedOf(room, seatedId), !!room.tournament)
+          : null,
+      myCanPause: seatedId !== undefined && personalPauseRefusal(room, seatedId) === null,
       // Время на ход (§13a): сколько секунд осталось тому, кого ждём; кого ждём.
       turnSecondsLeft: turnSecondsLeft(turnClockOf(room), Date.now(), turnMsOf(room)),
       // Сколько ещё идёт анимация раздачи (вскрытия на туза): открыл стол позже —
@@ -4902,6 +4941,11 @@ app.post('/rooms/:id/dealer/continue', (req, res) => {
   if (room.game.topUpVote) {
     return res.status(409).json({ error: 'top-up vote in progress' });
   }
+  // Личная пауза (§20a): раздают, когда она кончится.
+  sweepPersonalPause(room);
+  if (room.game.personalPause) {
+    return res.status(409).json({ error: 'personal pause in progress', secondsLeft: pauseSecondsLeft(room.game.personalPause, Date.now()) });
+  }
 
   beginBidding(room);
 
@@ -5196,7 +5240,7 @@ app.post('/rooms/:id/end-game', (req, res) => {
     // Голосования нет — это предложение закончить.
     const allowed = canProposeEnd({
       stage: game.stage,
-      voteActive: !!game.shrinkVote || !!game.topUpVote,
+      voteActive: !!game.shrinkVote || !!game.topUpVote || !!game.personalPause,
       proposedIds: game.endProposedIds ?? [],
       playerId: id,
     });
@@ -5223,6 +5267,33 @@ app.post('/rooms/:id/end-game', (req, res) => {
 
 // Длина «минуты» стола — для проверок её укорачивают (GARBA_TABLE_MINUTE_MS).
 const TABLE_MINUTE_MS = Number(process.env.GARBA_TABLE_MINUTE_MS ?? 60_000);
+// Турнирный стол — 40 «минут» (§19.4); минута — 1/40 длины стола (в живой проверке короче).
+const TOUR_TABLE_MINUTES = 40;
+
+// Часы стола. У турнирного стола, начатого до 04.11.2026, часов не было — заводим от начала
+// стола; часы, записанные в базу до 04.11.2026, переводим на новый вид (normalizeClock).
+function clockOf(room: Room): TableClock | null {
+  const game = room.game;
+  if (!game) return null;
+  const now = Date.now();
+  const minuteMs = room.tournament ? TOUR_TIMES.tablePlayMs / TOUR_TABLE_MINUTES : TABLE_MINUTE_MS;
+  if (game.tableClock) {
+    if (typeof game.tableClock.limitMs !== 'number') game.tableClock = normalizeClock(game.tableClock, now, minuteMs);
+    return game.tableClock;
+  }
+  const tr = room.tournament;
+  if (tr && room.status === 'started') {
+    game.tableClock = startClock(TOUR_TABLE_MINUTES, tr.startedAt ?? now, minuteMs);
+    return game.tableClock;
+  }
+  return null;
+}
+
+// Часы идут, только когда стол играет: не ждём отключившегося или «ушедшего» (§13) и нет
+// личной паузы (§20a). Голосование о продлении часы не останавливает.
+function clockShouldRun(room: Room): boolean {
+  return room.status === 'started' && !isPaused(room) && !room.game?.personalPause;
+}
 
 // Кто решает продление: все люди за столом, кроме пропавших посреди раздачи (их место
 // освободится после неё). Отключился, но место за ним — голос нужен (§20). Боты сервера
@@ -5232,57 +5303,72 @@ function extensionVoterIds(room: Room): string[] {
   return room.players.map((p) => p.id).filter((id) => !room.botIds?.includes(id) && !gone.includes(id));
 }
 
-// Часы стола для экрана: сколько осталось, идущий вопрос (сколько ответили из скольких),
-// чем кончился последний. Кто был против — не называем.
+// Часы стола для экрана: сколько осталось, стоят ли, идущий вопрос (сколько ответили из
+// скольких, первый или второй), чем кончился последний. Кто был против — не называем.
 function publicTableClock(room: Room) {
-  const c = room.game?.tableClock;
+  const c = clockOf(room);
   if (!c) return null;
+  const now = Date.now();
   const voters = extensionVoterIds(room);
+  const running = clockRunning(c);
   return {
     minutes: c.minutes,
     startedAt: c.startedAt,
-    endsAt: c.endsAt,
-    secondsLeft: clockSecondsLeft(c, Date.now()),
+    // Когда кончится, если часы не остановятся; на паузе — null.
+    endsAt: running ? now + clockRemainingMs(c, now) : null,
+    secondsLeft: clockSecondsLeft(c, now),
+    paused: !running && !c.reached,
+    // Срок стола с продлениями (мс игры) — им же помечен вопрос (vote.forEndsAt).
+    limitMs: c.limitMs,
     extensions: c.extensions,
     reached: c.reached,
     vote: c.vote
       ? {
           forEndsAt: c.vote.forEndsAt,
+          round: c.vote.round,
           votedCount: [...c.vote.yes, ...c.vote.no].filter((id) => voters.includes(id)).length,
           voterCount: voters.length,
         }
       : null,
-    lastVote: c.lastVote ? { forEndsAt: c.lastVote.forEndsAt, result: c.lastVote.result } : null,
+    lastVote: c.lastVote ? { forEndsAt: c.lastVote.forEndsAt, round: c.lastVote.round, result: c.lastVote.result } : null,
   };
 }
 
-// Часы стола: подвести голосование (все «да», одно «нет», 00:00), задать вопрос за 5 минут.
+// Часы стола: остановить или пустить (пауза), подвести голосование (все «да», одно «нет»,
+// последняя минута, 00:00), задать вопрос за 5 минут или второй — за 1 минуту.
 // true — что-то поменялось. Сервер однопоточный: голос и итог считаются за один шаг, два
 // продления за одно голосование невозможны — голосование закрывается в том же шаге.
 function updateTableClock(room: Room): boolean {
   const game = room.game;
-  const before = game?.tableClock;
+  const before = clockOf(room);
   if (!game || !before || room.status !== 'started') return false;
   const now = Date.now();
-  let c = settleClock(before, extensionVoterIds(room), now, TABLE_MINUTE_MS);
-  if (shouldAskExtension(c, now, TABLE_MINUTE_MS)) c = askExtension(c);
+  let c = setClockRunning(before, clockShouldRun(room), now);
+  c = settleClock(c, extensionVoterIds(room), now);
+  if (shouldAskExtension(c, now)) c = askExtension(c, now);
   if (c === before) return false;
   game.tableClock = c;
+  if (clockRunning(c) !== clockRunning(before)) {
+    console.log(`[ROOM ${room.id}] время стола ${clockRunning(c) ? 'снова идёт' : 'остановлено (пауза)'}, осталось ${clockSecondsLeft(c, now)} с`);
+  }
   if (c.lastVote && c.lastVote !== before.lastVote) {
     const by = room.players.find((p) => p.id === c.lastVote!.byId)?.name;
-    console.log(`[ROOM ${room.id}] продление: ${c.lastVote.result}${by ? ` (против — ${by})` : ''}${c.lastVote.result === 'approved' ? `, стол до +${c.extensions * 10} мин` : ''}`);
+    console.log(`[ROOM ${room.id}] продление (вопрос ${c.lastVote.round}): ${c.lastVote.result}${by ? ` (против — ${by})` : ''}${c.lastVote.result === 'approved' ? `, продлений ${c.extensions}` : ''}`);
   }
-  if (c.vote && !before.vote) console.log(`[ROOM ${room.id}] до конца стола 5 минут — спрашиваем, продлить ли`);
+  if (c.vote && c.vote !== before.vote && !before.vote) {
+    console.log(`[ROOM ${room.id}] до конца стола ${c.vote.round === 1 ? '5 минут' : '1 минута'} — спрашиваем, продлить ли`);
+  }
   if (c.reached && !before.reached) console.log(`[ROOM ${room.id}] время стола вышло — доигрываем раздачу`);
   return true;
 }
 
 // Между раздачами (все досмотрели открытые карты) и время вышло — стол закрывается: новую
 // раздачу не начинаем, кон делится поровну, как при «закончить игру по согласию» (§20).
-// Посреди раздачи — ждём её конца. true — стол закрыт.
+// Посреди раздачи — ждём её конца. true — стол закрыт. Турнирный стол закрывает
+// tournamentBetweenDeals (§19.4).
 function timeLimitBetweenDeals(room: Room): boolean {
   const game = room.game;
-  if (!game?.tableClock || room.status !== 'started') return false;
+  if (room.tournament || !game?.tableClock || room.status !== 'started') return false;
   updateTableClock(room);
   if (!game.tableClock.reached) return false;
   if (!betweenDeals(game.stage) && game.stage !== 'vote') return false;
@@ -5292,18 +5378,125 @@ function timeLimitBetweenDeals(room: Room): boolean {
   return true;
 }
 
+// --- Личная пауза (RULES.md §20a, решение владельца 04.11.2026) ---
+
+// Длина паузы — для проверок короче (GARBA_PERSONAL_PAUSE_MS).
+const PERSONAL_PAUSE_MS = Number(process.env.GARBA_PERSONAL_PAUSE_MS ?? 10_000);
+
+// Сколько пауз игрок уже потратил: обычная игра — в этой комнате; турнир — за весь турнир (база).
+function pausesUsedOf(room: Room, playerId: string): number {
+  if (room.tournament) return tournamentPauseUsed(db, room.tournament.id, playerId) ? 1 : 0;
+  return room.game?.pausesUsed?.[playerId] ?? 0;
+}
+
+// Почему нельзя взять паузу сейчас (null — можно).
+function personalPauseRefusal(room: Room, playerId: string) {
+  const game = room.game;
+  if (!game || room.status !== 'started') return 'cannot pause now' as const;
+  return pauseRefusal({
+    betweenDeals: betweenDeals(game.stage),
+    seated: room.players.some((p) => p.id === playerId),
+    bot: room.botIds?.includes(playerId) ?? false,
+    gone: game.goneIds?.includes(playerId) ?? false,
+    roomPaused: isPaused(room),
+    activePause: !!game.personalPause,
+    voteActive: !!game.endVote || !!game.shrinkVote || !!game.topUpVote,
+    timeUp: !!game.tableClock?.reached,
+    used: pausesUsedOf(room, playerId),
+    tournament: !!room.tournament,
+  });
+}
+
+// Пауза кончилась: время вышло, взявший закончил сам или ушёл из-за стола. Часы снова идут.
+function endPersonalPause(room: Room, early: boolean) {
+  const game = room.game;
+  const p = game?.personalPause;
+  if (!game || !p) return;
+  game.personalPause = null;
+  const name = room.players.find((x) => x.id === p.playerId)?.name ?? room.departed?.find((d) => d.id === p.playerId)?.name ?? '';
+  game.lastPersonalPause = { playerId: p.playerId, name, early };
+  // Раздающему — снова полное время на раздачу: часы хода заведутся заново.
+  turnClocks.delete(room.id);
+  updateTableClock(room);
+  console.log(`[ROOM ${room.id}] пауза ${name} закончилась${early ? ' раньше времени' : ''}`);
+}
+
+// Раз в секунду: вышли 10 секунд или взявший больше не за столом — пауза кончается. true — кончилась.
+function sweepPersonalPause(room: Room): boolean {
+  const p = room.game?.personalPause;
+  if (!p) return false;
+  const seated = room.players.some((x) => x.id === p.playerId);
+  if (seated && room.status === 'started' && !pauseOver(p, Date.now())) return false;
+  endPersonalPause(room, false);
+  return true;
+}
+
 setInterval(guarded('table clock', () => {
   for (const room of rooms.values()) {
-    if (!room.game?.tableClock || room.status !== 'started') continue;
+    if (!room.game || room.status !== 'started') continue;
+    const paused = sweepPersonalPause(room);
+    if (!clockOf(room)) {
+      if (paused) {
+        persistRoom(room);
+        broadcastRoom(room.id).catch((e) => console.error(`[ROOM ${room.id}] broadcast failed:`, e));
+      }
+      continue;
+    }
     const changed = updateTableClock(room);
-    if (timeLimitBetweenDeals(room) || changed) {
+    if (timeLimitBetweenDeals(room) || changed || paused) {
       persistRoom(room);
       broadcastRoom(room.id).catch((e) => console.error(`[ROOM ${room.id}] broadcast failed:`, e));
     }
   }
 }), 1000);
 
-// Ответ на «продлить на 10 минут?»: choice — yes | no, forEndsAt — к какому вопросу (§20).
+// «⏸ Пауза» (§20a): только между раздачами, одна на всех сразу; обычная игра — 3 за партию,
+// турнир — 1 за весь турнир. Списывается в момент нажатия (турнир — в базе, одним UPDATE:
+// два одновременных нажатия не дадут двух пауз).
+app.post('/rooms/:id/pause', (req, res) => {
+  const room = rooms.get(req.params.id);
+  if (!room || !room.game) return res.status(404).json({ error: 'room/game not found' });
+  const id = me(res).id;
+  const game = room.game;
+  settleEndVote(room);
+  settleShrinkVote(room);
+  settleTopUpVote(room);
+  const refusal = personalPauseRefusal(room, id);
+  if (refusal) {
+    const status = refusal === 'player is not in this room' ? 403 : 409;
+    return res.status(status).json({ error: refusal, pausesLeft: pausesLeft(pausesUsedOf(room, id), !!room.tournament) });
+  }
+  const now = Date.now();
+  if (room.tournament) {
+    if (!useTournamentPause(db, room.tournament.id, id, now)) {
+      return res.status(409).json({ error: 'no pauses left', pausesLeft: 0 });
+    }
+  } else {
+    game.pausesUsed = { ...(game.pausesUsed ?? {}), [id]: (game.pausesUsed?.[id] ?? 0) + 1 };
+  }
+  game.personalPause = startPause(id, now, PERSONAL_PAUSE_MS);
+  game.lastPersonalPause = null;
+  turnClocks.delete(room.id);
+  updateTableClock(room);
+  const name = room.players.find((p) => p.id === id)?.name;
+  console.log(`[ROOM ${room.id}] ${name} взял паузу, осталось пауз: ${pausesLeft(pausesUsedOf(room, id), !!room.tournament)}`);
+  return res.json(publicRoom(room, id));
+});
+
+// Закончить свою паузу раньше: только взявший. Пауза всё равно потрачена.
+app.post('/rooms/:id/pause/end', (req, res) => {
+  const room = rooms.get(req.params.id);
+  if (!room || !room.game) return res.status(404).json({ error: 'room/game not found' });
+  const id = me(res).id;
+  const p = room.game.personalPause;
+  if (!p) return res.status(409).json({ error: 'no pause now' });
+  if (p.playerId !== id) return res.status(403).json({ error: 'not your pause' });
+  endPersonalPause(room, true);
+  return res.json(publicRoom(room, id));
+});
+
+// Ответ на «продлить на 10 минут?»: choice — yes | no, forEndsAt и round — к какому вопросу
+// (§20; турнирный стол — так же, §19.4).
 app.post('/rooms/:id/extend-vote', (req, res) => {
   const room = rooms.get(req.params.id);
   if (!room || !room.game) return res.status(404).json({ error: 'room/game not found' });
@@ -5311,14 +5504,22 @@ app.post('/rooms/:id/extend-vote', (req, res) => {
   if (!room.players.some((p) => p.id === playerId)) {
     return res.status(403).json({ error: 'player is not in this room' });
   }
-  const { choice, forEndsAt } = req.body ?? {};
+  const { choice, forEndsAt, round } = req.body ?? {};
   if (choice !== 'yes' && choice !== 'no') {
     return res.status(400).json({ error: 'choice must be yes or no' });
   }
   updateTableClock(room); // 00:00 уже наступило — вопрос закрыт до голоса
-  const clock = room.game.tableClock;
+  const clock = clockOf(room);
   if (!clock) return res.status(409).json({ error: 'no extension vote' });
-  const r = castExtension(clock, extensionVoterIds(room), playerId, choice, Number(forEndsAt), Date.now());
+  const r = castExtension(
+    clock,
+    extensionVoterIds(room),
+    playerId,
+    choice,
+    Number(forEndsAt),
+    Date.now(),
+    round === undefined || round === null ? undefined : Number(round),
+  );
   if (!r.ok) return res.status(409).json({ error: r.error });
   room.game.tableClock = r.clock;
   updateTableClock(room);
@@ -5395,7 +5596,7 @@ function topUpAllowed(room: Room, playerId: string): boolean {
   if (room.tournament) return false; // турнир: докупки нет (§19.4)
   return canRequestTopUp({
     stage: game.stage,
-    voteActive: !!game.endVote || !!game.shrinkVote || !!game.topUpVote,
+    voteActive: !!game.endVote || !!game.shrinkVote || !!game.topUpVote || !!game.personalPause,
     requestedIds: game.topUpRequestedIds ?? [],
     playerId,
     reserve: player.reserve ?? 0,
@@ -5986,7 +6187,12 @@ function tournamentDrop(room: Room, playerId: string, why: 'eliminated' | 'left'
 function finishTournamentLeaving(room: Room) {
   const tr = room.tournament!;
   const humans = room.players.filter((p) => !room.botIds?.includes(p.id)).length;
-  const end = tableEndReason(room.players.length, humans, tr.startedAt ?? Date.now(), Date.now(), TOUR_TIMES.tablePlayMs);
+  // Время стола — по его часам (стоят на паузах, растут с продлением): сыграно против срока.
+  updateTableClock(room);
+  const c = clockOf(room);
+  const end = c
+    ? tableEndReason(room.players.length, humans, 0, c.reached ? c.limitMs : 0, c.limitMs)
+    : tableEndReason(room.players.length, humans, tr.startedAt ?? Date.now(), Date.now(), TOUR_TIMES.tablePlayMs);
   if (end) closeTournamentTable(room, end);
   else shrinkTable(room);
 }
@@ -6014,7 +6220,8 @@ function tournamentBetweenDeals(room: Room): boolean {
   if (!tr || !game || room.status !== 'started' || !betweenDeals(game.stage)) return false;
   const now = Date.now();
   if (handsShownAt(room) > now) return false;
-  if (now - (tr.startedAt ?? now) >= TOUR_TIMES.tablePlayMs) {
+  updateTableClock(room);
+  if (clockOf(room)?.reached) {
     closeTournamentTable(room, 'time_up');
     return true;
   }
@@ -6335,7 +6542,16 @@ function tournamentRoomView(room: Room) {
     id: tr.id,
     stage: tr.stage,
     tableNo: tr.tableNo,
-    secondsLeft: tr.startedAt ? Math.max(0, Math.ceil((tr.startedAt + TOUR_TIMES.tablePlayMs - now) / 1000)) : null,
+    // До конца стола — по часам стола (стоят на паузах, §13, §20a; продление +10 минут).
+    secondsLeft: (() => {
+      const c = room.status === 'started' ? clockOf(room) : null;
+      if (c) return clockSecondsLeft(c, now);
+      return tr.startedAt ? Math.max(0, Math.ceil((tr.startedAt + TOUR_TIMES.tablePlayMs - now) / 1000)) : null;
+    })(),
+    paused: (() => {
+      const c = room.status === 'started' ? room.game?.tableClock : null;
+      return !!c && !clockRunning(c) && !c.reached;
+    })(),
     treasury: treasuryNow(tr.id),
     eliminatedIds: tr.eliminatedIds ?? [],
     penalizedIds: tr.penalizedIds ?? [],
@@ -6433,7 +6649,12 @@ function tournamentShared(now: number) {
         status: table.status,
         players: seated.map((p) => ({ code: codeOf(p.id), name: p.name, bot: room?.botIds?.includes(p.id) ?? false, balance: p.balance })),
         free: table.status === 'waiting' && room ? Math.max(0, room.capacity - (room.tournament?.reserveBots ?? 0) - room.players.length) : 0,
-        secondsLeft: table.status === 'playing' && table.startedAt ? Math.max(0, Math.ceil((table.startedAt + TOUR_TIMES.tablePlayMs - now) / 1000)) : null,
+        secondsLeft: (() => {
+          if (table.status !== 'playing' || !table.startedAt) return null;
+          const live = table.roomId ? rooms.get(table.roomId) : undefined;
+          const c = live && live.status === 'started' ? clockOf(live) : null;
+          return c ? clockSecondsLeft(c, now) : Math.max(0, Math.ceil((table.startedAt + TOUR_TIMES.tablePlayMs - now) / 1000));
+        })(),
         lastCall: !!room?.tournament?.lastCall && table.status === 'waiting',
         bots: room?.tournament?.reserveBots ?? 0,
       };

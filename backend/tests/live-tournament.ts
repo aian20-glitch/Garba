@@ -30,6 +30,7 @@ const ENV = {
   GARBA_TOUR_LASTCALL_MS: '4000',
   GARBA_TOUR_ANTE: '1600',
   GARBA_READY_MS: '3000',
+  GARBA_PERSONAL_PAUSE_MS: '1500',
 };
 
 let server: ChildProcess;
@@ -162,6 +163,21 @@ async function fullTournament() {
   t = await tour(players[0]);
   check('на экране турнира: стол №2 — идёт игра', t.tournament.tables[1].status, 'playing');
 
+  section('турнир: одна личная пауза на весь турнир (§20a)');
+  s2 = await view(room2, table2[0]);
+  check('у турнирного стола — часы стола, «Турнирная пауза 1/1»',
+    [!!s2.game.tableClock, s2.game.pauseLimit, s2.game.myPausesLeft, s2.game.myCanPause], [true, 1, 1, true]);
+  const tp = await request('POST', `/rooms/${room2}/pause`, table2[0].token, {});
+  check('между раздачами — пауза взята, часы стоят, раздавать нельзя',
+    [tp.status, tp.body.game.personalPause?.name, tp.body.game.myPausesLeft, tp.body.game.tableClock?.paused, tp.body.tournament.paused],
+    [200, table2[0].name, 0, true, true]);
+  const dealerP = table2.find((p) => p.id === tp.body.game.dealerId)!;
+  check('раздающий ждёт конца паузы', (await request('POST', `/rooms/${room2}/dealer/continue`, dealerP.token, {})).body.error, 'personal pause in progress');
+  check('вторая пауза сразу, другим игроком — нельзя', (await request('POST', `/rooms/${room2}/pause`, table2[1].token, {})).body.error, 'pause in progress');
+  check('закончить раньше — 200', (await request('POST', `/rooms/${room2}/pause/end`, table2[0].token, {})).status, 200);
+  check('второй раз за турнир — нельзя', (await request('POST', `/rooms/${room2}/pause`, table2[0].token, {})).body.error, 'no pauses left');
+  const pausedOnce = table2[0];
+
   // Трое садятся за стол №1 — он ждёт четвёртого (не придёт).
   for (const p of table1) await sit(p, 1);
   const room1 = t.tournament.tables[0].roomId as string;
@@ -242,6 +258,15 @@ async function fullTournament() {
     finalPlayers.every((p) => sf.players.find((x: any) => x.id === p.id)?.balance === finalists.find((f: any) => f.code === p.code).balance), true);
   for (const p of finalPlayers) await request('POST', `/rooms/${finalRoom}/ready`, p.token, {});
   sf = await view(finalRoom, finalPlayers[0]);
+  if (finalPlayers.some((p) => p.id === pausedOnce.id)) {
+    const fv = await view(finalRoom, pausedOnce);
+    check('паузу потратил в отборе — в финале её нет (0/1)', [fv.game.myPausesLeft, fv.game.myCanPause], [0, false]);
+    check('попытка в финале — 409', (await request('POST', `/rooms/${finalRoom}/pause`, pausedOnce.token, {})).body.error, 'no pauses left');
+  } else {
+    console.log('     (взявший паузу в финал не прошёл — проверка на другом столе пропущена)');
+  }
+  const fresh = finalPlayers.find((p) => p.id !== pausedOnce.id);
+  if (fresh) check('у не тратившего — 1/1 и в финале', (await view(finalRoom, fresh)).game.myPausesLeft, 1);
   check('финал начался (людей меньше 4 — с ботами)', [sf.status, sf.players.length >= 4], ['started', true]);
   await play(finalRoom, finalPlayers);
   await waitFor('конца турнира', async () => (await tour(players[0])).tournament?.status === 'finished', 20_000);

@@ -316,6 +316,7 @@ class _GameTableScreenState extends State<GameTableScreen> {
             (gameRaw['endVote'] is Map ||
                 gameRaw['shrinkVote'] is Map ||
                 gameRaw['topUpVote'] is Map ||
+                gameRaw['personalPause'] is Map ||
                 (gameRaw['tableClock'] is Map && data['status'] == 'started') ||
                 gameRaw['turnSecondsLeft'] != null))) {
       pauseTicker ??= Timer.periodic(const Duration(seconds: 1), (_) {
@@ -808,7 +809,7 @@ class _GameTableScreenState extends State<GameTableScreen> {
     final g = data['game'];
     final clock = g is Map ? g['tableClock'] : null;
     final last = clock is Map ? clock['lastVote'] : null;
-    final key = last is Map ? '${last['forEndsAt']}:${last['result']}' : null;
+    final key = last is Map ? '${last['forEndsAt']}:${last['round']}:${last['result']}' : null;
     if (key == clockVoteKey) return;
     final first = room == null;
     clockVoteKey = key;
@@ -817,14 +818,14 @@ class _GameTableScreenState extends State<GameTableScreen> {
 
   // «Продлить +10 минут» / «Не продлевать» (§20). Голос — к этому вопросу (forEndsAt):
   // вопрос сменился или уже ответил — сервер откажет, просто обновляем стол.
-  Future<void> sendExtendVote(String choice, Object? forEndsAt) async {
+  Future<void> sendExtendVote(String choice, Object? forEndsAt, Object? round) async {
     if (sendingExtend) return;
     setState(() => sendingExtend = true);
     try {
       final response = await apiRequest(http.post(
         Uri.parse('$apiBase/rooms/${widget.roomCode}/extend-vote'),
         headers: authHeaders(),
-        body: jsonEncode({'choice': choice, 'forEndsAt': forEndsAt}),
+        body: jsonEncode({'choice': choice, 'forEndsAt': forEndsAt, 'round': round}),
       ));
       if (response.statusCode != 409 && (response.statusCode < 200 || response.statusCode >= 300)) {
         throw ApiFailure.fromResponse(response);
@@ -839,9 +840,12 @@ class _GameTableScreenState extends State<GameTableScreen> {
 
   // Время стола (§20): часы, «осталась 1 минута», «время вышло — доигрываем», вопрос о
   // продлении (кнопки — только тому, чей голос нужен и кто ещё не ответил), итог голосования.
-  Widget tableClockBar(Map<String, dynamic> clock, bool roomDone) {
+  // Часы на паузе (ждём отключившегося, личная пауза) стоят — тогда не отсчитываем.
+  // Турнирный стол (§19.4): часы — в шапке турнира, здесь только вопрос о продлении.
+  Widget tableClockBar(Map<String, dynamic> clock, bool roomDone, {bool tournament = false}) {
+    final clockPaused = clock['paused'] == true;
     final left = math.max(0, ((clock['secondsLeft'] as num?)?.toInt() ?? 0) -
-        DateTime.now().difference(pauseReceivedAt).inSeconds);
+        (clockPaused ? 0 : DateTime.now().difference(pauseReceivedAt).inSeconds));
     final reached = clock['reached'] == true || left == 0;
     final vote = clock['vote'] is Map ? Map<String, dynamic>.from(clock['vote'] as Map) : null;
     final game = room?['game'] as Map?;
@@ -860,15 +864,20 @@ class _GameTableScreenState extends State<GameTableScreen> {
     if (roomDone) return const SizedBox.shrink();
     if (reached) {
       line('Время стола вышло — доигрываем раздачу, новой не будет', Colors.orangeAccent);
+    } else if (clockPaused) {
+      line('⏸ Время стола остановлено — игра на паузе', Colors.white70);
     } else if (warn && vote == null) {
       line('До окончания стола осталась 1 минута', Colors.orangeAccent);
     }
+    final secondAsk = last?['round'] == 1;
     if (showResult) {
       line(
         switch (last['result']) {
           'approved' => 'Все игроки согласились. Время игры продлено на 10 минут.',
-          'rejected' => 'Продление отклонено. Игра завершится через оставшееся время.',
-          _ => 'Ответили не все — время не продлено.',
+          'rejected' => secondAsk
+              ? 'Продление отклонено. За минуту до конца спросим ещё раз.'
+              : 'Продление отклонено. Игра завершится через оставшееся время.',
+          _ => secondAsk ? 'Ответили не все — за минуту до конца спросим ещё раз.' : 'Ответили не все — время не продлено.',
         },
         last['result'] == 'approved' ? Colors.greenAccent : Colors.white70,
       );
@@ -878,7 +887,7 @@ class _GameTableScreenState extends State<GameTableScreen> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          Center(
+          if (!tournament) Center(
             child: Container(
               padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 2),
               decoration: BoxDecoration(
@@ -887,7 +896,7 @@ class _GameTableScreenState extends State<GameTableScreen> {
                 border: Border.all(color: (warn || reached ? Colors.orangeAccent : gold).withValues(alpha: 0.6)),
               ),
               child: Text(
-                '⏱ ${fmtTableClock(left)}',
+                '${clockPaused ? '⏸' : '⏱'} ${fmtTableClock(left)}',
                 style: TextStyle(
                   fontSize: 13,
                   fontWeight: FontWeight.w900,
@@ -912,7 +921,8 @@ class _GameTableScreenState extends State<GameTableScreen> {
                 children: [
                   Text(
                     canVote
-                        ? 'До окончания стола осталось ${math.max(1, (left / 60).ceil())} мин. Продлить игру ещё на 10 минут?'
+                        ? '${vote['round'] == 2 ? 'Последний вопрос. ' : ''}До окончания стола осталось ${math.max(1, (left / 60).ceil())} мин. '
+                            '${tournament ? 'Продлить турнирную игру на 10 минут?' : 'Продлить игру ещё на 10 минут?'}'
                         : myVote == 'yes'
                             ? 'Вы за продление на 10 минут. Ждём остальных.'
                             : 'Игроки решают, продлить ли игру на 10 минут.',
@@ -930,14 +940,14 @@ class _GameTableScreenState extends State<GameTableScreen> {
                       children: [
                         Expanded(
                           child: FilledButton(
-                            onPressed: sendingExtend ? null : () => sendExtendVote('yes', vote['forEndsAt']),
+                            onPressed: sendingExtend ? null : () => sendExtendVote('yes', vote['forEndsAt'], vote['round']),
                             child: const FittedBox(child: Text('ПРОДЛИТЬ +10 МИН')),
                           ),
                         ),
                         const SizedBox(width: 8),
                         Expanded(
                           child: OutlinedButton(
-                            onPressed: sendingExtend ? null : () => sendExtendVote('no', vote['forEndsAt']),
+                            onPressed: sendingExtend ? null : () => sendExtendVote('no', vote['forEndsAt'], vote['round']),
                             child: const FittedBox(child: Text('НЕ ПРОДЛЕВАТЬ')),
                           ),
                         ),
@@ -946,6 +956,38 @@ class _GameTableScreenState extends State<GameTableScreen> {
                   ],
                 ],
               ),
+            ),
+        ],
+      ),
+    );
+  }
+
+  // Личная пауза (§20a): «⏸ Пауза — Серик · 7 с», раздавать нельзя, часы стола стоят.
+  // Взявший может закончить раньше — пауза всё равно потрачена.
+  Widget personalPauseBar(Map<String, dynamic> p) {
+    final left = math.max(0, ((p['secondsLeft'] as num?)?.toInt() ?? 0) -
+        DateTime.now().difference(pauseReceivedAt).inSeconds);
+    final mine = p['playerId']?.toString() == widget.currentPlayerId;
+    return Container(
+      margin: const EdgeInsets.only(top: 4),
+      padding: const EdgeInsets.fromLTRB(10, 4, 6, 4),
+      decoration: BoxDecoration(
+        color: const Color(0xFF13232E),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: const Color(0xFFE6B74F).withValues(alpha: 0.6)),
+      ),
+      child: Row(
+        children: [
+          Expanded(
+            child: Text(
+              mine ? '⏸ Ваша пауза · $left с' : '⏸ Пауза — ${p['name']} · $left с',
+              style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w800),
+            ),
+          ),
+          if (mine)
+            TextButton(
+              onPressed: sendingSpecial ? null : () => sendSpecial('pause/end', {}),
+              child: const Text('ПРОДОЛЖИТЬ'),
             ),
         ],
       ),
@@ -2763,7 +2805,11 @@ class _GameTableScreenState extends State<GameTableScreen> {
                 ),
               // Время стола (§20): часы и вопрос о продлении — над столом, ничего не закрывают.
               if (game['tableClock'] is Map)
-                tableClockBar(Map<String, dynamic>.from(game['tableClock'] as Map), isRoomDone),
+                tableClockBar(Map<String, dynamic>.from(game['tableClock'] as Map), isRoomDone,
+                    tournament: data['tournament'] is Map),
+              // Личная пауза (§20a): кто взял и сколько секунд — у всех; взявшему — «ПРОДОЛЖИТЬ».
+              if (game['personalPause'] is Map && !isRoomDone)
+                personalPauseBar(Map<String, dynamic>.from(game['personalPause'] as Map)),
               if (closing && !isRoomDone)
                 Padding(
                   padding: const EdgeInsets.only(top: 6),
@@ -3361,13 +3407,16 @@ class _GameTableScreenState extends State<GameTableScreen> {
                               !paused &&
                               endVote == null &&
                               topUpVote == null &&
+                              game['personalPause'] == null &&
                               !(isRoundDone && resultHeld)
                           ? dealCards
                           : null,
                       child: Text(
                         dealing
                             ? 'РАЗДАЁМ...'
-                            : isRoundDone && resultHeld
+                            : game['personalPause'] is Map
+                                ? 'ПАУЗА…'
+                                : isRoundDone && resultHeld
                                 ? 'СМОТРИМ КАРТЫ…'
                                 : isDealer
                                     ? (isRoundDone
@@ -3393,6 +3442,18 @@ class _GameTableScreenState extends State<GameTableScreen> {
                         icon: const Icon(Icons.volunteer_activism, size: 18),
                         label: Text('ОТДАТЬ ЧАСТЬ ВЫИГРЫША · до ${fmtCoins((myShareLimits['max'] as num).toInt())}'),
                         style: TextButton.styleFrom(foregroundColor: const Color(0xFFE6B74F)),
+                      ),
+                    // Личная пауза (§20a): 3 за партию, в турнире — 1 за весь турнир.
+                    if (game['myPausesLeft'] is num && !watching)
+                      TextButton.icon(
+                        onPressed: sendingSpecial || game['myCanPause'] != true
+                            ? null
+                            : () => sendSpecial('pause', {}),
+                        icon: const Icon(Icons.pause_circle_outline, size: 18),
+                        label: Text(
+                          '${data['tournament'] is Map ? 'ТУРНИРНАЯ ПАУЗА' : 'ПАУЗА'} '
+                          '${(game['myPausesLeft'] as num).toInt()}/${(game['pauseLimit'] as num?)?.toInt() ?? 3} · 10 с',
+                        ),
                       ),
                     // Докупить из кошелька — между раздачами, с согласия всех (§9.1c).
                     if (canRequestTopUp)

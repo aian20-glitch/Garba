@@ -793,7 +793,7 @@ class TournamentTile extends StatelessWidget {
   }
 }
 
-// Шапка турнирного стола (§19.4): этап и номер, сколько осталось от 40 минут, казна; кто выбыл.
+// Шапка турнирного стола (§19.4): этап и номер, сколько осталось от 40 минут (на паузе часы стоят), казна; кто выбыл.
 class TournamentTableBar extends StatelessWidget {
   final Map<String, dynamic> tournament;
   final DateTime receivedAt;
@@ -803,8 +803,10 @@ class TournamentTableBar extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final t = tournament;
+    // На паузе (ждём отключившегося, личная пауза) часы стола стоят — не отсчитываем.
+    final paused = t['paused'] == true;
     final secs = t['secondsLeft'] is num
-        ? ((t['secondsLeft'] as num).toInt() - DateTime.now().difference(receivedAt).inSeconds).clamp(0, 99999)
+        ? ((t['secondsLeft'] as num).toInt() - (paused ? 0 : DateTime.now().difference(receivedAt).inSeconds)).clamp(0, 99999)
         : null;
     final lastOut = t['lastOut'] is Map ? Map<String, dynamic>.from(t['lastOut'] as Map) : null;
     final outText = lastOut == null
@@ -829,7 +831,7 @@ class TournamentTableBar extends StatelessWidget {
               fit: BoxFit.scaleDown,
               child: Text(
                 '🏆 ${t['stage'] == 'final' ? 'ФИНАЛ' : 'СТОЛ №${t['tableNo']}'}'
-                '${secs != null ? ' · до конца ${fmtClock(secs)}' : ''}'
+                '${secs != null ? ' · ${paused ? '⏸' : 'до конца'} ${fmtClock(secs)}' : ''}'
                 ' · казна ${fmtCoins((t['treasury'] as num?)?.toInt() ?? 0)}',
                 style: const TextStyle(fontWeight: FontWeight.w900, color: _tourGold, fontSize: 13),
               ),
