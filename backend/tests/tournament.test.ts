@@ -4,6 +4,7 @@
 import { check, section } from './check.js';
 import { createAccount, getAccount, openDb, transaction } from '../src/accounts.js';
 import {
+  compareListed,
   compareStandings,
   ENTRY_FEE,
   eliminatedIds,
@@ -21,6 +22,7 @@ import {
   weeklyStartAt,
   winnerBanner,
   winsBadge,
+  type ListedEntry,
   type Standing,
 } from '../src/tournament.js';
 import {
@@ -134,6 +136,43 @@ check('на границе 7-го места ничья решается так 
   selectFinalists([...[30, 29, 28, 27, 26, 25].map((k, i) => st(`t${i}`, k * 1000)), st('late', 20_000, { registeredAt: 9 }), st('early', 20_000, { registeredAt: 1 })])
     .out.map((s) => s.id), ['late']);
 check('порядок стабильный: сравнение симметрично', compareStandings(st('a', 1), st('b', 1)) === -compareStandings(st('b', 1), st('a', 1)), true);
+
+section('турнир: порядок общего списка (§19.11, §19.13)');
+{
+  // Счёт отбора — razWins…; счёт финала — finalRazWins…; место — finalPlace (после конца турнира).
+  const le = (id: string, status: string, balance: number, more: Partial<ListedEntry> = {}): ListedEntry => ({
+    ...st(id, balance),
+    status,
+    finalPlace: null,
+    finalRazWins: 0,
+    finalDvaWins: 0,
+    finalMaxRisk: 0,
+    ...more,
+  });
+  const order = (list: ListedEntry[]) => [...list].sort(compareListed).map((e) => e.id);
+  // Монеты поровну: у «a» больше побед на РАЗ в отборе, но «b» зарегистрировался раньше.
+  const a = { razWins: 2, registeredAt: 20 };
+  const b = { razWins: 0, registeredAt: 10 };
+  check('финалисты до финала — по отбору (как их выбрали), а не по пустому счёту финала',
+    order([le('b', 'finalist', 12_000, b), le('a', 'finalist', 12_000, a)]), ['a', 'b']);
+  check('финал не сыгран: места по отбору — и в списке так же (одинаковые монеты)',
+    order([le('b', 'final_done', 12_000, { ...b, finalPlace: 2 }), le('a', 'final_done', 12_000, { ...a, finalPlace: 1 })]), ['a', 'b']);
+  check('финал сыгран, места розданы — по местам',
+    order([le('a', 'final_done', 9_000, { ...a, finalPlace: 3 }), le('b', 'final_done', 9_000, { ...b, finalPlace: 2 }), le('c', 'final_done', 25_000, { finalPlace: 1 })]),
+    ['c', 'b', 'a']);
+  check('финал идёт — по счёту финала',
+    order([le('a', 'final_playing', 14_000, a), le('b', 'final_playing', 14_000, { ...b, finalRazWins: 1 })]), ['b', 'a']);
+  check('сверху финалисты, потом сыгравшие, потом не сыгравшие по регистрации, в конце остальные',
+    order([
+      le('refund', 'refunded', 10_000),
+      le('late', 'registered', 10_000, { registeredAt: 9 }),
+      le('early', 'registered', 10_000, { registeredAt: 1 }),
+      le('out', 'out', 1_000),
+      le('played', 'played', 8_000),
+      le('fin', 'finalist', 11_000),
+    ]),
+    ['fin', 'played', 'out', 'early', 'late', 'refund']);
+}
 
 section('турнир: победитель и выплаты (§19.9)');
 // Пример владельца: баланс победителя 42 000, казна 184 000 → 226 000.

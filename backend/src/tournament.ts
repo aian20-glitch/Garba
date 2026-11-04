@@ -160,6 +160,39 @@ export function rankStandings<T extends Standing>(list: T[]): T[] {
   return [...list].sort(compareStandings);
 }
 
+// Участник в общем списке экрана «ТУРНИР» (§19.11): счёт отбора и отдельно — счёт финала.
+export type ListedEntry = Standing & {
+  status: string;
+  finalPlace: number | null;
+  finalRazWins: number;
+  finalDvaWins: number;
+  finalMaxRisk: number;
+};
+
+function listGroup(status: string): number {
+  if (status === 'finalist' || status === 'final_playing' || status === 'final_done') return 0;
+  if (status === 'played' || status === 'out' || status === 'playing') return 1;
+  return status === 'registered' ? 2 : 3;
+}
+
+// Порядок общего списка (§19.11): сверху финалисты, дальше сыгравшие — по общему списку, ещё не
+// сыгравшие — по времени регистрации. Финалист, который финал ещё не играл, — по отбору: так его и
+// выбрали (selectFinalists). Сыгравший финал — по счёту финала. Места розданы — по местам: по ним
+// же приз и рейтинг (финал не сыгран — места по отбору, §19.13). Раньше финалиста всегда ставили по
+// счёту финала, и при равном балансе порядок в списке расходился с местами (исправлено 05.11.2026).
+export function compareListed(a: ListedEntry, b: ListedEntry): number {
+  const group = listGroup(a.status) - listGroup(b.status);
+  if (group !== 0) return group;
+  if (listGroup(a.status) >= 2) return a.registeredAt - b.registeredAt;
+  if (a.finalPlace !== null && b.finalPlace !== null) return a.finalPlace - b.finalPlace;
+  return compareStandings(listStanding(a), listStanding(b));
+}
+
+function listStanding(e: ListedEntry): Standing {
+  const playedFinal = e.status === 'final_playing' || e.status === 'final_done';
+  return playedFinal ? { ...e, razWins: e.finalRazWins, dvaWins: e.finalDvaWins, maxRisk: e.finalMaxRisk } : e;
+}
+
 // Финалисты: больше 10 000 — до 7 лучших; таких меньше 4 — добор следующих по списку, кто
 // может платить взнос; людей всё равно меньше 4 — недостающие места займут боты.
 export function selectFinalists<T extends Standing>(
