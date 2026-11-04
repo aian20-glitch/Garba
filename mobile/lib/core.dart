@@ -127,11 +127,15 @@ bool isRedSuit(String suit) =>
 //
 // Если соединение пропало, экраны временно возвращаются к опросу (см. [connected]) —
 // так игра не зависает, пока Socket.IO переподключается сам.
+// ШАХ (ветка shah, этап 3): тот же RoomLink, свои события — 'watch_shah' → 'shah_room'.
 class RoomLink {
   RoomLink({
     required this.roomCode,
     required this.onRoom,
     this.onError,
+    this.watchEvent = 'watch',
+    this.roomEvent = 'room',
+    this.errorEvent = 'room_error',
   }) {
     _socket = io.io(
       apiBase,
@@ -147,13 +151,13 @@ class RoomLink {
     // Подписываемся при каждом подключении — в том числе после обрыва.
     _socket.onConnect((_) {
       // Кто смотрит, сервер узнаёт по токену — чужую руку так не получить.
-      _socket.emit('watch', {'roomId': roomCode, 'token': Session.token});
+      _socket.emit(watchEvent, {'roomId': roomCode, 'token': Session.token});
     });
-    _socket.on('room', (data) {
+    _socket.on(roomEvent, (data) {
       if (data is Map) onRoom(Map<String, dynamic>.from(data));
     });
     // Комнаты нет или токен не подошёл — экран должен это показать, а не крутить загрузку.
-    _socket.on('room_error', (data) {
+    _socket.on(errorEvent, (data) {
       final error = data is Map ? data['error']?.toString() : null;
       if (error != null) onError?.call(error);
     });
@@ -163,6 +167,9 @@ class RoomLink {
   final String roomCode;
   final void Function(Map<String, dynamic> room) onRoom;
   final void Function(String error)? onError;
+  final String watchEvent;
+  final String roomEvent;
+  final String errorEvent;
   late final io.Socket _socket;
 
   bool get connected => _socket.connected;
@@ -400,13 +407,38 @@ const _apiErrorMessages = <String, String>{
   'cannot share now': 'Отдать часть выигрыша можно только сразу после своей победы, до следующей раздачи, один раз.',
   'bad share amount': 'Столько отдать нельзя: от взноса стола до 10% выигрыша, кратно 100.',
   'bad share recipient': 'Этого игрока уже нет за столом.',
+  // ШАХ (ветка shah, этап 3) — ходы проверяет сервер.
+  'wrong move': 'Сейчас так ходить нельзя.',
+  'bad lead': 'Так зайти нельзя: одной картой, несколькими одной масти или одного достоинства.',
+  'lead too big': 'Столько карт зайти нельзя.',
+  'wrong card count': 'Положите столько карт, сколько в заходе.',
+  'cannot beat': 'Этими картами не побить: каждую карту — своей, старшей той же масти или козырем.',
+  'card not in hand': 'Этой карты уже нет у вас в руке.',
+  'bad cards': 'Выберите карты.',
+  'not time to deal': 'Сейчас не время раздавать.',
+  'only dealer can deal': 'Раздаёт сдающий.',
+  'party result on show': 'Все смотрят итог партии — раздать можно через пару секунд.',
+  'personal pause in progress': 'Идёт пауза — раздать можно после неё.',
+  'time is up': 'Время стола вышло — матч окончен.',
+  'game not started': 'Матч ещё не начался.',
+  'already in this room': 'Этот игрок уже за столом.',
+  'playing elsewhere': 'Вы сейчас в игре. Смотреть чужой стол можно, когда доиграете свою.',
+  'shah disabled': 'ШАХ сейчас выключен на сервере.',
 };
 
 String userErrorMessage(Object error, {String fallback = 'Не удалось выполнить действие'}) {
   if (error is ApiFailure) {
     final details = error.body is Map ? error.body as Map : const {};
     if (error.code == 'already in another room' && details['roomId'] != null) {
+      if (details['kind'] == 'shah') {
+        return 'Вы уже за столом ШАХ #${details['roomId']}. Вернитесь к нему с главного экрана.';
+      }
       return 'Вы уже в комнате #${details['roomId']}. Вернитесь в неё с главного экрана.';
+    }
+    // ШАХ: сесть можно, если на счёте есть сколько можно проиграть (взнос).
+    if (error.code == 'not enough coins to enter' && details['need'] is num && details['balance'] is num) {
+      return 'Для этого стола нужно ${fmtCoins((details['need'] as num).toInt())} монет. '
+          'У вас ${fmtCoins((details['balance'] as num).toInt())}.';
     }
     // Бан за выход из начатой игры (§13d, 23.10.2026).
     if (error.code == 'banned for leaving') {
@@ -462,6 +494,10 @@ String? busyInRoomMessage(http.Response response) {
   try {
     final err = jsonDecode(response.body);
     if (err is Map && err['error'] == 'already in another room') {
+      if (err['kind'] == 'shah') {
+        return 'Вы уже за столом ШАХ #${err['roomId']}. Играть можно только за одним столом — '
+            'вернитесь к нему с главного экрана.';
+      }
       return 'Вы уже в комнате #${err['roomId']}. Играть можно только в одной — '
           'вернитесь в неё с главного экрана.';
     }

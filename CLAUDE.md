@@ -21,6 +21,10 @@
 ~/Garba/mobile/lib/widgets/      карты, казахский орнамент, окно итога раздачи и игры, общие элементы, вещи магазина (shop_look.dart)
 ~/Garba/mobile/lib/tg/           Telegram Mini App: на телефоне заглушка, в веб-сборке — telegram-web-app.js
 ~/Garba/mobile/web/              веб-сборка (браузер и Telegram), сервер отдаёт её по /play/
+~/Garba/mobile/lib/screens/shah.dart        ШАХ (ветка shah, этап 3): плитка, раздел ШАХ, создать стол, открытые и идущие
+                                 столы, вход и условия стола, лобби, правила ШАХ
+~/Garba/mobile/lib/screens/shah_table.dart  ШАХ: игровой стол (вскрытие на туза, раздача, взятка, рука с выбором карт, итоги)
+~/Garba/mobile/lib/widgets/shah_cards.dart  ШАХ: мини-карты, взятка столбиками, табло штрафов, окна итога партии и матча
 ```
 
 Модули в `backend/src` — что подключено к `index.ts`, а что нет:
@@ -68,7 +72,7 @@
 | `shah/cards.ts` | **ШАХ, этап 1** (04.11.2026, ветка `shah`). Колода 36, старшинство Т>10>К>Д>В>9…6, очки (120), «бьёт ли карта» (6♣ на отбое — всё), заход, подбор накрытий. Чистые функции. |
 | `shah/engine.ts` | **ШАХ, этап 1.** Матч и партия: сдающий через туза, раздача, козырь и его смена при доборе, перебивание кругами, рубашки, ШАХ, добор, конец партии, сдающий следующей. `act` возвращает новое состояние. Нерешённые правила — `ShahOptions` (сейчас «а»). |
 | `shah/score.ts` | **ШАХ, этап 1.** Штрафы 2/4/6 и 3, ничья ×2, конец матча на −24. Чистые функции. |
-| `shah/view.ts` | **ШАХ, этап 1.** Что видит каждый: своя рука, у других — число карт, рубашки — только числом. |
+| `shah/view.ts` | **ШАХ, этап 1.** Что видит каждый: своя рука, у других — число карт, рубашки — только числом. С этапа 3 — подсказки тому, чей ход: `leadOptions` (чем можно зайти), `beatOptions` (чем побить, от дешёвых). |
 | `shah/rooms.ts` | **ШАХ, этап 2** (04.11.2026). Настройки комнаты, монеты матча (`MoneyMode`: «а» `pot` — ставка на матч, «б» `loserPays`), итог по времени и при уходе, ход за игрока по таймеру, бот-тренировка. Чистые функции. |
 | `shah/server.ts` | **ШАХ, этап 2.** `registerShah(ctx)` — комнаты ШАХ на сервере: свои карта комнат, запросы `/shah/...`, сокет `watch_shah`, таймеры (лобби, «ГОТОВ», присутствие, ход, время стола, личная пауза, боты). Включается `GARBA_SHAH=1` (index.ts). |
 | `shah/db.ts` | **ШАХ, этап 2.** Таблица `shah_rooms`; взнос и выплата — в одной транзакции с записью комнаты (`charged`, `settled`). |
@@ -134,7 +138,8 @@ cd ~/Garba/mobile && flutter analyze
   за раз вместе с Гарбой, «ГОТОВ», взнос при старте, матч до −24 и банк победителю, чужие карты не уходят (и по сокету, и
   зрителю), выход между партиями и бан, таймер хода и «ушёл», отключение — сторона проиграла, личная пауза, время стола
   (продление «да», два «нет», время вышло — итог по штрафам; «минута» 0,4 с), тренировка с ботами, перезапуск сервера
-  посреди матча (выплата один раз);
+  посреди матча (выплата один раз); с этапа 3 — shahEnabled, код игрока, приглашение друга, «ИДУТ СЕЙЧАС», нельзя смотреть
+  из своей начатой игры, подсказки захода, страница /r/:id (87 проверок);
 - `tests/live-table.ts` — порт 3093 (22.10.2026): докупка с согласия всех (§9.1c), 3 секунды открытых
   карт после раздачи (§10.8), часть выигрыша другому (§11.8) — четверо играют логикой ботов сервера;
   с 23.10.2026 — бан за выход (§13d), рейтинг по монетам и ТОП-3 недели (§16.8);
@@ -590,9 +595,14 @@ POST /shah/rooms                 { capacity: 2|3|4|6, ante: 100..1000 кратн
                                  20|40 (20), timeLimitMinutes?: 15..180 | null, isPublic? } → 201 состояние; 400 bad capacity |
                                  bad ante { min, max } | bad absenceMinutes | bad turnSeconds | time limit…; 409 already in another
                                  room { roomId, kind: garba|shah }; 403 banned for leaving | not enough coins to enter { need, balance }
-GET  /shah/rooms/open            → { rooms: [{ id, capacity, players, creatorName, settings, money }] } — открытые лобби, куда хватает
+GET  /shah/rooms/open            → { rooms: [{ id, capacity, players, creatorName, settings, money }] } — открытые лобби, куда хватает;
+                                 live (этап 3): [{ id, capacity, players, names, creatorName, settings, practice, partyNumber, totals,
+                                 spectators }] — идущие матчи, кроме моих и тех, где игрок с блоком («ИДУТ СЕЙЧАС», §18 Гарбы)
 POST /shah/rooms/quick           { capacity? } → сесть в открытую (того же размера) или создать открытую (без capacity — 4, взнос 100)
-GET  /shah/rooms/:id             → состояние; не за столом — без руки (зритель); 403 blocked
+GET  /shah/rooms/:id             → состояние; не за столом — без руки (зритель); 403 blocked | playing elsewhere (сам сидит за
+                                 начатым столом Гарбы или ШАХ — как §18 Гарбы; и в сокете, и при каждой рассылке)
+POST /shah/rooms/:id/invite      { code } (этап 3) — позвать друга из лобби со свободным местом: 403 not a friend; 409 no free seat |
+                                 already in this room; 404 player not found. У друга — /me → roomInvites [{ roomId, kind: 'shah', … }]
 POST /shah/rooms/:id/join        { seat? } — только в лобби: 409 game already started | room is full | seat taken; 400 bad seat
 POST /shah/rooms/:id/seat | visibility | ready | bots | back | react | pause | pause/end | extend-vote — как в Гарбе
 POST /shah/rooms/:id/leave       лобби — выйти (создатель — комната закрыта); матч — только между партиями (409 can leave only
@@ -604,14 +614,21 @@ POST /shah/rooms/:id/move        { type: lead | beat | closed, cardIds, targetId
                                  big { max } | wrong card count { need } | cannot beat
 состояние ШАХ                    { kind: 'shah', id, capacity, teams, status, stage: lobby|awaiting_deal|playing|finished, creatorId,
                                  isPublic, practice, settings, options (варианты правил), money: { mode, ante, pot, maxLoss },
-                                 players: [{ id, name, seat, side, bot, ready, rating, avatar, frame, cardBack }], readyCheck,
-                                 readyDroppedIds, lobbySecondsLeft, dealerId, partyShowLeftMs, dealShowLeftMs, awaitedIds,
+                                 players: [{ id, name, code, seat, side, bot, ready, rating, avatar, frame, cardBack }], readyCheck,
+                                 readyDroppedIds, lobbySecondsLeft, dealerId, partyShowLeftMs, revealShowLeftMs (вскрытие на туза в
+                                 начале матча — сколько ещё идёт), dealShowLeftMs, awaitedIds,
                                  turnSecondsLeft, pause, tableClock, myExtendVote, myCanVoteExtend, personalPause, lastPersonalPause,
                                  pauseLimit, myPausesLeft, myCanPause, game (shah/view.ts: рука только своя), result: { reason:
                                  match_over|time_limit|player_left|lobby_timeout|nobody_ready|creator_left, outcomes, deltas,
                                  leftIds, totals }, reactions, spectators, version, lobbyTimedOut }
+                                 game.myLeadOptions / game.myBeatOptions (этап 3) — наборы id карт, которыми сейчас можно зайти /
+                                 побить, только тому, чей ход (beat — от дешёвых к дорогим); приложение включает «ЗАЙТИ» и «ПОБИТЬ»
+                                 только по ним. targetIds приложение не шлёт — накрытия подбирает движок (на игру не влияет)
 сокет: клиент → 'watch_shah' { roomId, token }; сервер → 'shah_room' <состояние>, 'shah_room_error' { error }
-/me                              → ещё shahRoomId — стол ШАХ отдельным полем (roomId — только Гарба: старые приложения о ШАХ не знают)
+/me                              → ещё shahRoomId — стол ШАХ отдельным полем (roomId — только Гарба: старые приложения о ШАХ не знают);
+                                 shahEnabled — включён ли ШАХ на сервере (без него приложение плитку «ШАХ» не показывает)
+/friends                         → ещё shahRoomId у друга; /r/:id — страница-приглашение и для стола ШАХ (тот же garba://room/<номер>:
+                                 «Войти по коду» в приложении сначала ищет стол Гарбы, нет — стол ШАХ)
 Монеты ШАХ не лежат в комнате: взнос списывается со счёта при старте, банк выплачивается в конце — каждый раз одной транзакцией
 с записью комнаты (флаги charged / settled — после перезапуска ничего не дважды). Тренировка (боты) — монеты не двигаются.
 Для проверок: GARBA_SHAH_SHOW_MS, GARBA_SHAH_BOT_MS, GARBA_SHAH_BOT_TICK_MS, GARBA_SHAH_ANIM_MS и общие GARBA_TURN_MS,

@@ -535,8 +535,12 @@ export function registerShah(ctx: ShahContext) {
     const seated = viewerId !== null && isMember(room, viewerId);
     const stage = stageOf(room);
     const a = awaited(room);
-    const clock = turnClocks.get(room.id);
-    const turnLeft = a && clock && clock.key === a.key ? turnSecondsLeft(clock, now, turnMsOf(room)) : null;
+    // Часы хода заводятся сразу, как в Гарбе (turnClockOf): иначе первое состояние после хода
+    // приходит без секунд, а следующее — только после следующего хода.
+    const clock = clockFor(turnClocks.get(room.id), a?.key ?? null, now, a?.startAt ?? now);
+    if (clock) turnClocks.set(room.id, clock);
+    else turnClocks.delete(room.id);
+    const turnLeft = a && clock ? turnSecondsLeft(clock, now, turnMsOf(room)) : null;
     const { disconnectedAt } = presenceOf(room.id);
     const absence = tracksPresence(room)
       ? absenceStep(room.players.map((p) => p.id), absentIds(room), absentSince.get(room.id) ?? {}, room.absenceUsedMs, now, absenceMsOf(room), room.absenceFreeMs)
@@ -1128,7 +1132,7 @@ export function registerShah(ctx: ShahContext) {
       if (!room.readyCheck && room.players.length === room.capacity) {
         room.readyCheck = startReadyCheck(now);
         for (const id of room.botIds) room.readyCheck = markReady(room.readyCheck, id);
-        for (const p of humans(room)) ctx.notify?.(p.id, `shah-ready:${room.id}`, `Стол ШАХ #${room.id} собран — жми «ГОТОВ»!`, `shah_${room.id}`);
+        for (const p of humans(room)) ctx.notify?.(p.id, `shah-ready:${room.id}`, `Стол ШАХ #${room.id} собран — жми «ГОТОВ»!`, `room_${room.id}`);
         dirty = true;
       }
       if (settleReady(room)) dirty = true;
@@ -1152,7 +1156,7 @@ export function registerShah(ctx: ShahContext) {
       presence.set(room.id, { lastSeen: step.lastSeen, disconnectedAt: step.disconnectedAt });
       for (const id of Object.keys(step.disconnectedAt)) {
         if (wasOffline[id] === undefined) {
-          ctx.notify?.(id, `shah-offline:${room.id}`, `ШАХ #${room.id} на паузе — стол ждёт тебя.`, `shah_${room.id}`);
+          ctx.notify?.(id, `shah-offline:${room.id}`, `ШАХ #${room.id} на паузе — стол ждёт тебя.`, `room_${room.id}`);
         }
       }
       if (step.changed) dirty = true;

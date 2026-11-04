@@ -128,13 +128,17 @@ Widget framed(Widget avatar, {required double diameter, required String? frame})
 // Стол с сукном. Обычный — моё надетое сукно (каждый видит своё, решение владельца);
 // KazakhTable.preview — для витрины магазина.
 class KazakhTable extends StatefulWidget {
-  const KazakhTable({super.key})
+  const KazakhTable({super.key, this.title = 'ГАРБА'})
       : preview = false,
         cloth = null;
-  const KazakhTable.preview(this.cloth, {super.key}) : preview = true;
+  const KazakhTable.preview(this.cloth, {super.key})
+      : preview = true,
+        title = 'ГАРБА';
 
   final bool preview;
   final String? cloth;
+  // Надпись на сукне — у стола ШАХ «ШАХ».
+  final String title;
 
   @override
   State<KazakhTable> createState() => _KazakhTableState();
@@ -179,7 +183,7 @@ class _KazakhTableState extends State<KazakhTable> {
   Widget build(BuildContext context) {
     final id = wanted;
     if (id != null) ensureLoaded(id);
-    return CustomPaint(painter: KazakhTablePainter(cloth: id == null ? null : _cache[id]));
+    return CustomPaint(painter: KazakhTablePainter(cloth: id == null ? null : _cache[id], title: widget.title));
   }
 }
 

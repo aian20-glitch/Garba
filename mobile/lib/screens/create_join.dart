@@ -430,6 +430,19 @@ class _JoinRoomScreenState extends State<JoinRoomScreen> {
         Uri.parse('$apiBase/rooms/${Uri.encodeComponent(roomId)}'),
         headers: authHeaders(),
       ));
+      // Не стол Гарбы — может, стол ШАХ (ветка shah): номера не совпадают, код и ссылка — общие.
+      if (peek.statusCode == 404) {
+        final shahPeek = await apiRequest(http.get(
+          Uri.parse('$apiBase/shah/rooms/${Uri.encodeComponent(roomId)}'),
+          headers: authHeaders(),
+        ));
+        if (shahPeek.statusCode == 200) {
+          if (!mounted) return;
+          await joinShahTable(context, roomId,
+              info: jsonDecode(shahPeek.body) as Map<String, dynamic>, replace: true);
+          return;
+        }
+      }
       if (peek.statusCode != 200) throw ApiFailure.fromResponse(peek);
       final info = jsonDecode(peek.body) as Map<String, dynamic>;
       final seated = (info['players'] as List).any((p) => (p as Map)['id']?.toString() == Session.id);
