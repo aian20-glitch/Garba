@@ -5663,6 +5663,7 @@ function settleTopUpVote(room: Room) {
 
 // Может ли игрок сейчас попросить докупить: между раздачами, никто ничего не решает,
 // в кошельке есть монеты, между этими раздачами ещё не просил. Боты не просят.
+// Личная пауза (§20a) не мешает — во время паузы докупить можно (решение владельца, 05.11.2026).
 function topUpAllowed(room: Room, playerId: string): boolean {
   const game = room.game;
   const player = room.players.find((p) => p.id === playerId);
@@ -5670,7 +5671,7 @@ function topUpAllowed(room: Room, playerId: string): boolean {
   if (room.tournament) return false; // турнир: докупки нет (§19.4)
   return canRequestTopUp({
     stage: game.stage,
-    voteActive: !!game.endVote || !!game.shrinkVote || !!game.topUpVote || !!game.personalPause,
+    voteActive: !!game.endVote || !!game.shrinkVote || !!game.topUpVote,
     requestedIds: game.topUpRequestedIds ?? [],
     playerId,
     reserve: player.reserve ?? 0,

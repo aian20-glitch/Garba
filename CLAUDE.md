@@ -487,6 +487,7 @@ POST /rooms/:id/shrink-vote      { choice }   continue | close — играть 
                                               отвечать можно и на паузе; боты сервера не голосуют
 POST /rooms/:id/top-up           { amount }   докупить из кошелька (§9.1c, 22.10.2026, topUp.ts): только между
                                               раздачами (round_done | awaiting_deal), раз между ними; amount 1…reserve.
+                                              Во время личной паузы (§20a) — можно (05.11.2026).
                                               game.topUpVote = { requesterId, requesterName, amount, yesIds, noIds,
                                               voterIds, secondsLeft }, game.myTopUpVote, game.myCanRequestTopUp,
                                               game.lastTopUp { playerId, name, amount, result: approved | rejected |

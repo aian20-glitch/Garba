@@ -102,9 +102,13 @@ async function topUp() {
   s = await dealAndPass(roomId, players);
   check('снова пересдача — можно попросить снова', (await view(roomId, serik)).game.myCanRequestTopUp, true);
   const mid = await view(roomId, serik);
-  await post(roomId, serik, 'top-up', { amount: 5_000 });
+  // Во время личной паузы (§20a) докупить можно (решение владельца, 05.11.2026).
+  check('Серик взял личную паузу', (await post(roomId, serik, 'pause')).status, 200);
+  check('во время паузы кнопка «ДОКУПИТЬ» есть', (await view(roomId, serik)).game.myCanRequestTopUp, true);
+  check('просит докупить во время паузы', (await post(roomId, serik, 'top-up', { amount: 5_000 })).status, 200);
   for (const p of others) await post(roomId, p, 'top-up-vote', { choice: 'yes' });
   s = await view(roomId, serik);
+  check('пауза идёт дальше — докупка её не сняла', s.game.personalPause?.playerId, serik.id);
   const me = s.players.find((x: any) => x.id === serik.id);
   check('все согласны — на столе +5 000, в кошельке 15 000',
     [s.game.lastTopUp?.result, balanceAt(s, serik.id) - balanceAt(mid, serik.id), s.myReserve], ['approved', 5_000, 15_000]);
@@ -112,7 +116,10 @@ async function topUp() {
   check('монеты на столе выросли ровно на докупку', coinsOnTable(s) - coinsOnTable(mid), 5_000);
   const account2 = (await request('GET', '/me', serik.token)).body;
   check('в /me: вне стола 15 000, за столом — то, что на столе', [account2.balance, account2.tableBalance], [15_000, balanceAt(s, serik.id)]);
-  check('раздавать снова можно', (await post(roomId, players.find((p) => p.id === s.game.dealerId)!, 'dealer/continue')).status, 200);
+  check('пока пауза — раздавать нельзя',
+    (await post(roomId, players.find((p) => p.id === s.game.dealerId)!, 'dealer/continue')).body.error, 'personal pause in progress');
+  await post(roomId, serik, 'pause/end');
+  check('пауза кончилась — раздавать снова можно', (await post(roomId, players.find((p) => p.id === s.game.dealerId)!, 'dealer/continue')).status, 200);
 }
 
 async function openHandsAndShare() {
