@@ -38,6 +38,10 @@ part 'widgets/common.dart';
 part 'widgets/shop_look.dart';
 part 'screens/shop.dart';
 part 'screens/tournament.dart';
+// Вторая игра ШАХ (ветка shah, этап 3) — SHAH_RULES.md.
+part 'widgets/shah_cards.dart';
+part 'screens/shah.dart';
+part 'screens/shah_table.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();

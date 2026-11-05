@@ -34,6 +34,9 @@ class _HomeScreenState extends State<HomeScreen> with RouteAware {
   bool banTournament = false;
   // Еженедельный турнир (§19): этап и зарегистрирован ли я — для плитки «ТУРНИР».
   Map<String, dynamic>? tournament;
+  // Вторая игра ШАХ (ветка shah): включена ли на сервере и за каким столом ШАХ я сижу.
+  bool shahEnabled = false;
+  String? shahRoomId;
 
   @override
   void initState() {
@@ -132,6 +135,8 @@ class _HomeScreenState extends State<HomeScreen> with RouteAware {
         banCount = (ban?['count'] as num?)?.toInt() ?? 0;
         banTournament = ban?['tournament'] == true;
         tournament = me['tournament'] is Map ? Map<String, dynamic>.from(me['tournament'] as Map) : null;
+        shahEnabled = me['shahEnabled'] == true;
+        shahRoomId = me['shahRoomId']?.toString();
       });
       final ids = invites.map((i) => i['roomId'].toString()).toSet();
       if (ids.difference(seenInvites).isNotEmpty) {
@@ -280,15 +285,20 @@ class _HomeScreenState extends State<HomeScreen> with RouteAware {
                             leading: const Icon(Icons.mail, color: Color(0xFFD4A94F)),
                             title: Text('${inv['fromName']} зовёт за стол',
                                 style: const TextStyle(fontWeight: FontWeight.w800)),
-                            subtitle: Text(inv['tableNo'] != null
-                                ? 'Турнир · стол №${inv['tableNo']}'
-                                : 'Комната #${inv['roomId']}'),
+                            subtitle: Text(inv['kind'] == 'shah'
+                                ? 'ШАХ · стол #${inv['roomId']}'
+                                : inv['tableNo'] != null
+                                    ? 'Турнир · стол №${inv['tableNo']}'
+                                    : 'Комната #${inv['roomId']}'),
                             trailing: Row(
                               mainAxisSize: MainAxisSize.min,
                               children: [
                                 FilledButton(
-                                  onPressed: roomId != null
+                                  onPressed: roomId != null || shahRoomId != null
                                       ? null
+                                      // Стол ШАХ — свои условия (взнос — ставка на матч), без суммы за стол.
+                                      : inv['kind'] == 'shah'
+                                          ? () => joinShahTable(context, inv['roomId'].toString())
                                       // За турнирный стол — без суммы за стол, с турнирным балансом (§19.3).
                                       : inv['tableNo'] != null
                                           ? () => sitAtTournamentTable(context, (inv['tableNo'] as num).toInt())
@@ -342,6 +352,20 @@ class _HomeScreenState extends State<HomeScreen> with RouteAware {
                         ],
                         const SizedBox(height: 14),
                       ],
+                      // За столом ШАХ — туда и возвращаемся (одна комната за раз вместе с Гарбой).
+                      if (shahRoomId != null) ...[
+                        GarbaButton(
+                          label: 'ВЕРНУТЬСЯ ЗА СТОЛ ШАХ #$shahRoomId',
+                          onTap: () => openShahLobby(context, shahRoomId!),
+                        ),
+                        const SizedBox(height: 14),
+                      ],
+                      // Вторая игра ШАХ — во всю ширину; только если включена на сервере.
+                      if (shahEnabled)
+                        Padding(
+                          padding: const EdgeInsets.only(bottom: 12),
+                          child: ShahTile(onTap: () => go(const ShahHomeScreen())),
+                        ),
                       // Еженедельный турнир (§19, 31.10.2026) — во всю ширину.
                       Padding(
                         padding: const EdgeInsets.only(bottom: 12),

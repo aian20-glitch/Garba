@@ -13,6 +13,14 @@ if [ "${2:-}" = "--first" ]; then
   exit 0
 fi
 
+# Выкладываем только с main (04.11.2026): в ветке shah идёт новая игра ШАХ — она не должна
+# попасть на сервер раньше времени. Осознанно с другой ветки — GARBA_BRANCH_OK=1.
+BRANCH="$(git -C "$ROOT" branch --show-current)"
+if [ "$BRANCH" != "main" ] && [ "${GARBA_BRANCH_OK:-}" != "1" ]; then
+  echo "Сейчас ветка «$BRANCH» — выкладка только с main (git switch main) или GARBA_BRANCH_OK=1." >&2
+  exit 1
+fi
+
 # Выкладываем только закоммиченное (28.09.2026): иначе на сервер уйдут случайные правки,
 # которых нет в git. Осознанно без коммита — GARBA_DIRTY_OK=1.
 if [ -n "$(git -C "$ROOT" status --porcelain -- backend deploy mobile)" ] && [ "${GARBA_DIRTY_OK:-}" != "1" ]; then

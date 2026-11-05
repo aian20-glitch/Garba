@@ -85,10 +85,12 @@ class GarbaTitle extends StatelessWidget {
 // слоёв тёплого золота. Орнамент остаётся достаточно тихим, чтобы карты и
 // плашки игроков читались поверх него.
 class KazakhTablePainter extends CustomPainter {
-  const KazakhTablePainter({this.cloth});
+  const KazakhTablePainter({this.cloth, this.title = 'ГАРБА'});
 
   // Сукно из магазина (§17) — картинка вместо небесного «Көк»; null — «Көк», как у всех.
   final ui.Image? cloth;
+  // Надпись на сукне: «ГАРБА», у стола второй игры — «ШАХ» (ветка shah).
+  final String title;
 
   static const gold = Color(0xFFE6B74F);
   static const brightGold = Color(0xFFFFD87A);
@@ -216,9 +218,9 @@ class KazakhTablePainter extends CustomPainter {
 
     // Большой спокойный водяной знак в центре сукна.
     drawHorn(center.translate(0, -12), size.width * 0.38, 0, 0.10);
-    final title = TextPainter(
+    final titlePainter = TextPainter(
       text: TextSpan(
-        text: 'ГАРБА',
+        text: title,
         style: TextStyle(
           color: brightGold.withValues(alpha: 0.10),
           fontSize: size.width * 0.075,
@@ -228,12 +230,13 @@ class KazakhTablePainter extends CustomPainter {
       ),
       textDirection: TextDirection.ltr,
     )..layout();
-    title.paint(
+    titlePainter.paint(
       canvas,
-      Offset(center.dx - title.width / 2, center.dy + size.width * 0.16),
+      Offset(center.dx - titlePainter.width / 2, center.dy + size.width * 0.16),
     );
   }
 
   @override
-  bool shouldRepaint(covariant KazakhTablePainter oldDelegate) => oldDelegate.cloth != cloth;
+  bool shouldRepaint(covariant KazakhTablePainter oldDelegate) =>
+      oldDelegate.cloth != cloth || oldDelegate.title != title;
 }

@@ -264,6 +264,7 @@ import {
 } from './personalPause.js';
 import { rateCheck } from './rateLimit.js';
 import { openRoomsFor, QUICK_ROOM } from './openRooms.js';
+import { registerShah } from './shah/server.js';
 import { liveRoomsFor, spectateRefusal, spectatorCount } from './spectators.js';
 import { checkBuyIn } from './buyIn.js';
 import { canShare, checkShareAmount } from './share.js';
@@ -1086,9 +1087,9 @@ app.delete('/me', (req, res) => {
   if (!account) {
     return res.status(401).json({ error: 'unauthorized' });
   }
-  const room = activeRoomOf(account.id);
+  const room = busyRoomOf(account.id);
   if (room) {
-    return res.status(409).json({ error: 'finish your game first', roomId: room.id });
+    return res.status(409).json({ error: 'finish your game first', roomId: room.id, kind: room.kind });
   }
   // В незаконченном турнире — сначала доиграть: на нём турнирные монеты и обязательства (§19.2).
   const tournamentId = unfinishedEntryOf(db, account.id);
@@ -1111,6 +1112,7 @@ function deleteAccountEverywhere(account: Account) {
       delete r.stats?.[account.id];
     }
   }
+  shah?.forgetAccount(account.id);
   console.log(`[ACCOUNT] deleted ${account.name} (${account.id})`);
   looks.delete(account.id);
   dropSocketsOf(account.id);
@@ -1162,6 +1164,12 @@ app.get('/me', (req, res) => {
     avatar: avatarOf(account.id),
     rating: shownRating(accountRating(account.id)),
     roomId: activeRoomOf(account.id)?.id ?? null,
+    // Незаконченный стол ШАХ (04.11.2026) — отдельным полем: старые приложения о ШАХ не знают.
+    shahRoomId: shah?.roomOf(account.id)?.id ?? null,
+    // Включён ли ШАХ на сервере (GARBA_SHAH=1) — без него приложение плитку «ШАХ» не показывает.
+    shahEnabled: shah !== null,
+    // Рейтинг ШАХ (этап 4, SHAH_RULES.md §19) — свой, отдельно от rating Гарбы; без ШАХ — null.
+    shahRating: shah?.ratingOf(account.id) ?? null,
     daily: {
       claimedToday: !claim.claimable,
       streak: claim.streak,
@@ -1257,6 +1265,19 @@ function invitePage(title: string, text: string, appLink: string, code: string, 
 app.get('/r/:roomId', (req, res) => {
   const roomId = req.params.roomId;
   const room = isRoomCode(roomId) ? rooms.get(roomId) : undefined;
+  // Стол ШАХ (ветка shah): та же ссылка — приложение само поймёт, какая игра.
+  const shahTable = !room && isRoomCode(roomId) ? shah?.summary(roomId) : undefined;
+  if (shahTable) {
+    return res.type('html').send(
+      invitePage(
+        'Приглашение в ШАХ',
+        `${shahTable.creatorName} зовёт вас играть в ШАХ: стол на ${shahTable.capacity}, сейчас ${shahTable.players}.`,
+        `garba://room/${roomId}`,
+        roomId,
+        'Если приложение не открылось — нажмите «Войти по коду» и введите номер стола:',
+      ),
+    );
+  }
   if (!room || room.status === 'finished') {
     return res.status(404).type('html').send(
       invitePage('ГАРБА', 'Эта комната уже закрыта или её нет.', 'garba://', '', 'Создайте новую комнату в приложении.'),
@@ -1418,6 +1439,8 @@ app.get('/me/profile', (req, res) => {
     medals: coinMedals(peakBalanceOf(db, account.id)),
     // Победы в еженедельном турнире (§19.12): значок 🏆×N в «ДОСТИЖЕНИЯХ».
     tournamentWins: winsOf(account.id),
+    // ШАХ (этап 4): рейтинг ШАХ и матчи — только когда ШАХ включён на сервере.
+    shah: shah?.profileOf(account.id) ?? null,
     friendsCount: listFriends(db, account.id).length,
     hasRecoveryCode: hasRecoveryCode(db, account.id),
   });
@@ -1445,6 +1468,7 @@ app.get('/players/:code', (req, res) => {
     stats: profileStats(db, player.id),
     medals: coinMedals(peakBalanceOf(db, player.id)),
     tournamentWins: winsOf(player.id),
+    shah: shah?.profileOf(player.id) ?? null,
     isFriend: areFriends(db, me.id, player.id),
     // friends | outgoing (я позвал) | incoming (он зовёт меня) | none
     friendStatus: friendStatus(db, me.id, player.id),
@@ -1594,6 +1618,8 @@ app.get('/friends', (req, res) => {
       stats: profileStats(db, f.id),
       // В какой комнате сейчас сидит — чтобы можно было зайти к другу.
       roomId: activeRoomOf(f.id)?.id ?? null,
+      // За каким столом ШАХ (ветка shah) — отдельным полем, как в /me.
+      shahRoomId: shah?.roomOf(f.id)?.id ?? null,
     })),
   });
 });
@@ -1763,8 +1789,8 @@ app.post('/admin/delete', (req, res) => {
   if (!localOnly(req)) return res.status(403).json({ error: 'local only' });
   const account = findAccountByCode(db, normalizeCode(req.body?.code) ?? '');
   if (!account) return res.status(404).json({ error: 'player not found' });
-  const room = activeRoomOf(account.id);
-  if (room) return res.status(409).json({ error: 'player is in a game', roomId: room.id });
+  const room = busyRoomOf(account.id);
+  if (room) return res.status(409).json({ error: 'player is in a game', roomId: room.id, kind: room.kind });
   if (unfinishedEntryOf(db, account.id)) return res.status(409).json({ error: 'player is in a tournament' });
   deleteAccountEverywhere(account);
   return res.json({ ok: true, name: account.name });
@@ -1785,9 +1811,9 @@ app.post('/gifts', (req, res) => {
     return res.status(403).json({ error: 'blocked' });
   }
 
-  const busyIn = activeRoomOf(from.id);
+  const busyIn = busyRoomOf(from.id);
   if (busyIn) {
-    return res.status(409).json({ error: 'finish your game first', roomId: busyIn.id });
+    return res.status(409).json({ error: 'finish your game first', roomId: busyIn.id, kind: busyIn.kind });
   }
 
   const amount = Number(req.body?.amount);
@@ -1837,8 +1863,8 @@ function shopState(account: Account) {
     })),
     look,
     balance: walletSplit(account).balance,
-    // Сидит за столом — купить нельзя, надеть можно.
-    roomId: activeRoomOf(account.id)?.id ?? null,
+    // Сидит за столом (Гарбы или ШАХ) — купить нельзя, надеть можно.
+    roomId: busyRoomOf(account.id)?.id ?? null,
   };
 }
 
@@ -1857,9 +1883,9 @@ app.post('/shop/buy', (req, res) => {
   if (!account) {
     return res.status(401).json({ error: 'unauthorized' });
   }
-  const busyIn = activeRoomOf(account.id);
+  const busyIn = busyRoomOf(account.id);
   if (busyIn) {
-    return res.status(409).json({ error: 'finish your game first', roomId: busyIn.id });
+    return res.status(409).json({ error: 'finish your game first', roomId: busyIn.id, kind: busyIn.kind });
   }
 
   const error = buyError(req.body?.itemId, account.balance, ownedItems(db, account.id));
@@ -2085,6 +2111,36 @@ io.on('connection', (socket) => {
   });
 });
 
+// --- Вторая игра ШАХ (ветка shah, 04.11.2026; SHAH_RULES.md, backend/src/shah/) ---
+// Свои комнаты, таблица shah_rooms, запросы /shah/... и сокет watch_shah. Общее с Гарбой —
+// аккаунты и кошелёк, бан за выход, блокировки и «одна комната за раз» (busyRoomOf).
+// Включается переменной GARBA_SHAH=1; без неё ШАХ на сервере нет.
+const shah =
+  process.env.GARBA_SHAH === '1'
+    ? registerShah({
+        app,
+        io,
+        db,
+        garbaRoomOf: (id) => activeRoomOf(id),
+        garbaIdTaken: (id) => rooms.has(id) || roomIdTaken(db, id),
+        banError,
+        avoidIds: (id) => avoidIds(db, id),
+        ownedPacks: (id) => ownedItems(db, id),
+        lookOf: (id) => ({ avatar: avatarOf(id), frame: frameOf(id), cardBack: lookFor(id).back }),
+        notify: notifyTelegram,
+        invite: inviteToShah,
+      })
+    : null;
+if (!shah) app.use('/shah', (_req, res) => res.status(404).json({ error: 'shah disabled' }));
+
+// Где игрок сидит сейчас — за столом Гарбы или ШАХ. Играть можно только за одним столом.
+function busyRoomOf(accountId: string): { id: string; kind: 'garba' | 'shah' } | undefined {
+  const garba = activeRoomOf(accountId);
+  if (garba) return { id: garba.id, kind: 'garba' };
+  const other = shah?.roomOf(accountId);
+  return other ? { id: other.id, kind: 'shah' } : undefined;
+}
+
 // Разослать состояние комнаты всем, кто за ней следит, — каждому со своей рукой.
 // Токен сменился (восстановление по коду) или аккаунт удалён — уже открытые сокеты
 // с этим аккаунтом больше не получают его руку (28.09.2026).
@@ -2115,7 +2171,8 @@ function spectateRefusalFor(room: Room, accountId: string) {
   return spectateRefusal({
     member,
     status: room.status,
-    playingElsewhere: elsewhere !== undefined && elsewhere.status === 'started',
+    // Сидит за начатым столом Гарбы или ШАХ — свой стол встал бы на паузу.
+    playingElsewhere: (elsewhere !== undefined && elsewhere.status === 'started') || shah?.roomOf(accountId)?.status === 'started',
     blocked: room.players.some((p) => avoid.has(p.id)),
   });
 }
@@ -2946,7 +3003,7 @@ function makeRoomId(): string {
   let id = '';
   do {
     id = String(Math.floor(10000 + Math.random() * 90000));
-  } while (rooms.has(id) || roomIdTaken(db, id));
+  } while (rooms.has(id) || roomIdTaken(db, id) || shah?.idTaken(id));
   return id;
 }
 
@@ -4147,9 +4204,9 @@ app.post('/rooms', (req, res) => {
   }
 
   // Играть можно только в одной комнате за раз — roomId, чтобы вернуться в неё.
-  const busyIn = activeRoomOf(me(res).id);
+  const busyIn = busyRoomOf(me(res).id);
   if (busyIn) {
-    return res.status(409).json({ error: 'already in another room', roomId: busyIn.id });
+    return res.status(409).json({ error: 'already in another room', roomId: busyIn.id, kind: busyIn.kind });
   }
   const banned = banError(me(res).id);
   if (banned) return res.status(403).json(banned);
@@ -4258,9 +4315,9 @@ function joinRoom(
   if (seat === null) {
     return { status: 409, body: { error: room.players.length >= room.capacity ? 'room is full' : 'seat taken' } };
   }
-  const busyIn = activeRoomOf(account.id);
+  const busyIn = busyRoomOf(account.id);
   if (busyIn) {
-    return { status: 409, body: { error: 'already in another room', roomId: busyIn.id } };
+    return { status: 409, body: { error: 'already in another room', roomId: busyIn.id, kind: busyIn.kind } };
   }
   const banned = banError(account.id);
   if (banned) return { status: 403, body: banned };
@@ -4394,9 +4451,9 @@ function liveRoomsForAccount(account: Account) {
 // таких нет — создать открытую комнату (5 игроков, взнос 100) и ждать людей.
 app.post('/rooms/quick', (req, res) => {
   const account = me(res);
-  const busyIn = activeRoomOf(account.id);
+  const busyIn = busyRoomOf(account.id);
   if (busyIn) {
-    return res.status(409).json({ error: 'already in another room', roomId: busyIn.id });
+    return res.status(409).json({ error: 'already in another room', roomId: busyIn.id, kind: busyIn.kind });
   }
   const banned = banError(account.id);
   if (banned) return res.status(403).json(banned);
@@ -4464,7 +4521,8 @@ app.post('/rooms/:id/join', (req, res) => {
 // видно у друга на главном экране 10 минут (без push-уведомлений: приложение должно быть
 // открыто). Живёт в памяти: после перезапуска сервера пропадает — не страшно.
 const INVITE_TTL_MS = 10 * 60_000;
-const roomInvites = new Map<string, { roomId: string; fromId: string; fromName: string; at: number }[]>();
+// kind 'shah' — зовут за стол ШАХ (ветка shah): номера столов ШАХ с Гарбой не совпадают.
+const roomInvites = new Map<string, { roomId: string; fromId: string; fromName: string; at: number; kind?: 'shah' }[]>();
 
 // Раз в час забываем старые адреса и просроченные приглашения — иначе карты росли бы вечно.
 setInterval(guarded('cleanup', () => {
@@ -4489,18 +4547,34 @@ function roomHasSeat(room: Room): boolean {
 function invitesFor(accountId: string) {
   const now = Date.now();
   const list = (roomInvites.get(accountId) ?? []).filter((inv) => {
+    if (now - inv.at >= INVITE_TTL_MS) return false;
+    if (inv.kind === 'shah') return !!shah?.hasSeatFor(inv.roomId, accountId);
     const room = rooms.get(inv.roomId);
-    return now - inv.at < INVITE_TTL_MS && !!room && roomHasSeat(room) &&
-      !room.players.some((p) => p.id === accountId);
+    return !!room && roomHasSeat(room) && !room.players.some((p) => p.id === accountId);
   });
   roomInvites.set(accountId, list);
   // tableNo — зовут за турнирный стол (§19.3): приложение сажает без суммы за стол.
+  // kind — какая игра: garba | shah (старые приложения поле не читают).
   return list.map((inv) => ({
     roomId: inv.roomId,
     fromName: inv.fromName,
     at: inv.at,
-    tableNo: rooms.get(inv.roomId)?.tournament?.tableNo ?? null,
+    kind: inv.kind ?? 'garba',
+    tableNo: inv.kind === 'shah' ? null : rooms.get(inv.roomId)?.tournament?.tableNo ?? null,
   }));
+}
+
+// Позвать друга за стол ШАХ (ветка shah, этап 3) — как за стол Гарбы: только друга.
+function inviteToShah(from: Account, code: string, roomId: string, memberIds: string[]) {
+  const friend = findAccountByCode(db, normalizeCode(code) ?? '');
+  if (!friend) return { status: 404, body: { error: 'player not found' } };
+  if (!areFriends(db, from.id, friend.id)) return { status: 403, body: { error: 'not a friend' } };
+  if (memberIds.includes(friend.id)) return { status: 409, body: { error: 'already in this room' } };
+  const list = (roomInvites.get(friend.id) ?? []).filter((inv) => inv.roomId !== roomId);
+  roomInvites.set(friend.id, [...list, { roomId, fromId: from.id, fromName: from.name, at: Date.now(), kind: 'shah' }]);
+  console.log(`[SHAH ${roomId}] ${from.name} зовёт друга ${friend.name}`);
+  notifyTelegram(friend.id, `invite:${roomId}`, `${from.name} зовёт тебя за стол ШАХ — #${roomId}.`, `room_${roomId}`);
+  return { status: 200, body: { ok: true } };
 }
 
 app.post('/rooms/:id/invite', (req, res) => {

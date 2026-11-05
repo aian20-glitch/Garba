@@ -540,7 +540,9 @@ Future<void> showFriendInviteSheet(BuildContext context, String roomCode) {
 
 class FriendInviteSheet extends StatefulWidget {
   final String roomCode;
-  const FriendInviteSheet({super.key, required this.roomCode});
+  // Стол ШАХ (ветка shah, этап 3): зовём через /shah/rooms/:id/invite.
+  final bool shah;
+  const FriendInviteSheet({super.key, required this.roomCode, this.shah = false});
 
   @override
   State<FriendInviteSheet> createState() => _FriendInviteSheetState();
@@ -573,7 +575,7 @@ class _FriendInviteSheetState extends State<FriendInviteSheet> {
   Future<void> invite(String code) async {
     try {
       final response = await http.post(
-        Uri.parse('$apiBase/rooms/${widget.roomCode}/invite'),
+        Uri.parse('$apiBase/${widget.shah ? 'shah/rooms' : 'rooms'}/${widget.roomCode}/invite'),
         headers: authHeaders(),
         body: jsonEncode({'code': code}),
       );
@@ -620,7 +622,8 @@ class _FriendInviteSheetState extends State<FriendInviteSheet> {
                       for (final f in list)
                         () {
                           final code = f['code'].toString();
-                          final busyRoom = f['roomId']?.toString();
+                          // Друг за столом Гарбы или ШАХ — занят (играть можно только за одним столом).
+                          final busyRoom = (f['roomId'] ?? f['shahRoomId'])?.toString();
                           final here = busyRoom == widget.roomCode;
                           final busy = busyRoom != null && !here;
                           return ListTile(

@@ -47,7 +47,7 @@ class _GiftScreenState extends State<GiftScreen> {
         balance = (me['balance'] as num).toInt();
         giftSentToday = me['giftSentToday'] == true;
         giftLeft = (me['giftLeftToday'] as num?)?.toInt() ?? (giftSentToday ? 0 : 10000);
-        inRoom = me['roomId'] != null;
+        inRoom = me['roomId'] != null || me['shahRoomId'] != null; // за столом ШАХ дарить тоже нельзя
         loaded = true;
       });
     } catch (e) {
