@@ -1,27 +1,41 @@
 // Комнаты ШАХ (SHAH_PLAN.md, этап 2, 04.11.2026) — чистые функции: настройки комнаты, монеты
-// матча, ход за игрока по таймеру, ход бота-тренировки. Сам сервер — shah/server.ts.
+// партии, ход за игрока по таймеру, ход бота-тренировки. Сам сервер — shah/server.ts.
 //
-// Где ответа владельца ещё нет (SHAH_PLAN.md, вопросы 17–24), сделан вариант «а», второй —
-// переключателем, как в движке.
+// Слова (решение владельца 05.11.2026): ПАРТИЯ — игра до −24 (в коде match), РАЗДАЧА — сдали по 6
+// карт и сыграли (в коде party), СТОЛ — несколько партий подряд тем же составом.
+// Ответы владельца 05.11.2026 (SHAH_PLAN.md, вопросы 17–19): взнос — за каждую партию, банк —
+// выигравшим; времени стола нет — создатель выбирает 1…30 партий, сыграли — вопрос «ещё 3?»;
+// ушёл — его сторона проиграла партию.
 
 import type { Card, Suit } from '../types.js';
 import { ABSENCE_MINUTES_OPTIONS, NEW_ROOM_ABSENCE_MINUTES } from '../presence.js';
-import { checkTimeLimit } from '../tableTimer.js';
 import { DEFAULT_TURN_SECONDS, TURN_SECONDS_OPTIONS } from '../turnTimer.js';
 import { cardPoints, findBeat, isShah, pointsOf, rankPower } from './cards.js';
 import { awaitedOf, isTeamFormat, sideOf, type ShahAction, type ShahFormat, type ShahMatch } from './engine.js';
 import type { SideResult } from './score.js';
 
 export const SHAH_CAPACITIES: readonly ShahFormat[] = [2, 3, 4, 6];
-export const SHAH_ANTE_MIN = 100;
-export const SHAH_ANTE_MAX = 1000;
-export const SHAH_ANTE_STEP = 100;
+
+// Взнос за партию (вопрос 17, владелец 05.11.2026): команды (2×2, 3×3) — 10 000…20 000,
+// 1×1 и 1×1×1 — 1 000…10 000. Шаг 1 000 — решено при реализации (как сумма за стол в Гарбе).
+export const SHAH_ANTE_STEP = 1000;
+export function anteRange(format: ShahFormat): { min: number; max: number } {
+  return isTeamFormat(format) ? { min: 10_000, max: 20_000 } : { min: 1_000, max: 10_000 };
+}
+
+// Сколько партий за столом (вопрос 18, владелец 05.11.2026): выбирает создатель, 1…30. Сыграли все —
+// вопрос «добавить ещё 3 партии?». Без поля — 3 (решено при реализации), «Быстрая игра» — 1.
+export const SHAH_MATCHES_MIN = 1;
+export const SHAH_MATCHES_MAX = 30;
+export const DEFAULT_SHAH_MATCHES = 3;
+export const QUICK_SHAH_MATCHES = 1;
+export const SHAH_EXTRA_MATCHES = 3;
 
 export type ShahSettings = {
-  ante: number; // взнос матча, 100…1000, кратно 100
+  ante: number; // взнос за каждую партию (anteRange)
   absenceMinutes: number; // ожидание вышедшего, 1…5 минут за игру (как в Гарбе, §13)
   turnSeconds: number; // время на ход: 20 или 40 секунд (вопрос 23 «а» — как в Гарбе)
-  timeLimitMinutes: number | null; // время игры 15…180 или без ограничения (как в Гарбе, §20)
+  matches: number; // сколько партий договорились сыграть, 1…30
 };
 
 export type SettingsCheck =
@@ -29,45 +43,48 @@ export type SettingsCheck =
   | { ok: false; error: string; min?: number; max?: number };
 
 // Настройки при создании комнаты. Чего не прислали — как в Гарбе: ожидание 1 минута, ход 20 с,
-// время игры без ограничения, комната только по коду.
+// комната только по коду; партий — 3. Время игры (timeLimitMinutes) у ШАХ нет — не читаем.
 export function checkShahSettings(body: Record<string, unknown> | undefined): SettingsCheck {
   const b = body ?? {};
   const capacity = Number(b.capacity);
   if (!SHAH_CAPACITIES.includes(capacity as ShahFormat)) return { ok: false, error: 'bad capacity' };
+  const range = anteRange(capacity as ShahFormat);
   const ante = Number(b.ante);
-  if (!Number.isInteger(ante) || ante < SHAH_ANTE_MIN || ante > SHAH_ANTE_MAX || ante % SHAH_ANTE_STEP !== 0) {
-    return { ok: false, error: 'bad ante', min: SHAH_ANTE_MIN, max: SHAH_ANTE_MAX };
+  if (!Number.isInteger(ante) || ante < range.min || ante > range.max || ante % SHAH_ANTE_STEP !== 0) {
+    return { ok: false, error: 'bad ante', ...range };
   }
   const absenceMinutes = b.absenceMinutes === undefined ? NEW_ROOM_ABSENCE_MINUTES : Number(b.absenceMinutes);
   if (!ABSENCE_MINUTES_OPTIONS.includes(absenceMinutes)) return { ok: false, error: 'bad absenceMinutes' };
   const turnSeconds = b.turnSeconds === undefined ? DEFAULT_TURN_SECONDS : Number(b.turnSeconds);
   if (!TURN_SECONDS_OPTIONS.includes(turnSeconds)) return { ok: false, error: 'bad turnSeconds' };
-  const time = checkTimeLimit(b.timeLimitMinutes);
-  if (!time.ok) return { ok: false, error: time.error };
+  const matches = b.matches === undefined || b.matches === null ? DEFAULT_SHAH_MATCHES : Number(b.matches);
+  if (!Number.isInteger(matches) || matches < SHAH_MATCHES_MIN || matches > SHAH_MATCHES_MAX) {
+    return { ok: false, error: 'bad matches', min: SHAH_MATCHES_MIN, max: SHAH_MATCHES_MAX };
+  }
   return {
     ok: true,
     capacity: capacity as ShahFormat,
-    settings: { ante, absenceMinutes, turnSeconds, timeLimitMinutes: time.minutes },
+    settings: { ante, absenceMinutes, turnSeconds, matches },
     isPublic: b.isPublic === true,
   };
 }
 
-// ——— Монеты матча (вопрос 17) ———
-// 'pot' («а») — ставка на матч: в начале каждый кладёт взнос, победители забирают всё
-// (команда — поровну); 'loserPays' («б») — в начале ничего, в конце каждый проигравший платит
-// взнос каждому победителю.
+// ——— Монеты партии (вопрос 17 «а», подтверждён владельцем 05.11.2026) ———
+// 'pot' — ставка на партию: в начале каждой партии каждый кладёт взнос, выигравшие забирают всё
+// (команда — поровну, при 1×1×1 двое выигравших — пополам); 'loserPays' («б», не выбран) — в начале
+// ничего, в конце каждый проигравший платит взнос каждому победителю.
 export type MoneyMode = 'pot' | 'loserPays';
 export const DEFAULT_MONEY_MODE: MoneyMode = 'pot';
 
-// Сколько игрок может проиграть за матч — столько нужно иметь, чтобы сесть за стол.
+// Сколько игрок может проиграть за партию — столько нужно иметь, чтобы сесть за стол.
 export function maxLoss(format: ShahFormat, ante: number, mode: MoneyMode): number {
   if (mode === 'pot') return ante;
   const winnersAtMost = isTeamFormat(format) ? format / 2 : format - 1;
   return ante * winnersAtMost;
 }
 
-// Итог матча для каждого места: win | lose | none (при 3 по варианту «б» вопроса 16 — ни то
-// ни другое) | draw (ничья — время вышло при равном счёте, вопрос 18).
+// Итог партии для каждого места: win | lose | none (при 3 по варианту «б» вопроса 16 — ни то
+// ни другое) | draw (ничья — ушли все стороны сразу).
 export type SeatOutcome = 'win' | 'lose' | 'none' | 'draw';
 
 export function seatOutcomes(format: ShahFormat, sides: SideResult[] | null): SeatOutcome[] {
@@ -94,7 +111,7 @@ export function potPayouts(format: ShahFormat, ante: number, outcomes: SeatOutco
   });
 }
 
-// Итог матча в монетах для каждого места (+ выиграл, − проиграл): то, что показывает экран итогов.
+// Итог партии в монетах для каждого места (+ выиграл, − проиграл): то, что показывает экран итогов.
 export function matchDeltas(format: ShahFormat, ante: number, mode: MoneyMode, outcomes: SeatOutcome[]): number[] {
   if (mode === 'pot') return potPayouts(format, ante, outcomes).map((paid) => paid - ante);
   const winners = outcomes.filter((o) => o === 'win').length;
@@ -103,20 +120,79 @@ export function matchDeltas(format: ShahFormat, ante: number, mode: MoneyMode, o
   return outcomes.map((o) => (o === 'win' ? ante * losers : o === 'lose' ? -ante * winners : 0));
 }
 
-// Время стола вышло, матч не доигран (вопрос 18 «а»): выигрывает сторона с меньшими штрафами,
-// поровну у всех — ничья (null — взносы назад). При 3: у кого меньше всех — выиграли, остальные — проиграли.
-export function resultByTotals(totals: number[]): SideResult[] | null {
-  const best = Math.max(...totals);
-  if (totals.every((t) => t === best)) return null;
-  return totals.map((t) => (t === best ? 'win' : 'lose'));
-}
-
-// Кто-то ушёл (вопрос 19 «а»): его сторона проиграла матч, остальные выиграли.
+// Кто-то ушёл (вопрос 19, владелец 05.11.2026): его сторона проиграла партию, даже если по штрафам
+// выигрывала; банк — другой стороне, при 1×1×1 — двум оставшимся пополам.
 export function resultByLeaver(format: ShahFormat, leaverSeats: number[]): SideResult[] {
   const sides = isTeamFormat(format) ? 2 : format;
   const lost = new Set(leaverSeats.map((s) => sideOf(format, s)));
   if (lost.size === sides) return Array.from({ length: sides }, () => 'lose');
   return Array.from({ length: sides }, (_, side) => (lost.has(side) ? 'lose' : 'win'));
+}
+
+// Ушли между партиями (владелец 05.11.2026: «бан + проигрыш, если команда — они проигрывают»):
+// следующая партия засчитана проигранной стороне ушедшего. Взносов ещё не брали — каждый проигравший
+// платит взнос (сколько есть, в минус счёт не уходит), выигравшие делят собранное поровну (остаток —
+// первому). При полном взносе выходит то же, что matchDeltas 'pot'.
+export function forfeitSplit(outcomes: SeatOutcome[], taken: number[]): number[] {
+  const winners = outcomes.map((o, i) => (o === 'win' ? i : -1)).filter((i) => i >= 0);
+  const deltas = outcomes.map((o, i) => (o === 'lose' ? -taken[i] : 0));
+  if (winners.length === 0) return outcomes.map(() => 0);
+  const pool = taken.reduce((sum, t, i) => sum + (outcomes[i] === 'lose' ? t : 0), 0);
+  const share = Math.floor(pool / winners.length);
+  winners.forEach((w, k) => (deltas[w] = share + (k === 0 ? pool - share * winners.length : 0)));
+  return deltas;
+}
+
+// ——— Ещё 3 партии (вопрос 18, владелец 05.11.2026) ———
+// Договорённые партии сыграны — всех за столом спрашивают: «добавить 3 партии?». Как продление
+// времени в Гарбе (§20): все «да» — играем ещё 3; одно «нет» или 30 секунд без ответа — стол
+// закрывается (решено при реализации). Боты не голосуют.
+export const MORE_VOTE_MS = 30_000;
+export type MoreVote = { startedAt: number; yesIds: string[]; noIds: string[] };
+export type MoreVoteOutcome = 'wait' | 'approved' | 'rejected' | 'expired';
+
+export function moreVoteOutcome(vote: MoreVote, voterIds: string[], now: number, ms = MORE_VOTE_MS): MoreVoteOutcome {
+  if (voterIds.some((id) => vote.noIds.includes(id))) return 'rejected';
+  if (voterIds.every((id) => vote.yesIds.includes(id))) return 'approved';
+  return now - vote.startedAt >= ms ? 'expired' : 'wait';
+}
+
+export function castMoreVote(
+  vote: MoreVote,
+  voterIds: string[],
+  playerId: string,
+  choice: unknown,
+): { ok: true; vote: MoreVote } | { ok: false; error: string } {
+  if (choice !== 'yes' && choice !== 'no') return { ok: false, error: 'bad choice' };
+  if (!voterIds.includes(playerId)) return { ok: false, error: 'you do not vote on this' };
+  if (vote.yesIds.includes(playerId) || vote.noIds.includes(playerId)) return { ok: false, error: 'already voted' };
+  return {
+    ok: true,
+    vote: choice === 'yes' ? { ...vote, yesIds: [...vote.yesIds, playerId] } : { ...vote, noIds: [...vote.noIds, playerId] },
+  };
+}
+
+// ——— Итог стола: все партии вместе ———
+export type MatchRecordLike = { outcomes: Record<string, SeatOutcome>; deltas: Record<string, number> };
+
+// Монеты за стол, выигранные и проигранные партии — у каждого игрока.
+export function tableTotals(ids: string[], series: MatchRecordLike[]) {
+  const coins: Record<string, number> = {};
+  const wins: Record<string, number> = {};
+  const losses: Record<string, number> = {};
+  for (const id of ids) {
+    coins[id] = 0;
+    wins[id] = 0;
+    losses[id] = 0;
+  }
+  for (const m of series) {
+    for (const id of ids) {
+      coins[id] += m.deltas[id] ?? 0;
+      if (m.outcomes[id] === 'win') wins[id]++;
+      if (m.outcomes[id] === 'lose') losses[id]++;
+    }
+  }
+  return { coins, wins, losses };
 }
 
 // ——— Ход за игрока (вопрос 24 «а») ———

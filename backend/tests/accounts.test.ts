@@ -168,14 +168,14 @@ section('удалить аккаунт навсегда (требование Ap
   check('ШАХ на сервере не включали — удаление не падает', getAccount(db2, stays.id)?.name, 'Остаётся');
 }
 {
-  // Игра ШАХ (этап 4): рейтинг, итоги матчей и имя в комнатах ШАХ.
+  // Игра ШАХ (этап 4): рейтинг, итоги столов и имя в комнатах ШАХ.
   const db3 = openDb(':memory:');
   ensureShahTables(db3);
   const gone = createAccount(db3, 'Уходящий').account;
   const stays = createAccount(db3, 'Остаётся').account;
-  const row = { roomId: '54321', format: 2, outcome: 'win', coins: 100, parties: 5, skillBefore: 4, skillAfter: 4.2, activeMs: 3_600_000, finishedAt: 0 };
+  const row = { roomId: '54321', format: 2, outcome: 'win', coins: 100, parties: 5, matches: 1, wins: 1, losses: 0, skillBefore: 4, skillAfter: 4.2, activeMs: 3_600_000, finishedAt: 0 };
   writeShahResult(db3, { ...row, playerId: gone.id });
-  writeShahResult(db3, { ...row, playerId: stays.id, outcome: 'lose', coins: -100, skillAfter: 3.9 });
+  writeShahResult(db3, { ...row, playerId: stays.id, outcome: 'lose', coins: -100, wins: 0, losses: 1, skillAfter: 3.9 });
   const shahRoom = { id: '54321', kind: 'shah', players: [{ id: gone.id, name: 'Уходящий' }, { id: stays.id, name: 'Остаётся' }],
     lastPersonalPause: { playerId: gone.id, name: 'Уходящий', early: false } };
   saveShahRoom(db3, { ...shahRoom, status: 'finished' });

@@ -378,7 +378,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
                     RatingText(p['rating'], fontSize: 20),
                   ],
                 ),
-                // Игра ШАХ (этап 4): свой рейтинг и матчи — только когда ШАХ включён на сервере.
+                // Игра ШАХ (этап 4): свой рейтинг и партии — только когда ШАХ включён на сервере.
                 if (p['shah'] is Map) ShahProfileLine(shah: Map<String, dynamic>.from(p['shah'] as Map)),
                 const Divider(height: 32),
                 if (p['medals'] is List) ...[
@@ -1011,7 +1011,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
                     RatingText(p['rating'], fontSize: 20),
                   ],
                 ),
-                // Игра ШАХ (этап 4): свой рейтинг и матчи — только когда ШАХ включён на сервере.
+                // Игра ШАХ (этап 4): свой рейтинг и партии — только когда ШАХ включён на сервере.
                 if (p['shah'] is Map) ShahProfileLine(shah: Map<String, dynamic>.from(p['shah'] as Map)),
                 if (p['friendStatus'] == 'incoming')
                   const Padding(

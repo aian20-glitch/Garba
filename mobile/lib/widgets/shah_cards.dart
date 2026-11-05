@@ -1,5 +1,5 @@
 // ШАХ (ветка shah, этап 3, 04.11.2026): карты, взятка в центре стола, табло штрафов,
-// окна итога партии и матча. Правила — SHAH_RULES.md; что можно и чья очередь — решает сервер.
+// окна итога раздачи, партии (до −24) и стола. Правила — SHAH_RULES.md; что можно и чья очередь — решает сервер.
 part of '../main.dart';
 
 // Цвета сторон: команда 1 — золото, команда 2 — небо (стиль «Көк»); при 1×1×1 у третьего — коралл.
@@ -336,6 +336,8 @@ class ShahScoreBoard extends StatelessWidget {
           Column(
             mainAxisSize: MainAxisSize.min,
             children: [
+              if (party != null)
+                Text('раздача ${party['number']}', style: const TextStyle(fontSize: 10, color: Colors.white60)),
               Text('до ${fmtPenalty(limit)}', style: const TextStyle(fontSize: 10, color: Colors.white60)),
               if (multiplier > 1)
                 Container(
@@ -355,10 +357,17 @@ class ShahScoreBoard extends StatelessWidget {
   }
 }
 
-// Все партии матча: очки, штрафы, счёт после партии — по нажатию на табло.
-void showShahHistory(BuildContext context, Map<String, dynamic> game, List<Map<String, dynamic>> players) {
+// По нажатию на табло: партии стола (кто выиграл, монеты) и раздачи идущей партии — очки, штрафы,
+// счёт после раздачи.
+void showShahHistory(
+    BuildContext context, Map<String, dynamic> room, Map<String, dynamic> game, List<Map<String, dynamic>> players, String myId) {
   final names = ShahScoreBoard.sideNames(game, players);
   final history = ((game['history'] as List?) ?? const []).map((e) => Map<String, dynamic>.from(e as Map)).toList();
+  final series = ((room['series'] as List?) ?? const []).map((e) => Map<String, dynamic>.from(e as Map)).toList();
+  final matchNumber = (room['matchNumber'] as num?)?.toInt() ?? 1;
+  final matchLimit = (room['matchLimit'] as num?)?.toInt() ?? 1;
+  String nameOf(String id) =>
+      players.where((p) => p['id'].toString() == id).map((p) => p['name'].toString()).firstOrNull ?? 'Игрок';
   showModalBottomSheet<void>(
     context: context,
     backgroundColor: const Color(0xFF13232E),
@@ -370,17 +379,51 @@ void showShahHistory(BuildContext context, Map<String, dynamic> game, List<Map<S
           shrinkWrap: true,
           padding: const EdgeInsets.fromLTRB(16, 16, 16, 12),
           children: [
-            const Text('ПАРТИИ МАТЧА',
+            if (series.isNotEmpty) ...[
+              Text('ПАРТИИ СТОЛА · ${series.length} из $matchLimit',
+                  textAlign: TextAlign.center,
+                  style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w900, color: Color(0xFFD4A94F))),
+              const SizedBox(height: 6),
+              for (final m in series)
+                Padding(
+                  padding: const EdgeInsets.only(bottom: 4),
+                  child: Row(
+                    children: [
+                      SizedBox(
+                        width: 70,
+                        child: Text('Партия ${m['number']}', style: const TextStyle(fontWeight: FontWeight.w800, fontSize: 13)),
+                      ),
+                      Expanded(
+                        child: Text(
+                          m['forfeit'] == true
+                              ? 'без игры — вышел ${((m['leftIds'] as List?) ?? const []).map((id) => nameOf(id.toString())).join(', ')}'
+                              : 'выиграли: ${((m['outcomes'] as Map?) ?? const {}).entries.where((e) => e.value == 'win').map((e) => nameOf(e.key.toString())).join(', ')}',
+                          maxLines: 2,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(fontSize: 12, color: Colors.white70),
+                        ),
+                      ),
+                      if (room['practice'] != true)
+                        Text(
+                          fmtDelta(((m['deltas'] as Map?)?[myId] as num?)?.toInt() ?? 0),
+                          style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w900),
+                        ),
+                    ],
+                  ),
+                ),
+              const SizedBox(height: 10),
+            ],
+            Text('РАЗДАЧИ ПАРТИИ $matchNumber',
                 textAlign: TextAlign.center,
-                style: TextStyle(fontSize: 18, fontWeight: FontWeight.w900, color: Color(0xFFD4A94F))),
+                style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w900, color: Color(0xFFD4A94F))),
             const SizedBox(height: 4),
-            Text('Штрафы копятся; кто первым дошёл до ${fmtPenalty((game['limit'] as num?) ?? -24)} — проиграл матч',
+            Text('Штрафы копятся; кто первым дошёл до ${fmtPenalty((game['limit'] as num?) ?? -24)} — проиграл партию',
                 textAlign: TextAlign.center, style: const TextStyle(fontSize: 12, color: Colors.white60)),
             const SizedBox(height: 10),
             if (history.isEmpty)
               const Padding(
                 padding: EdgeInsets.all(16),
-                child: Text('Ещё ни одной сыгранной партии', textAlign: TextAlign.center),
+                child: Text('Ещё ни одной сыгранной раздачи', textAlign: TextAlign.center),
               ),
             for (final h in history)
               Container(
@@ -394,7 +437,7 @@ void showShahHistory(BuildContext context, Map<String, dynamic> game, List<Map<S
                   crossAxisAlignment: CrossAxisAlignment.stretch,
                   children: [
                     Text(
-                      'Партия ${h['number']}${h['draw'] == true ? ' · НИЧЬЯ' : ''}${((h['multiplier'] as num?) ?? 1) > 1 ? ' · штрафы ×${h['multiplier']}' : ''}',
+                      'Раздача ${h['number']}${h['draw'] == true ? ' · НИЧЬЯ' : ''}${((h['multiplier'] as num?) ?? 1) > 1 ? ' · штрафы ×${h['multiplier']}' : ''}',
                       style: const TextStyle(fontWeight: FontWeight.w900),
                     ),
                     for (var s = 0; s < names.length; s++)
@@ -443,7 +486,7 @@ void showShahHistory(BuildContext context, Map<String, dynamic> game, List<Map<S
   );
 }
 
-// Окно итога партии (§13–§16): очки сторон, штраф, ничья ×2, остаток без розыгрыша, счёт матча.
+// Окно итога раздачи (§13–§16): очки сторон, штраф, ничья ×2, остаток без розыгрыша, счёт партии.
 class ShahPartyResultPopup extends StatelessWidget {
   final Map<String, dynamic> result;
   final List<String> sideNames;
@@ -548,13 +591,13 @@ class ShahPartyResultPopup extends StatelessWidget {
               child: Column(
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  Text('ПАРТИЯ ${result['number']}',
+                  Text('РАЗДАЧА ${result['number']}',
                       style: const TextStyle(fontSize: 20, letterSpacing: 2, fontWeight: FontWeight.w900, color: gold)),
                   if (draw)
                     Padding(
                       padding: const EdgeInsets.only(top: 4),
                       child: Text(
-                        'НИЧЬЯ — очки поровну, штрафов нет.\nСледующая партия — штрафы ×$nextMultiplier',
+                        'НИЧЬЯ — очки поровну, штрафов нет.\nСледующая раздача — штрафы ×$nextMultiplier',
                         textAlign: TextAlign.center,
                         style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w800, color: Colors.orangeAccent),
                       ),
@@ -562,7 +605,7 @@ class ShahPartyResultPopup extends StatelessWidget {
                   else if (multiplier > 1)
                     Padding(
                       padding: const EdgeInsets.only(top: 4),
-                      child: Text('После ничьей штрафы этой партии ×$multiplier',
+                      child: Text('После ничьей штрафы этой раздачи ×$multiplier',
                           style: const TextStyle(fontSize: 13, color: Colors.orangeAccent)),
                     ),
                   const SizedBox(height: 10),
@@ -578,7 +621,7 @@ class ShahPartyResultPopup extends StatelessWidget {
                       ),
                     ),
                   Text(
-                    'Счёт матча: ${totals.map(fmtPenalty).join(' · ')}  (до ${fmtPenalty(limit)})',
+                    'Счёт партии: ${totals.map(fmtPenalty).join(' · ')}  (до ${fmtPenalty(limit)})',
                     textAlign: TextAlign.center,
                     style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w800),
                   ),
@@ -600,24 +643,36 @@ class ShahPartyResultPopup extends StatelessWidget {
   }
 }
 
-// Почему кончился матч — одной строкой для окна итогов (§16, §18 SHAH_RULES.md).
+// Почему закрылся стол — одной строкой для окна итогов (§18 SHAH_RULES.md).
 String shahCloseReasonText(Map<String, dynamic> room) {
   final result = room['result'] is Map ? room['result'] as Map : const {};
   final players = ((room['players'] as List?) ?? const []).cast<Map>();
+  String names(Object? ids) => ((ids as List?) ?? const [])
+      .map((id) => players.where((p) => p['id'].toString() == id.toString()).map((p) => p['name'].toString()).firstOrNull ?? 'Игрок')
+      .join(', ');
+  final matches = (result['matches'] as num?)?.toInt() ?? 0;
+  return switch (result['reason']) {
+    'matches_done' => 'Сыграно партий: $matches — больше не играем, стол закрыт',
+    'player_left' => 'Вышел ${names(result['leftIds'])} — стол закрыт',
+    'not_enough_coins' => 'У ${names(result['poorIds'])} нет взноса на следующую партию — стол закрыт',
+    _ => 'Стол закрыт',
+  };
+}
+
+// Чем кончилась партия (до −24) — одной строкой (§16, вопрос 19).
+String shahMatchEndText(Map<String, dynamic> room, Map record) {
+  final players = ((room['players'] as List?) ?? const []).cast<Map>();
   String nameOf(Object? id) =>
       players.where((p) => p['id'].toString() == id.toString()).map((p) => p['name'].toString()).firstOrNull ?? 'Игрок';
-  final outcomes = (result['outcomes'] as Map?) ?? const {};
-  final draw = outcomes.values.isNotEmpty && outcomes.values.every((o) => o == 'draw');
-  final losers = players.where((p) => outcomes[p['id'].toString()] == 'lose').map((p) => p['name'].toString()).toList();
-  return switch (result['reason']) {
-    'match_over' => losers.isEmpty ? 'Матч окончен' : 'Штрафы −24 и ниже: ${losers.join(', ')} — матч окончен',
-    'time_limit' => draw
-        ? 'Время стола вышло, штрафы поровну — ничья, взносы вернулись'
-        : 'Время стола вышло — выиграли те, у кого меньше штрафов',
-    'player_left' => 'Выход из матча: ${((result['leftIds'] as List?) ?? const []).map(nameOf).join(', ')} — '
-        'эта сторона проиграла',
-    _ => 'Матч окончен',
-  };
+  final outcomes = (record['outcomes'] as Map?) ?? const {};
+  final losers = outcomes.entries.where((e) => e.value == 'lose').map((e) => nameOf(e.key)).toList();
+  final left = ((record['leftIds'] as List?) ?? const []).map(nameOf).join(', ');
+  if (record['reason'] == 'player_left') {
+    return record['forfeit'] == true
+        ? 'Вышел $left между партиями — партия засчитана проигранной его стороне'
+        : 'Вышел $left — его сторона проиграла партию';
+  }
+  return losers.isEmpty ? 'Партия окончена' : 'Штрафы −24 и ниже: ${losers.join(', ')} — партия проиграна';
 }
 
 // «Рейтинг ШАХ 4.0 → 4.1 (+0.1)» — цветом: плюс зелёный, минус красный. Время за столом меньше
@@ -638,7 +693,8 @@ Widget shahRatingChange(Object? start, Object? end) {
   );
 }
 
-// Окно итога матча: кто выиграл, монеты, счёт, рейтинг ШАХ.
+// Окно итога партии (до −24): кто выиграл, монеты за партию, счёт. Стол закрыт — ещё итог стола:
+// монеты за все партии, сколько партий выиграл, рейтинг ШАХ.
 class ShahMatchOverPopup extends StatelessWidget {
   final Map<String, dynamic> room;
   final String myId;
@@ -650,13 +706,19 @@ class ShahMatchOverPopup extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final result = Map<String, dynamic>.from(room['result'] as Map);
-    final outcomes = Map<String, dynamic>.from((result['outcomes'] as Map?) ?? const {});
-    final deltas = Map<String, dynamic>.from((result['deltas'] as Map?) ?? const {});
+    final series = ((room['series'] as List?) ?? const []).map((e) => Map<String, dynamic>.from(e as Map)).toList();
+    final record = series.last;
+    final finished = room['status'] == 'finished';
+    final result = room['result'] is Map ? Map<String, dynamic>.from(room['result'] as Map) : const <String, dynamic>{};
+    final outcomes = Map<String, dynamic>.from((record['outcomes'] as Map?) ?? const {});
+    final deltas = Map<String, dynamic>.from((record['deltas'] as Map?) ?? const {});
+    final tableCoins = Map<String, dynamic>.from((result['coins'] as Map?) ?? const {});
+    final tableWins = Map<String, dynamic>.from((result['wins'] as Map?) ?? const {});
     final practice = room['practice'] == true;
     final players = ((room['players'] as List?) ?? const []).map((p) => Map<String, dynamic>.from(p as Map)).toList();
     final game = room['game'] is Map ? Map<String, dynamic>.from(room['game'] as Map) : null;
-    final totals = ((result['totals'] as List?) ?? const []).map((e) => (e as num).toInt()).toList();
+    final totals = ((record['totals'] as List?) ?? const []).map((e) => (e as num).toInt()).toList();
+    final matchLimit = (room['matchLimit'] as num?)?.toInt() ?? series.length;
     const order = {'win': 0, 'none': 1, 'draw': 2, 'lose': 3};
     players.sort((a, b) {
       final oa = order[outcomes[a['id'].toString()]] ?? 4;
@@ -668,11 +730,12 @@ class ShahMatchOverPopup extends StatelessWidget {
       final id = p['id'].toString();
       final outcome = outcomes[id]?.toString();
       final won = outcome == 'win';
-      final delta = (deltas[id] as num?)?.toInt() ?? 0;
+      // Справа — монеты за партию, а когда стол закрыт — за весь стол.
+      final delta = ((finished ? tableCoins[id] : deltas[id]) as num?)?.toInt() ?? 0;
       final side = (p['side'] as num?)?.toInt() ?? 0;
       final label = switch (outcome) {
-        'win' => 'ВЫИГРАЛ',
-        'lose' => 'ПРОИГРАЛ',
+        'win' => 'ВЫИГРАЛ ПАРТИЮ',
+        'lose' => 'ПРОИГРАЛ ПАРТИЮ',
         'draw' => 'НИЧЬЯ',
         _ => 'НИ ТО НИ ДРУГОЕ',
       };
@@ -718,25 +781,34 @@ class ShahMatchOverPopup extends StatelessWidget {
                           fontWeight: FontWeight.w900,
                           color: won ? gold : outcome == 'lose' ? Colors.redAccent : Colors.white60,
                         )),
-                    // Рейтинг ШАХ (§19 SHAH_RULES.md) — как в итогах Гарбы; тренировка его не меняет.
-                    if (!practice && p['ratingStart'] is num) shahRatingChange(p['ratingStart'], p['rating']),
+                    if (finished && series.length > 1)
+                      Text('партий выиграно: ${tableWins[id] ?? 0} из ${series.length}',
+                          style: const TextStyle(fontSize: 11, color: Colors.white70)),
+                    // Рейтинг ШАХ (§19 SHAH_RULES.md) — считается, когда стол закрыт; тренировка его не меняет.
+                    if (finished && !practice && p['ratingStart'] is num) shahRatingChange(p['ratingStart'], p['rating']),
                   ],
                 ),
               ),
               if (!practice)
-                Row(
-                  mainAxisSize: MainAxisSize.min,
+                Column(
+                  crossAxisAlignment: CrossAxisAlignment.end,
                   children: [
-                    const CoinIcon(size: 16),
-                    const SizedBox(width: 4),
-                    Text(
-                      fmtDelta(delta),
-                      style: TextStyle(
-                        fontSize: 16,
-                        fontWeight: FontWeight.w900,
-                        color: delta > 0 ? Colors.greenAccent : delta < 0 ? Colors.redAccent : Colors.white70,
-                      ),
+                    Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        const CoinIcon(size: 16),
+                        const SizedBox(width: 4),
+                        Text(
+                          fmtDelta(delta),
+                          style: TextStyle(
+                            fontSize: 16,
+                            fontWeight: FontWeight.w900,
+                            color: delta > 0 ? Colors.greenAccent : delta < 0 ? Colors.redAccent : Colors.white70,
+                          ),
+                        ),
+                      ],
                     ),
+                    if (finished) const Text('за стол', style: TextStyle(fontSize: 10, color: Colors.white54)),
                   ],
                 ),
             ],
@@ -744,6 +816,12 @@ class ShahMatchOverPopup extends StatelessWidget {
         ),
       );
     }
+
+    final footer = finished
+        ? null
+        : room['moreVote'] is Map
+            ? 'Сыграли все $matchLimit — решаем, играть ли ещё 3 партии'
+            : 'Дальше — партия ${series.length + 1} из $matchLimit';
 
     return GestureDetector(
       onTap: onClose,
@@ -769,11 +847,17 @@ class ShahMatchOverPopup extends StatelessWidget {
               child: Column(
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  const Text('МАТЧ ОКОНЧЕН',
-                      style: TextStyle(fontSize: 20, letterSpacing: 2, fontWeight: FontWeight.w900, color: gold)),
+                  Text(finished ? 'СТОЛ ЗАКРЫТ' : 'ПАРТИЯ ${record['number']} ОКОНЧЕНА',
+                      style: const TextStyle(fontSize: 20, letterSpacing: 2, fontWeight: FontWeight.w900, color: gold)),
+                  if (finished)
+                    Padding(
+                      padding: const EdgeInsets.only(top: 4),
+                      child: Text(shahCloseReasonText(room),
+                          textAlign: TextAlign.center, style: const TextStyle(fontSize: 13, color: Colors.white70)),
+                    ),
                   Padding(
                     padding: const EdgeInsets.only(top: 4),
-                    child: Text(shahCloseReasonText(room),
+                    child: Text('${finished ? 'Партия ${record['number']}: ' : ''}${shahMatchEndText(room, record)}',
                         textAlign: TextAlign.center, style: const TextStyle(fontSize: 13, color: Colors.white70)),
                   ),
                   if (practice)
@@ -792,6 +876,13 @@ class ShahMatchOverPopup extends StatelessWidget {
                       ].join(' · ')}',
                       textAlign: TextAlign.center,
                       style: const TextStyle(fontSize: 13, color: Colors.white70),
+                    ),
+                  if (footer != null)
+                    Padding(
+                      padding: const EdgeInsets.only(top: 6),
+                      child: Text(footer,
+                          textAlign: TextAlign.center,
+                          style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w800, color: gold)),
                     ),
                   const SizedBox(height: 6),
                   const Text('Нажмите, чтобы закрыть', style: TextStyle(fontSize: 12, color: Colors.white54)),

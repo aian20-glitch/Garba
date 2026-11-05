@@ -227,6 +227,26 @@ export function createMatch(players: string[], dealerDeck: Card[], options: Part
   };
 }
 
+// Следующая игра до −24 за тем же столом (владелец 05.11.2026: за столом — несколько партий до −24
+// подряд). Счёт и множитель — с нуля; сдающий — по §5, как между раздачами (тот, кого прошлая игра
+// назначила следующим), вскрытия на туза заново нет — решено при реализации.
+export function nextMatch(prev: ShahMatch): ShahMatch {
+  if (!prev.over) throw new Error('ШАХ: прошлая игра не окончена');
+  return {
+    format: prev.format,
+    players: [...prev.players],
+    options: { ...prev.options },
+    firstDealer: { reveals: [], seat: prev.dealerSeat },
+    dealerSeat: prev.dealerSeat,
+    totals: new Array(sideCount(prev.format)).fill(0),
+    multiplier: 1,
+    party: null,
+    history: [],
+    over: false,
+    result: null,
+  };
+}
+
 // Новая партия (§3, §4): раздача по одной карте по кругу с соседа справа от сдающего, по 6 каждому.
 // deck — перетасованная колода 36. rng нужен только при 6 игроках и sixOpenCard = 'shuffle'.
 export function startParty(match: ShahMatch, deck: Card[], rng: () => number = Math.random): ShahMatch {

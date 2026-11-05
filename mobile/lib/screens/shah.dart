@@ -49,16 +49,41 @@ class ShahTile extends StatelessWidget {
   }
 }
 
-// Условия стола одной строкой: «взнос 500 · ход 20 с · ждём 1 мин · время 60 мин».
-String shahSettingsLine(Map settings) {
-  final ante = (settings['ante'] as num?)?.toInt() ?? 0;
-  return 'взнос ${fmtCoins(ante)} · ход ${settings['turnSeconds'] ?? 20} с · '
-      'ждём ${settings['absenceMinutes'] ?? 1} мин · время: ${fmtTimeLimit(settings['timeLimitMinutes'])}';
+// Слова ШАХ (владелец 05.11.2026): ПАРТИЯ — игра до −24, РАЗДАЧА — сдали по 6 карт и сыграли,
+// СТОЛ — несколько партий подряд тем же составом. На сервере партия — match, раздача — party.
+
+// Взнос за партию (SHAH_RULES.md §18): 1×1 и 1×1×1 — 1 000…10 000, команды — 10 000…20 000, шаг 1 000.
+// Проверяет сервер — здесь только кнопки выбора.
+List<int> shahAntes(int capacity) => capacity == 4 || capacity == 6
+    ? [for (var a = 10000; a <= 20000; a += 1000) a]
+    : [for (var a = 1000; a <= 10000; a += 1000) a];
+
+const shahMatchPresets = [1, 3, 5, 10, 20, 30];
+const shahMatchesMax = 30;
+
+String shahMatchesWord(int n) {
+  final mod10 = n % 10;
+  final mod100 = n % 100;
+  if (mod10 == 1 && mod100 != 11) return 'партия';
+  if (mod10 >= 2 && mod10 <= 4 && (mod100 < 12 || mod100 > 14)) return 'партии';
+  return 'партий';
 }
 
-// Монеты матча (вопрос 17 «а», SHAH_RULES.md §18): ставка на матч, банк — победителям.
+// Условия стола одной строкой: «взнос 1 000 · 3 партии · ход 20 с · ждём 1 мин».
+String shahSettingsLine(Map settings) {
+  final ante = (settings['ante'] as num?)?.toInt() ?? 0;
+  final matches = (settings['matches'] as num?)?.toInt() ?? 1;
+  return 'взнос ${fmtCoins(ante)} · $matches ${shahMatchesWord(matches)} · ход ${settings['turnSeconds'] ?? 20} с · '
+      'ждём ${settings['absenceMinutes'] ?? 1} мин';
+}
+
+// Монеты партии (вопрос 17, SHAH_RULES.md §18): взнос за каждую партию, банк — выигравшим.
 String shahMoneyLine(int capacity, int ante) =>
-    'Ставка на матч: в начале каждый кладёт ${fmtCoins(ante)}, победители делят банк ${fmtCoins(ante * capacity)}';
+    'Взнос за каждую партию: каждый кладёт ${fmtCoins(ante)}, выигравшие делят банк ${fmtCoins(ante * capacity)}';
+
+// Сколько партий за столом и что потом (вопрос 18).
+String shahMatchesLine(int matches) =>
+    'Партий: $matches (партия — до −24). Сыграете все — спросим всех: ещё 3 партии?';
 
 void openShahLobby(BuildContext context, String roomId, {bool replace = false}) {
   final route = MaterialPageRoute(builder: (_) => ShahLobbyScreen(roomCode: roomId));
@@ -69,11 +94,11 @@ void openShahLobby(BuildContext context, String roomId, {bool replace = false}) 
   }
 }
 
-// Смотреть идущий матч (как «НАБЛЮДАТЬ» в Гарбе, §18): стол без своей руки и без кнопок.
+// Смотреть идущий стол (как «НАБЛЮДАТЬ» в Гарбе, §18): без своей руки и без кнопок.
 Future<void> watchShahRoom(BuildContext context, String roomId) async {
   try {
     final response = await apiRequest(http.get(Uri.parse('$apiBase/shah/rooms/$roomId'), headers: authHeaders()));
-    if (response.statusCode == 404) throw Exception('Этот матч уже закончился.');
+    if (response.statusCode == 404) throw Exception('За этим столом уже не играют.');
     expectStatus(response, const [200]);
     if (!context.mounted) return;
     Navigator.push(
@@ -119,7 +144,7 @@ Future<void> joinShahTable(BuildContext context, String roomId, {Map<String, dyn
   }
 }
 
-// Условия стола перед входом: формат, ставка на матч, время.
+// Условия стола перед входом: формат, взнос за партию, сколько партий.
 Future<bool?> confirmShahTable(BuildContext context, Map<String, dynamic> data) {
   final capacity = (data['capacity'] as num).toInt();
   final settings = (data['settings'] as Map?) ?? const {};
@@ -137,9 +162,11 @@ Future<bool?> confirmShahTable(BuildContext context, Map<String, dynamic> data) 
           const SizedBox(height: 8),
           Text(practice ? 'Тренировка с ботами — монеты не двигаются' : shahMoneyLine(capacity, ante)),
           const SizedBox(height: 8),
+          Text(shahMatchesLine((settings['matches'] as num?)?.toInt() ?? 1)),
+          const SizedBox(height: 8),
           Text(
-            'Ход ${settings['turnSeconds'] ?? 20} с · ждём отошедшего ${settings['absenceMinutes'] ?? 1} мин · '
-            'время игры: ${fmtTimeLimit(settings['timeLimitMinutes'])}',
+            'Ход ${settings['turnSeconds'] ?? 20} с · ждём отошедшего ${settings['absenceMinutes'] ?? 1} мин. '
+            'Выйти до конца — бан и проигрыш партии',
             style: const TextStyle(color: Colors.white70, fontSize: 13),
           ),
         ],
@@ -153,7 +180,7 @@ Future<bool?> confirmShahTable(BuildContext context, Map<String, dynamic> data) 
 }
 
 // «Быстрая игра» ШАХ: сервер сажает в самую заполненную открытую комнату (того же формата,
-// если выбран), нет такой — создаёт открытую (без формата — 2×2), взнос 100.
+// если выбран), нет такой — создаёт открытую (без формата — 2×2): самый маленький взнос, 1 партия.
 bool _shahQuickBusy = false;
 
 Future<void> shahQuickGame(BuildContext context) async {
@@ -171,7 +198,8 @@ Future<void> shahQuickGame(BuildContext context) async {
             const Text('Быстрая игра ШАХ',
                 textAlign: TextAlign.center, style: TextStyle(fontSize: 20, fontWeight: FontWeight.w900)),
             const SizedBox(height: 4),
-            const Text('Посадим за открытый стол, нет такого — создадим (взнос 100)',
+            const Text('Посадим за открытый стол, нет такого — создадим: 1 партия до −24, '
+                'взнос 1 000 (1×1, 1×1×1) или 10 000 (команды)',
                 textAlign: TextAlign.center, style: TextStyle(color: Colors.white60, fontSize: 12)),
             const SizedBox(height: 12),
             FilledButton(onPressed: () => Navigator.pop(sheet, 0), child: const Text('ЛЮБОЙ СТОЛ')),
@@ -365,21 +393,28 @@ class ShahCreateScreen extends StatefulWidget {
 
 class _ShahCreateScreenState extends State<ShahCreateScreen> {
   int capacity = 4;
-  int ante = 100;
-  int? timeLimit = 60;
+  int ante = 10000;
+  int matches = 3;
   int turnSeconds = 20;
   int absenceMinutes = 1;
   bool isPublic = false;
   bool loading = false;
 
-  Future<void> askCustomTime() async {
+  Future<void> askCustomMatches() async {
     final value = await showDialog<int>(
       context: context,
-      builder: (_) => _CustomTimeDialog(
-        initial: timeLimit != null && !tableTimePresets.contains(timeLimit) ? timeLimit : null,
-      ),
+      builder: (_) => _ShahMatchesDialog(initial: shahMatchPresets.contains(matches) ? null : matches),
     );
-    if (value != null && mounted) setState(() => timeLimit = value);
+    if (value != null && mounted) setState(() => matches = value);
+  }
+
+  // Сменился формат — взнос в его пределах (у команд и у 1×1 они разные).
+  void setCapacity(int n) {
+    final antes = shahAntes(n);
+    setState(() {
+      capacity = n;
+      if (!antes.contains(ante)) ante = antes.first;
+    });
   }
 
   Future<void> create() async {
@@ -394,7 +429,7 @@ class _ShahCreateScreenState extends State<ShahCreateScreen> {
           'ante': ante,
           'turnSeconds': turnSeconds,
           'absenceMinutes': absenceMinutes,
-          'timeLimitMinutes': timeLimit,
+          'matches': matches,
           'isPublic': isPublic,
         }),
       ));
@@ -456,51 +491,44 @@ class _ShahCreateScreenState extends State<ShahCreateScreen> {
                       return ChoiceChip(
                         label: Text(shahFormatName(n)),
                         selected: capacity == n,
-                        onSelected: (_) => setState(() => capacity = n),
+                        onSelected: (_) => setCapacity(n),
                       );
                     }).toList(),
                   ),
                   hint(capacity == 4 || capacity == 6
                       ? '${shahFormatLong(capacity)}. Напарники сидят через одного — садитесь так, чтобы быть вместе'
                       : shahFormatLong(capacity)),
-                  title('Взнос'),
+                  title('Взнос за партию'),
                   Wrap(
                     spacing: 8,
                     runSpacing: 8,
-                    children: [100, 200, 300, 400, 500, 600, 700, 800, 900, 1000].map((n) {
-                      return ChoiceChip(label: Text('$n'), selected: ante == n, onSelected: (_) => setState(() => ante = n));
+                    children: shahAntes(capacity).map((n) {
+                      return ChoiceChip(
+                          label: Text(fmtCoins(n)), selected: ante == n, onSelected: (_) => setState(() => ante = n));
                     }).toList(),
                   ),
                   hint('${shahMoneyLine(capacity, ante)}. Проиграла сторона — взнос не возвращается'),
-                  title('Время игры'),
+                  title('Сколько партий'),
                   Wrap(
                     spacing: 8,
                     runSpacing: 8,
                     children: [
-                      ...tableTimePresets.map((n) => ChoiceChip(
-                            label: Text('$n мин'),
-                            selected: timeLimit == n,
-                            onSelected: (_) => setState(() => timeLimit = n),
+                      ...shahMatchPresets.map((n) => ChoiceChip(
+                            label: Text('$n'),
+                            selected: matches == n,
+                            onSelected: (_) => setState(() => matches = n),
                           )),
                       ChoiceChip(
-                        label: Text(timeLimit != null && !tableTimePresets.contains(timeLimit)
-                            ? fmtTimeLimit(timeLimit)
-                            : 'СВОЁ ВРЕМЯ'),
+                        label: Text(shahMatchPresets.contains(matches) ? 'СВОЁ' : '$matches'),
                         avatar: const Icon(Icons.edit, size: 16),
-                        selected: timeLimit != null && !tableTimePresets.contains(timeLimit),
-                        onSelected: (_) => askCustomTime(),
-                      ),
-                      ChoiceChip(
-                        label: const Text('Без ограничения'),
-                        selected: timeLimit == null,
-                        onSelected: (_) => setState(() => timeLimit = null),
+                        selected: !shahMatchPresets.contains(matches),
+                        onSelected: (_) => askCustomMatches(),
                       ),
                     ],
                   ),
-                  hint(timeLimit == null
-                      ? 'Играете, пока кто-то не дойдёт до −24'
-                      : 'Время пойдёт с первой раздачи. За 5 минут все решают, продлить ли на 10 минут — только если '
-                          'согласны все. Время вышло — партию доигрывают, выигрывает сторона с меньшими штрафами'),
+                  hint('Партия — до −24, взнос — за каждую. Сыграете $matches ${shahMatchesWord(matches)} — '
+                      'спросим всех, добавить ли ещё 3 (только если согласны все). Выйти раньше — бан, '
+                      'и партия засчитана проигранной вашей стороне'),
                   title('Время на ход'),
                   Wrap(
                     spacing: 8,
@@ -522,8 +550,8 @@ class _ShahCreateScreenState extends State<ShahCreateScreen> {
                           onSelected: (_) => setState(() => absenceMinutes = n));
                     }).toList(),
                   ),
-                  hint('Игрок пропал — стол ждёт его $absenceMinutes мин за весь матч. '
-                      'Не вернулся — его сторона проиграла матч'),
+                  hint('Игрок пропал — стол ждёт его $absenceMinutes мин за весь стол. '
+                      'Не вернулся — его сторона проиграла партию'),
                 ],
               ),
             ),
@@ -538,7 +566,7 @@ class _ShahCreateScreenState extends State<ShahCreateScreen> {
   }
 }
 
-// Открытые столы ШАХ — сесть; идущие матчи — смотреть (§18).
+// Открытые столы ШАХ — сесть; идущие — смотреть (§18).
 class ShahOpenRoomsScreen extends StatefulWidget {
   const ShahOpenRoomsScreen({super.key});
 
@@ -606,7 +634,8 @@ class _ShahOpenRoomsScreenState extends State<ShahOpenRoomsScreen> {
             maxLines: 2, overflow: TextOverflow.ellipsis, style: const TextStyle(fontWeight: FontWeight.w800)),
         subtitle: Text([
           if (r['practice'] == true) 'тренировка',
-          'партия ${r['partyNumber']}',
+          'партия ${r['matchNumber'] ?? 1} из ${r['matchLimit'] ?? 1}',
+          'раздача ${r['partyNumber']}',
           if (totals.isNotEmpty) 'счёт $totals',
           '👁 ${r['spectators']}',
         ].join(' · ')),
@@ -649,7 +678,7 @@ class _ShahOpenRoomsScreenState extends State<ShahOpenRoomsScreen> {
               const Text('ИДУТ СЕЙЧАС',
                   style: TextStyle(fontSize: 16, fontWeight: FontWeight.w900, letterSpacing: 1.2, color: Color(0xFFE6B74F))),
               const SizedBox(height: 4),
-              const Text('Смотреть чужой матч: видно только то, что на столе',
+              const Text('Смотреть чужой стол: видно только то, что на столе',
                   style: TextStyle(color: Colors.white60, fontSize: 12)),
               const SizedBox(height: 8),
               ...live.map(liveCard),
@@ -662,7 +691,7 @@ class _ShahOpenRoomsScreenState extends State<ShahOpenRoomsScreen> {
 }
 
 // Лобби стола ШАХ: места по кругу (в 2×2 и 3×3 — через одно одна команда), «ГОТОВ», боты,
-// позвать друзей, открыть для всех. Матч начался — сразу за стол.
+// позвать друзей, открыть для всех. Стол начался — сразу за стол.
 class ShahLobbyScreen extends StatefulWidget {
   final String roomCode;
 
@@ -768,7 +797,7 @@ class _ShahLobbyScreenState extends State<ShahLobbyScreen> {
       HapticFeedback.heavyImpact();
     }
     hadReadyCheck = hasReady;
-    // Матч начался (или уже окончен — итоги на столе), и я за столом — за стол.
+    // Стол начался (или уже закрыт — итоги на столе), и я за столом — за стол.
     final matchOn = data['status'] == 'started' || (data['status'] == 'finished' && data['game'] != null);
     if (matchOn && imIn && !moved) {
       moved = true;
@@ -996,7 +1025,7 @@ class _ShahLobbyScreenState extends State<ShahLobbyScreen> {
     if (status == 'finished' && data['game'] == null) {
       final reason = (data['result'] as Map?)?['reason'];
       return closedScreen(switch (reason) {
-        'lobby_timeout' => 'Матч не начался за 10 минут — стол закрыт',
+        'lobby_timeout' => 'Игра не началась за 10 минут — стол закрыт',
         'nobody_ready' => 'Никто не нажал «ГОТОВ» — стол закрыт',
         _ => 'Создатель закрыл стол',
       });
@@ -1015,7 +1044,7 @@ class _ShahLobbyScreenState extends State<ShahLobbyScreen> {
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
               const Spacer(),
-              const Text('Матч начался без вас',
+              const Text('Игра началась без вас',
                   textAlign: TextAlign.center, style: TextStyle(fontSize: 22, fontWeight: FontWeight.w800)),
               const SizedBox(height: 12),
               const Text('За этим столом уже играют — можно посмотреть.',
@@ -1072,8 +1101,8 @@ class _ShahLobbyScreenState extends State<ShahLobbyScreen> {
               child: Text(
                 '${shahFormatLong(capacity)}\n'
                 '${data['practice'] == true ? 'Тренировка — монеты не двигаются' : shahMoneyLine(capacity, ante)}\n'
-                'Ход ${settings['turnSeconds'] ?? 20} с · ждём ${settings['absenceMinutes'] ?? 1} мин · '
-                'время игры: ${fmtTimeLimit(settings['timeLimitMinutes'])}',
+                '${shahMatchesLine((settings['matches'] as num?)?.toInt() ?? 1)}\n'
+                'Ход ${settings['turnSeconds'] ?? 20} с · ждём ${settings['absenceMinutes'] ?? 1} мин',
                 style: const TextStyle(color: Colors.white60, fontSize: 13),
               ),
             ),
@@ -1169,7 +1198,7 @@ class _ShahLobbyScreenState extends State<ShahLobbyScreen> {
   }
 }
 
-// В профиле и карточке игрока — рейтинг ШАХ и матчи (/me/profile, /players/:code → shah).
+// В профиле и карточке игрока — рейтинг ШАХ и партии до −24 (/me/profile, /players/:code → shah).
 class ShahProfileLine extends StatelessWidget {
   final Map<String, dynamic> shah;
 
@@ -1193,7 +1222,7 @@ class ShahProfileLine extends StatelessWidget {
           Text(
             matches == 0
                 ? 'В ШАХ ещё не играл'
-                : 'ШАХ: матчей $matches · побед ${shah['wins']} · поражений ${shah['losses']}',
+                : 'ШАХ: партий $matches · побед ${shah['wins']} · поражений ${shah['losses']}',
             style: const TextStyle(color: Colors.white70),
           ),
         ],
@@ -1202,7 +1231,7 @@ class ShahProfileLine extends StatelessWidget {
   }
 }
 
-// Рейтинг ШАХ (SHAH_RULES.md §19): свой, отдельно от рейтинга Гарбы — друзья и все, кто сыграл матч.
+// Рейтинг ШАХ (SHAH_RULES.md §19): свой, отдельно от рейтинга Гарбы — друзья и все, кто сыграл партию.
 class ShahRatingScreen extends StatelessWidget {
   const ShahRatingScreen({super.key});
 
@@ -1290,7 +1319,7 @@ class _ShahRatingListState extends State<ShahRatingList> {
     final header = widget.scope == 'friends'
         ? 'Ваше место среди друзей: $myPlace из $total'
         : myPlace == null
-            ? 'Сыграйте матч ШАХ (не тренировку) — и попадёте в рейтинг'
+            ? 'Сыграйте партию ШАХ (не тренировку) — и попадёте в рейтинг'
             : 'Ваше место: $myPlace из $total';
 
     return Column(
@@ -1305,7 +1334,7 @@ class _ShahRatingListState extends State<ShahRatingList> {
                 alignment: WrapAlignment.center,
                 crossAxisAlignment: WrapCrossAlignment.center,
                 children: [
-                  Text('Ваш рейтинг ШАХ · матчей ${b['myMatches'] ?? 0}   ', style: const TextStyle(color: Colors.white70)),
+                  Text('Ваш рейтинг ШАХ · партий ${b['myMatches'] ?? 0}   ', style: const TextStyle(color: Colors.white70)),
                   RatingText(b['myRating'], fontSize: 16),
                 ],
               ),
@@ -1346,7 +1375,7 @@ class _ShahRatingListState extends State<ShahRatingList> {
                   ),
                 ),
                 title: Text(isMe ? '${p['name']} (вы)' : p['name'].toString()),
-                subtitle: Text(matches == 0 ? 'ещё не играл в ШАХ' : 'матчей $matches · побед ${p['wins']}',
+                subtitle: Text(matches == 0 ? 'ещё не играл в ШАХ' : 'партий $matches · побед ${p['wins']}',
                     style: const TextStyle(color: Colors.white60)),
                 trailing: RatingText(p['rating'], fontSize: 18),
                 onTap: isMe
@@ -1386,7 +1415,7 @@ class ShahRulesScreen extends StatelessWidget {
           'При 2, 3 и 4 после раздачи открывается верхняя карта колоды — её масть козырь. После каждой '
           'взятки все добирают из колоды, и последний добравший показывает последнюю взятую карту: её '
           'масть — новый козырь. Колода кончилась — козырь последний.\n\n'
-          'При 6 раздаётся вся колода, добора нет. Карта, открытая до раздачи, — козырь до конца партии, '
+          'При 6 раздаётся вся колода, добора нет. Карта, открытая до раздачи, — козырь до конца раздачи, '
           'и достаётся она сдающему.',
     ),
     (
@@ -1420,31 +1449,41 @@ class ShahRulesScreen extends StatelessWidget {
     (
       'Очки',
       'Т — 11, 10 — 10, К — 4, Д — 3, В — 2, остальные — 0. Вся колода — 120 очков. Очки считаются '
-          'в конце партии, по ходу их не видно.',
+          'в конце раздачи, по ходу их не видно.',
     ),
     (
       'Штрафы — 2, 4 и 6 игроков',
       'Штраф получает проигравшая сторона: 0 очков — −12, 1–40 — −4, 41–59 — −2. 60:60 — ничья, '
-          'штрафов нет, а в следующей партии штрафы ×2.',
+          'штрафов нет, а в следующей раздаче штрафы ×2.',
     ),
     (
       'Штрафы — 3 игрока',
       'Каждому по его очкам: 0 — −12, 1–20 — −4, 21–40 — −2, 41 и больше — без штрафа. 40:40:40 — '
-          'ничья, следующая партия ×2.',
+          'ничья, следующая раздача ×2.',
     ),
     (
-      'Матч',
-      'Штрафы копятся. Кто первым дошёл до −24 или ниже — проиграл матч. Монеты: в начале каждый '
-          'кладёт взнос, победители делят банк. Время стола вышло — партию доигрывают, выигрывает '
-          'сторона с меньшими штрафами (поровну — взносы назад). Вышел из матча — его сторона проиграла.',
+      'Партия',
+      'Партия — несколько раздач, штрафы копятся. Кто первым дошёл до −24 или ниже — проиграл партию. '
+          'Взнос — за каждую партию: в начале партии каждый кладёт взнос, выигравшие делят банк '
+          '(команда — поровну, при 1×1×1 двое выигравших — пополам). Взнос: 1×1 и 1×1×1 — от 1 000 до 10 000, '
+          '2×2 и 3×3 — от 10 000 до 20 000.',
+    ),
+    (
+      'Стол',
+      'За столом играют несколько партий подряд тем же составом — сколько выбрал создатель, от 1 до 30. '
+          'Сыграли все — всех спрашивают: ещё 3 партии? Играем, только если согласны все; одно «нет» или '
+          '30 секунд без ответа — стол закрывается, итоги.\n\n'
+          'Ушёл из-за стола или не вернулся — его сторона проиграла партию, даже если выигрывала по штрафам: '
+          'банк — другой стороне. Ушёл между партиями — следующая партия засчитана проигранной его стороне. '
+          'Кто вышел сам — бан на вход за стол, как в Гарбе.',
     ),
     (
       'Рейтинг ШАХ',
-      'Свой, отдельно от Гарбы, начинается с 4.0. За партию: без штрафа +0.03, −2 — −0.01, −4 — −0.02, '
-          '−12 — −0.04, ничья — 0. За матч: победа +0.10, поражение −0.06, вся команда — одинаково.\n\n'
+      'Свой, отдельно от Гарбы, начинается с 4.0. За раздачу: без штрафа +0.03, −2 — −0.01, −4 — −0.02, '
+          '−12 — −0.04, ничья — 0. За партию: победа +0.10, поражение −0.06, вся команда — одинаково.\n\n'
           'Командная игра дороже: 1×1 ×0.8, 1×1×1 ×1.0, 2×2 ×1.2, 3×3 ×1.4. Обыграл сильнее себя — получаешь '
           'больше, проиграл слабым — теряешь больше (как в Гарбе).\n\n'
-          'За столом рейтинг не меняется — всё считается в конце матча по времени игры: меньше 10 минут — '
+          'За столом рейтинг не меняется — всё считается, когда стол закрылся, по времени игры: меньше 10 минут — '
           'не меняется, 10 минут ×0.3, 20 ×0.5, 30 ×0.7, 45 ×0.85, с часа — полностью. За один стол рейтинг '
           'падает не больше чем на 0.25. Тренировка с ботами рейтинг не меняет.',
     ),
@@ -1474,6 +1513,70 @@ class ShahRulesScreen extends StatelessWidget {
             ),
         ],
       ),
+    );
+  }
+}
+
+// Окно «Своё число партий»: 1…30 (вопрос 18). Как «своё время» у Гарбы.
+class _ShahMatchesDialog extends StatefulWidget {
+  final int? initial;
+
+  const _ShahMatchesDialog({required this.initial});
+
+  @override
+  State<_ShahMatchesDialog> createState() => _ShahMatchesDialogState();
+}
+
+class _ShahMatchesDialogState extends State<_ShahMatchesDialog> {
+  late final controller = TextEditingController(text: widget.initial?.toString() ?? '');
+  String? error;
+
+  @override
+  void dispose() {
+    controller.dispose();
+    super.dispose();
+  }
+
+  void submit() {
+    final v = int.tryParse(controller.text.trim());
+    if (v == null || v < 1) {
+      setState(() => error = 'Впишите число партий');
+    } else if (v > shahMatchesMax) {
+      setState(() => error = 'Не больше $shahMatchesMax партий');
+    } else {
+      Navigator.pop(context, v);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: const Text('Сколько партий'),
+      content: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          TextField(
+            controller: controller,
+            autofocus: true,
+            keyboardType: TextInputType.number,
+            inputFormatters: [FilteringTextInputFormatter.digitsOnly],
+            onSubmitted: (_) => submit(),
+            decoration: InputDecoration(
+              hintText: 'например, 7',
+              suffixText: 'партий',
+              errorText: error,
+              border: const OutlineInputBorder(),
+            ),
+          ),
+          const SizedBox(height: 8),
+          const Text('От 1 до $shahMatchesMax. Партия — до −24.', style: TextStyle(fontSize: 13, color: Colors.white60)),
+        ],
+      ),
+      actions: [
+        TextButton(onPressed: () => Navigator.pop(context), child: const Text('ОТМЕНА')),
+        FilledButton(onPressed: submit, child: const Text('ГОТОВО')),
+      ],
     );
   }
 }

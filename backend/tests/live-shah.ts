@@ -1,7 +1,9 @@
 // Живая проверка ШАХ (этап 2, 04.11.2026): настоящий сервер на порту 3090 с GARBA_SHAH=1, база во
-// временном файле, сроки укорочены. Комнаты, «ГОТОВ», матч до −24 с монетами, чужие карты не
-// уходят никому (и по сокету, и зрителю), одна комната за раз вместе с Габрой, выход и бан,
-// время на ход и «ушёл», отключение, тренировка с ботами, перезапуск сервера посреди матча.
+// временном файле, сроки укорочены. Комнаты, «ГОТОВ», партия до −24 с монетами, чужие карты не
+// уходят никому (и по сокету, и зрителю), одна комната за раз вместе с Гарбой, выход и бан,
+// время на ход и «ушёл», отключение, тренировка с ботами, перезапуск сервера посреди партии.
+// С 05.11.2026 (ответы владельца 17–19): за столом несколько партий подряд, «ещё 3 партии?», взнос
+// за каждую партию (1×1 — 1 000…10 000, команды — 10 000…20 000), выход между партиями.
 // Запуск: npm run test:live
 
 import { spawn, type ChildProcess } from 'node:child_process';
@@ -34,7 +36,7 @@ async function startServer(port = PORT, shah = true) {
       GARBA_SHAH_BOT_MS: '50',
       GARBA_SHAH_ANIM_MS: '300',
       GARBA_SHAH_BOT_TICK_MS: '40',
-      GARBA_TABLE_MINUTE_MS: '400', // «минута» стола — 0,4 с (только у столов с временем игры)
+      GARBA_SHAH_VOTE_MS: '4000', // «ещё 3 партии?» — 4 с вместо 30
       GARBA_PERSONAL_PAUSE_MS: '1000',
       GARBA_SHAH_RATING_MINUTE_MS: '10', // «минута» рейтинга ШАХ — 10 мс: матч в секунды идёт «больше часа»
     },
@@ -139,7 +141,7 @@ async function playUntil(roomId: string, players: P[], done: (s: any) => boolean
   return stateOf(roomId, players[0]);
 }
 
-// Комната ШАХ на двоих: создать, войти, «ГОТОВ» — до начала матча.
+// Комната ШАХ на двоих: создать, войти, «ГОТОВ» — до начала первой партии.
 async function startedRoom(a: P, b: P, ante: number, extra: Record<string, unknown> = {}): Promise<string> {
   const room = (await request('POST', '/shah/rooms', a.token, { capacity: 2, ante, ...extra })).body;
   await request('POST', `/shah/rooms/${room.id}/join`, b.token);
@@ -152,7 +154,7 @@ async function startedRoom(a: P, b: P, ante: number, extra: Record<string, unkno
     }
     await wait(200);
   }
-  throw new Error('матч не начался');
+  throw new Error('стол не начался');
 }
 
 function socketFor(roomId: string, p: P): Promise<{ socket: Socket; last: () => any }> {
@@ -183,13 +185,18 @@ async function main() {
   const a = await account('Айдана');
   const b = await account('Берик');
   check('новый аккаунт — 30 000', await balanceOf(a), 30_000);
-  check('5 игроков — нельзя', (await request('POST', '/shah/rooms', a.token, { capacity: 5, ante: 100 })).status, 400);
-  check('взнос 1500 — нельзя', (await request('POST', '/shah/rooms', a.token, { capacity: 2, ante: 1500 })).status, 400);
-  check('без токена — 401', (await request('POST', '/shah/rooms', undefined, { capacity: 2, ante: 100 })).status, 401);
-  const created = await request('POST', '/shah/rooms', a.token, { capacity: 2, ante: 500, turnSeconds: 40, absenceMinutes: 3 });
+  check('5 игроков — нельзя', (await request('POST', '/shah/rooms', a.token, { capacity: 5, ante: 1000 })).status, 400);
+  check('1×1: взнос 1 500 — нельзя (шаг 1 000)', (await request('POST', '/shah/rooms', a.token, { capacity: 2, ante: 1500 })).status, 400);
+  const teamLow = await request('POST', '/shah/rooms', a.token, { capacity: 4, ante: 5000 });
+  check('2×2: взнос 5 000 — нельзя, от 10 000 до 20 000', [teamLow.status, teamLow.body.error, teamLow.body.min, teamLow.body.max], [400, 'bad ante', 10_000, 20_000]);
+  const tooMany = await request('POST', '/shah/rooms', a.token, { capacity: 2, ante: 1000, matches: 31 });
+  check('партий 31 — нельзя, 1…30', [tooMany.status, tooMany.body.error, tooMany.body.max], [400, 'bad matches', 30]);
+  check('без токена — 401', (await request('POST', '/shah/rooms', undefined, { capacity: 2, ante: 1000 })).status, 401);
+  const created = await request('POST', '/shah/rooms', a.token, { capacity: 2, ante: 5000, turnSeconds: 40, absenceMinutes: 3, matches: 1, timeLimitMinutes: 15 });
   const roomId = created.body.id;
   check('комната ШАХ: 201, номер из 5 цифр, лобби', [created.status, /^\d{5}$/.test(roomId), created.body.kind, created.body.status], [201, true, 'shah', 'lobby']);
-  check('настройки сохранены', created.body.settings, { ante: 500, absenceMinutes: 3, turnSeconds: 40, timeLimitMinutes: null });
+  check('настройки сохранены, времени игры у ШАХ нет', created.body.settings, { ante: 5000, absenceMinutes: 3, turnSeconds: 40, matches: 1 });
+  check('в лобби: партий договорено 1, ещё ни одной', [created.body.matchLimit, created.body.matchNumber, created.body.series], [1, 0, []]);
   check('/me: стол ШАХ — отдельным полем, roomId Гарбы пуст', [(await request('GET', '/me', a.token)).body.shahRoomId, (await request('GET', '/me', a.token)).body.roomId], [roomId, null]);
   check('/me: ШАХ включён', (await request('GET', '/me', a.token)).body.shahEnabled, true);
   check('у игрока за столом — код (карточка игрока)', created.body.players[0].code, a.code);
@@ -207,7 +214,7 @@ async function main() {
   check('у друга в списке друзей видно мой стол ШАХ', (await request('GET', '/friends', b.token)).body.friends.find((f: any) => f.code === a.code)?.shahRoomId, roomId);
   const garbaBusy = await request('POST', '/rooms', a.token, { capacity: 4, ante: 100, emptyLimit: 5, konThreshold: 10, minBalance: 1000 });
   check('одна комната за раз: за столом ШАХ стол Гарбы не создать', [garbaBusy.status, garbaBusy.body.roomId, garbaBusy.body.kind], [409, roomId, 'shah']);
-  check('вторую комнату ШАХ — тоже нет', (await request('POST', '/shah/rooms', a.token, { capacity: 2, ante: 100 })).body.kind, 'shah');
+  check('вторую комнату ШАХ — тоже нет', (await request('POST', '/shah/rooms', a.token, { capacity: 2, ante: 1000 })).body.kind, 'shah');
   check('подарок за столом ШАХ — нельзя', (await request('POST', '/gifts', a.token, { toCode: b.code, amount: 100 })).status, 409);
   check('удалить аккаунт за столом — нельзя', (await request('DELETE', '/me', a.token)).status, 409);
 
@@ -223,10 +230,10 @@ async function main() {
   await request('POST', `/shah/rooms/${roomId}/ready`, a.token);
   await request('POST', `/shah/rooms/${roomId}/ready`, b.token);
   s = await stateOf(roomId, a);
-  check('оба готовы — матч начался, ждём сдающего', [s.status, s.stage, [a.id, b.id].includes(s.dealerId)], ['started', 'awaiting_deal', true]);
+  check('оба готовы — стол начался, партия 1 из 1, ждём сдающего', [s.status, s.stage, s.matchNumber, s.matchLimit, [a.id, b.id].includes(s.dealerId)], ['started', 'awaiting_deal', 1, 1, true]);
   check('первый сдающий — через туза: последняя открытая карта — туз', s.game.firstDealer.reveals.at(-1).card.rank, 'A');
   check('сколько ещё идёт вскрытие — числом', typeof s.revealShowLeftMs, 'number');
-  check('взнос 500 списан при старте («а» вопроса 17)', [await balanceOf(a), await balanceOf(b), s.money.pot], [29_500, 29_500, 1000]);
+  check('взнос 5 000 за партию списан при старте (вопрос 17)', [await balanceOf(a), await balanceOf(b), s.money.pot], [25_000, 25_000, 10_000]);
   const notDealer = s.dealerId === a.id ? b : a;
   check('раздать может только сдающий', (await request('POST', `/shah/rooms/${roomId}/deal`, notDealer.token)).status, 403);
 
@@ -261,88 +268,133 @@ async function main() {
   check('чужой картой — 400', (await request('POST', `/shah/rooms/${roomId}/move`, leader.token, { type: 'lead', cardIds: [(leader === a ? bHand : aHand)[0]] })).status, 400);
   check('неизвестный ход — 400', (await request('POST', `/shah/rooms/${roomId}/move`, leader.token, { type: 'jump', cardIds: [lState.game.myHand[0].id] })).status, 400);
 
-  section('ШАХ: матч до −24 — победитель забирает банк');
-  const final = await playUntil(roomId, [a, b], (x) => x.status === 'finished', 60_000, true);
-  check('матч окончен: кто-то дошёл до −24', [final.status, final.result?.reason], ['finished', 'match_over']);
-  check('за весь матч ни одной чужой карты никому', leakCount, 0);
-  const winner = final.result.outcomes[a.id] === 'win' ? a : b;
+  section('ШАХ: партия до −24 — победитель забирает банк');
+  const matchEnd = await playUntil(roomId, [a, b], (x) => x.matchOver === true || x.status === 'finished', 60_000, true);
+  check('партия окончена: кто-то дошёл до −24, стол ещё идёт', [matchEnd.status, matchEnd.matchOver, matchEnd.series.length, matchEnd.series[0]?.reason], ['started', true, 1, 'match_over']);
+  check('за всю партию ни одной чужой карты никому', leakCount, 0);
+  const m1rec = matchEnd.series[0];
+  const winner = m1rec.outcomes[a.id] === 'win' ? a : b;
   const loser = winner === a ? b : a;
-  check('итог в монетах: +500 и −500', [final.result.deltas[winner.id], final.result.deltas[loser.id]], [500, -500]);
-  check('банк выплачен: 30 500 и 29 500', [await balanceOf(winner), await balanceOf(loser)], [30_500, 29_500]);
-  check('штрафы: проигравший −24 или ниже', Math.min(...final.result.totals) <= -24, true);
+  check('итог партии в монетах: +5 000 и −5 000', [m1rec.deltas[winner.id], m1rec.deltas[loser.id]], [5000, -5000]);
+  check('банк выплачен сразу после партии: 35 000 и 25 000', [await balanceOf(winner), await balanceOf(loser)], [35_000, 25_000]);
+  check('штрафы: проигравший −24 или ниже', Math.min(...m1rec.totals) <= -24, true);
+  const match1History = matchEnd.game.history;
+
+  section('ШАХ: сыграли договорённое — «ещё 3 партии?» (вопрос 18)');
+  check('вопрос всем: +3, голосуют двое', [matchEnd.moreVote?.add, matchEnd.moreVote?.voterCount, matchEnd.myCanVoteMore], [3, 2, true]);
+  const dealDuringVote = await request('POST', `/shah/rooms/${roomId}/deal`, (matchEnd.dealerId === a.id ? a : b).token);
+  check('пока решают — раздавать нельзя', dealDuringVote.body.error, 'more matches vote in progress');
+  check('голос не yes/no — 400', (await request('POST', `/shah/rooms/${roomId}/more-vote`, a.token, { choice: 'maybe' })).status, 400);
+  const aYes = (await request('POST', `/shah/rooms/${roomId}/more-vote`, a.token, { choice: 'yes' })).body;
+  check('один «да» — ждём второго', [aYes.moreVote?.votedCount, aYes.myMoreVote, aYes.myCanVoteMore], [1, 'yes', false]);
+  check('второй раз не голосуют', (await request('POST', `/shah/rooms/${roomId}/more-vote`, a.token, { choice: 'no' })).body.error, 'already voted');
+  const bothYes = (await request('POST', `/shah/rooms/${roomId}/more-vote`, b.token, { choice: 'yes' })).body;
+  check('оба «да» — партий стало 4', [bothYes.moreVote, bothYes.lastMoreVote?.result, bothYes.matchLimit, bothYes.status], [null, 'approved', 4, 'started']);
+
+  section('ШАХ: вышел между партиями — бан и проигрыш (вопрос 19)');
+  const outBetween = await request('POST', `/shah/rooms/${roomId}/leave`, loser.token);
+  const closed1 = await stateOf(roomId, winner);
+  check('вышел между партиями — стол закрыт', [outBetween.status, closed1.status, closed1.result?.reason, closed1.result?.leftIds], [200, 'finished', 'player_left', [loser.id]]);
+  const forfeit = closed1.series[1];
+  check('партия 2 засчитана без игры: его сторона проиграла', [closed1.series.length, forfeit?.number, forfeit?.forfeit, forfeit?.outcomes[loser.id], forfeit?.outcomes[winner.id]], [2, 2, true, 'lose', 'win']);
+  check('проиграл ещё один взнос: 40 000 и 20 000', [await balanceOf(winner), await balanceOf(loser)], [40_000, 20_000]);
+  check('итог стола: партий 2, монеты +10 000 / −10 000', [closed1.result.matches, closed1.result.coins[winner.id], closed1.result.coins[loser.id], closed1.result.wins[winner.id], closed1.result.losses[loser.id]], [2, 10_000, -10_000, 2, 2]);
+  const loserBan = (await request('GET', '/me', loser.token)).body.leaveBan;
+  check('вышедшему между партиями — бан', loserBan?.count, 1);
 
   section('ШАХ: рейтинг ШАХ (этап 4) — свой, Гарбу не трогает');
-  // Тот же расчёт по истории партий и итогу матча: соперники равны (4.0), время ×1.0.
-  const rated = final.players.map((p: any) => ({ id: p.id, seat: p.seat, skill: 4 }));
+  // Тот же расчёт по истории раздач и итогам обеих партий: соперники равны (4.0), время ×1.0.
+  const rated = closed1.players.map((p: any) => ({ id: p.id, seat: p.seat, skill: 4 }));
   const pending: Record<string, number> = { [a.id]: 0, [b.id]: 0 };
-  for (const party of final.game.history) {
+  for (const party of match1History) {
     const d = partyDeltas(2, rated, party);
     for (const id of Object.keys(pending)) pending[id] += d[id];
   }
-  const md = matchRatingDeltas(2, rated, final.result.outcomes);
-  for (const id of Object.keys(pending)) pending[id] += md[id];
+  for (const rec of closed1.series) {
+    const md = matchRatingDeltas(2, rated, rec.outcomes);
+    for (const id of Object.keys(pending)) pending[id] += md[id];
+  }
   const expected = (id: string) => shownRating(settleShah(4, pending[id], 3_600_000));
   const ratingIn = (st: any, p: P) => st.players.find((x: any) => x.id === p.id);
-  check('итоги матча: рейтинг ШАХ на начало — 4.0 у обоих', [ratingIn(final, a).ratingStart, ratingIn(final, b).ratingStart], [4, 4]);
-  check('итоги матча: рейтинг ШАХ после — по партиям и матчу', [ratingIn(final, a).rating, ratingIn(final, b).rating], [expected(a.id), expected(b.id)]);
-  check('победитель матча — в плюсе', pending[winner.id] > 0, true);
+  check('итоги стола: рейтинг ШАХ на начало — 4.0 у обоих', [ratingIn(closed1, a).ratingStart, ratingIn(closed1, b).ratingStart], [4, 4]);
+  check('итоги стола: рейтинг ШАХ после — по раздачам и партиям', [ratingIn(closed1, a).rating, ratingIn(closed1, b).rating], [expected(a.id), expected(b.id)]);
+  check('выигравший обе партии — в плюсе', pending[winner.id] > 0, true);
   const board = (await request('GET', '/shah/rating?scope=all', a.token)).body;
-  check('/shah/rating: оба в списке, мой рейтинг и место', [board.total, board.players.find((p: any) => p.me)?.rating, board.myRating, board.myMatches], [2, expected(a.id), expected(a.id), 1]);
+  check('/shah/rating: оба в списке, мой рейтинг, партий 2', [board.total, board.players.find((p: any) => p.me)?.rating, board.myRating, board.myMatches], [2, expected(a.id), expected(a.id), 2]);
   check('/shah/rating: первым — у кого выше', board.players[0].rating >= board.players[1].rating, true);
   const friendsBoard = (await request('GET', '/shah/rating?scope=friends', b.token)).body;
   check('/shah/rating друзья: я и друг', [friendsBoard.scope, friendsBoard.total, friendsBoard.players.map((p: any) => p.code).sort()], ['friends', 2, [a.code, b.code].sort()]);
   const meA = (await request('GET', '/me', a.token)).body;
   check('/me: рейтинг ШАХ — отдельным полем, рейтинг Гарбы прежний', [meA.shahRating, meA.rating], [expected(a.id), 4]);
   const profileW = (await request('GET', '/me/profile', winner.token)).body;
-  check('профиль: матчей 1, побед 1, рейтинг ШАХ', [profileW.shah?.matches, profileW.shah?.wins, profileW.shah?.rating], [1, 1, expected(winner.id)]);
+  check('профиль: партий 2, побед 2, рейтинг ШАХ', [profileW.shah?.matches, profileW.shah?.wins, profileW.shah?.rating], [2, 2, expected(winner.id)]);
   const cardL = (await request('GET', `/players/${loser.code}`, winner.token)).body;
-  check('карточка соперника: матчей 1, поражений 1', [cardL.shah?.matches, cardL.shah?.losses, cardL.shah?.parties], [1, 1, final.game.history.length]);
-  check('после матча — снова свободен', (await request('GET', '/me', a.token)).body.shahRoomId, null);
-  const garbaNow = await request('POST', '/rooms', a.token, { capacity: 4, ante: 100, emptyLimit: 5, konThreshold: 10, minBalance: 1000 });
+  check('карточка соперника: партий 2, поражений 2, раздач — сколько сыграли', [cardL.shah?.matches, cardL.shah?.losses, cardL.shah?.parties], [2, 2, match1History.length]);
+  check('после стола — снова свободен', (await request('GET', '/me', winner.token)).body.shahRoomId, null);
+  const garbaNow = await request('POST', '/rooms', winner.token, { capacity: 4, ante: 100, emptyLimit: 5, konThreshold: 10, minBalance: 1000 });
   check('Гарба после ШАХ работает: стол создан', garbaNow.status, 201);
-  const shahWhileGarba = await request('POST', '/shah/rooms', a.token, { capacity: 2, ante: 100 });
+  const shahWhileGarba = await request('POST', '/shah/rooms', winner.token, { capacity: 2, ante: 1000 });
   check('за столом Гарбы стол ШАХ не создать', [shahWhileGarba.status, shahWhileGarba.body.roomId, shahWhileGarba.body.kind], [409, garbaNow.body.id, 'garba']);
-  await request('POST', `/rooms/${garbaNow.body.id}/leave`, a.token);
-  const shahAgain = await request('POST', '/shah/rooms', a.token, { capacity: 2, ante: 100 });
+  await request('POST', `/rooms/${garbaNow.body.id}/leave`, winner.token);
+  const shahAgain = await request('POST', '/shah/rooms', winner.token, { capacity: 2, ante: 1000 });
   check('вышел из Гарбы — стол ШАХ можно', shahAgain.status, 201);
-  await request('POST', `/shah/rooms/${shahAgain.body.id}/leave`, a.token);
-  check('создатель вышел из лобби — комната закрыта', (await stateOf(shahAgain.body.id, a)).result?.reason, 'creator_left');
+  await request('POST', `/shah/rooms/${shahAgain.body.id}/leave`, winner.token);
+  check('создатель вышел из лобби — комната закрыта', (await stateOf(shahAgain.body.id, winner)).result?.reason, 'creator_left');
 
-  section('ШАХ: ушёл — его сторона проиграла, бан за выход');
+  section('ШАХ: ушёл посреди партии — его сторона проиграла, бан за выход');
   const c = await account('Чингиз');
   const d = await account('Дильназ');
-  const leaveRoom = await startedRoom(c, d, 100);
+  const leaveRoom = await startedRoom(c, d, 1000);
   const midParty = await stateOf(leaveRoom, c);
-  check('матч начался — взнос 100 списан', [await balanceOf(c), midParty.money.pot], [29_900, 200]);
+  check('стол начался — взнос 1 000 списан, без поля партий — 3', [await balanceOf(c), midParty.money.pot, midParty.matchLimit], [29_000, 2000, 3]);
 
   section('ШАХ: «ИДУТ СЕЙЧАС» и зрители');
   const x = await account('Ислам');
   const y = await account('Йеркин');
-  const xyRoom = await startedRoom(x, y, 100);
-  const liveIds = (await request('GET', '/shah/rooms/open', spectator.token)).body.live.map((r: any) => r.id);
-  check('идущие матчи — в списке у зрителя', [liveIds.includes(leaveRoom), liveIds.includes(xyRoom)], [true, true]);
-  check('свой матч в списке не показываем', (await request('GET', '/shah/rooms/open', x.token)).body.live.some((r: any) => r.id === xyRoom), false);
+  const xyRoom = await startedRoom(x, y, 1000);
+  const liveList = (await request('GET', '/shah/rooms/open', spectator.token)).body.live;
+  const liveIds = liveList.map((r: any) => r.id);
+  check('идущие столы — в списке у зрителя', [liveIds.includes(leaveRoom), liveIds.includes(xyRoom)], [true, true]);
+  check('в списке — какая партия из скольких', [liveList.find((r: any) => r.id === xyRoom)?.matchNumber, liveList.find((r: any) => r.id === xyRoom)?.matchLimit], [1, 3]);
+  check('свой стол в списке не показываем', (await request('GET', '/shah/rooms/open', x.token)).body.live.some((r: any) => r.id === xyRoom), false);
   check('сам в начатой игре — чужой стол смотреть нельзя', (await request('GET', `/shah/rooms/${leaveRoom}`, x.token)).body.error, 'playing elsewhere');
   check('зрителю без игры — можно', (await request('GET', `/shah/rooms/${leaveRoom}`, spectator.token)).status, 200);
   await request('POST', `/shah/rooms/${xyRoom}/leave`, x.token);
   check('вышел из своей игры — смотреть можно', (await request('GET', `/shah/rooms/${leaveRoom}`, x.token)).status, 200);
   const dealerCD = midParty.dealerId === c.id ? c : d;
   await request('POST', `/shah/rooms/${leaveRoom}/deal`, dealerCD.token);
-  check('посреди партии выйти нельзя', (await request('POST', `/shah/rooms/${leaveRoom}/leave`, c.token)).status, 409);
+  check('посреди раздачи выйти нельзя', (await request('POST', `/shah/rooms/${leaveRoom}/leave`, c.token)).status, 409);
   await playUntil(leaveRoom, [c, d], (x) => x.stage === 'awaiting_deal' || x.status === 'finished', 30_000);
   const left = await request('POST', `/shah/rooms/${leaveRoom}/leave`, c.token);
   const afterLeave = await stateOf(leaveRoom, d);
-  check('между партиями вышел — матч окончен', [left.status, afterLeave.status, afterLeave.result?.reason], [200, 'finished', 'player_left']);
-  check('ушедший проиграл, оставшийся выиграл', [afterLeave.result.outcomes[c.id], afterLeave.result.outcomes[d.id]], ['lose', 'win']);
-  check('монеты: −100 и +100', [await balanceOf(c), await balanceOf(d)], [29_900, 30_100]);
+  check('между раздачами вышел — стол закрыт', [left.status, afterLeave.status, afterLeave.result?.reason], [200, 'finished', 'player_left']);
+  check('партия 1 — ушедший проиграл, хоть и мог выигрывать по штрафам', [afterLeave.series[0]?.forfeit, afterLeave.series[0]?.outcomes[c.id], afterLeave.series[0]?.outcomes[d.id]], [false, 'lose', 'win']);
+  check('монеты: банк — оставшемуся (29 000 и 31 000)', [await balanceOf(c), await balanceOf(d)], [29_000, 31_000]);
   const ban = (await request('GET', '/me', c.token)).body.leaveBan;
   check('ушедшему — бан 10 минут (§13d)', [ban?.count, ban?.secondsLeft > 590], [1, true]);
-  check('с баном за стол ШАХ не сесть', (await request('POST', '/shah/rooms', c.token, { capacity: 2, ante: 100 })).body.error, 'banned for leaving');
+  check('с баном за стол ШАХ не сесть', (await request('POST', '/shah/rooms', c.token, { capacity: 2, ante: 1000 })).body.error, 'banned for leaving');
+
+  section('ШАХ: 1×1×1 — ушёл один, двое делят банк пополам');
+  const t1 = await account('Тимур');
+  const t2 = await account('Томирис');
+  const t3 = await account('Талгат');
+  const trio = (await request('POST', '/shah/rooms', t1.token, { capacity: 3, ante: 2000 })).body;
+  await request('POST', `/shah/rooms/${trio.id}/join`, t2.token);
+  await request('POST', `/shah/rooms/${trio.id}/join`, t3.token);
+  for (let i = 0; i < 30 && (await stateOf(trio.id, t1)).status === 'lobby'; i++) {
+    for (const t of [t1, t2, t3]) await request('POST', `/shah/rooms/${trio.id}/ready`, t.token);
+    await wait(200);
+  }
+  for (let i = 0; i < 30 && (await stateOf(trio.id, t1)).revealShowLeftMs > 0; i++) await wait(100);
+  await request('POST', `/shah/rooms/${trio.id}/leave`, t3.token);
+  const trioEnd = await stateOf(trio.id, t1);
+  check('вышел до первой раздачи — партия ему проиграна', [trioEnd.status, trioEnd.series[0]?.outcomes[t3.id]], ['finished', 'lose']);
+  check('банк 6 000: двум оставшимся по 3 000 (+1 000), ушедший −2 000', [await balanceOf(t1), await balanceOf(t2), await balanceOf(t3)], [31_000, 31_000, 28_000]);
 
   section('ШАХ: время на ход, «ушёл» и отключение');
   const e = await account('Ерлан');
   const f = await account('Фатима');
-  const timerRoom = await startedRoom(e, f, 100);
+  const timerRoom = await startedRoom(e, f, 1000);
   // Оба на связи (опрашивают), но не ходят: за них ходит таймер, два пропуска — «ушёл».
   let away: any = null;
   let autoDealt = false;
@@ -373,86 +425,52 @@ async function main() {
     await wait(300);
   }
   check('пропала связь — пауза «offline»', sawOffline, true);
-  check('не вернулась за запас — проиграла (вопрос 19 «а»)', [gone.result?.reason, gone.result?.outcomes[f.id], gone.result?.leftIds], ['player_left', 'lose', [f.id]]);
+  check('не вернулась за запас — проиграла партию (вопрос 19)', [gone.result?.reason, gone.series?.at(-1)?.outcomes[f.id], gone.result?.leftIds], ['player_left', 'lose', [f.id]]);
   check('за пропажу связи бана нет — только за «Выйти»', (await request('GET', '/me', f.token)).body.leaveBan, null);
 
-  section('ШАХ: личная пауза и время стола (§20, §20a)');
+  section('ШАХ: личная пауза (§20a); часов стола у ШАХ нет');
   const m1 = await account('Мадина');
   const n1 = await account('Нурлан');
-  const timed = await startedRoom(m1, n1, 100, { timeLimitMinutes: 15 }); // 15 «минут» по 0,4 с = 6 с
-  let ts = await stateOf(timed, m1);
-  check('часов стола нет до первой раздачи', ts.tableClock, null);
+  const pauseRoom = await startedRoom(m1, n1, 1000);
+  let ts = await stateOf(pauseRoom, m1);
+  check('часов стола нет', [ts.tableClock, 'timeLimitMinutes' in ts.settings], [undefined, false]);
   const tDealer = ts.dealerId === m1.id ? m1 : n1;
-  const pause = await request('POST', `/shah/rooms/${timed}/pause`, m1.token);
-  check('между партиями — личная пауза, осталось 2 из 3', [pause.status, pause.body.personalPause?.playerId, pause.body.myPausesLeft], [200, m1.id, 2]);
-  check('во время паузы раздать нельзя', (await request('POST', `/shah/rooms/${timed}/deal`, tDealer.token)).body.error, 'personal pause in progress');
-  check('вторую паузу сразу не взять', (await request('POST', `/shah/rooms/${timed}/pause`, n1.token)).body.error, 'pause in progress');
-  for (let i = 0; i < 20 && (await stateOf(timed, m1)).personalPause; i++) await wait(200);
-  ts = await stateOf(timed, m1);
+  const pause = await request('POST', `/shah/rooms/${pauseRoom}/pause`, m1.token);
+  check('между раздачами — личная пауза, осталось 2 из 3', [pause.status, pause.body.personalPause?.playerId, pause.body.myPausesLeft], [200, m1.id, 2]);
+  check('во время паузы раздать нельзя', (await request('POST', `/shah/rooms/${pauseRoom}/deal`, tDealer.token)).body.error, 'personal pause in progress');
+  check('вторую паузу сразу не взять', (await request('POST', `/shah/rooms/${pauseRoom}/pause`, n1.token)).body.error, 'pause in progress');
+  for (let i = 0; i < 20 && (await stateOf(pauseRoom, m1)).personalPause; i++) await wait(200);
+  ts = await stateOf(pauseRoom, m1);
   check('пауза кончилась сама', [ts.personalPause, ts.lastPersonalPause?.early], [null, false]);
-  await request('POST', `/shah/rooms/${timed}/deal`, tDealer.token);
-  ts = await stateOf(timed, m1);
-  check('с первой раздачи часы идут: 15 минут', [ts.tableClock?.minutes, ts.tableClock?.limitMs], [15, 6000]);
-  // На вопросы о продлении отвечаем сразу: первый — оба «да», дальше — «нет». Ходим медленно
-  // (раз в 0,6 с), чтобы время вышло посреди первой партии.
-  const seenVotes = new Set<string>();
-  let extended: any = null;
-  let timedEnd: any = null;
-  let lastMove = 0;
-  const timedDeadline = Date.now() + 90_000;
-  while (Date.now() < timedDeadline) {
-    const sm = await stateOf(timed, m1);
-    if (sm.status === 'finished') {
-      timedEnd = sm;
-      break;
-    }
-    const vote = sm.tableClock?.vote;
-    const key = vote ? `${vote.forEndsAt}:${vote.round}` : null;
-    if (vote && key && !seenVotes.has(key)) {
-      seenVotes.add(key);
-      const body = (choice: string) => ({ choice, forEndsAt: vote.forEndsAt, round: vote.round });
-      if (seenVotes.size === 1) {
-        await request('POST', `/shah/rooms/${timed}/extend-vote`, m1.token, body('yes'));
-        extended = (await request('POST', `/shah/rooms/${timed}/extend-vote`, n1.token, body('yes'))).body.tableClock;
-      } else {
-        await request('POST', `/shah/rooms/${timed}/extend-vote`, m1.token, body('no'));
-      }
-    }
-    if (Date.now() - lastMove > 600) {
-      lastMove = Date.now();
-      await step(timed, [m1, n1]);
-    } else {
-      await stateOf(timed, n1); // Нурлан тоже на связи
-    }
-    await wait(80);
-  }
-  check('все «да» — +10 минут', [extended?.extensions, extended?.limitMs], [1, 10_000]);
-  check('потом «нет» — ещё два вопроса (за 5 минут и за 1)', seenVotes.size >= 3, true);
-  check('время вышло — партию доиграли, матч окончен по времени', [timedEnd?.status, timedEnd?.result?.reason], ['finished', 'time_limit']);
-  const tWinner = timedEnd.result.outcomes[m1.id] === 'win' ? m1 : n1;
-  check('выиграл тот, у кого меньше штрафов (вопрос 18 «а»)', timedEnd.result.totals[timedEnd.game.players.find((p: any) => p.id === tWinner.id).side], Math.max(...timedEnd.result.totals));
-  check('банк — ему: 30 100', await balanceOf(tWinner), 30_100);
+  check('после паузы раздать можно', (await request('POST', `/shah/rooms/${pauseRoom}/deal`, tDealer.token)).status, 200);
 
-  section('ШАХ: тренировка с ботами');
+  section('ШАХ: тренировка с ботами; «ещё 3?» без ответа — стол закрыт');
   const g = await account('Гульнар');
-  const practice = (await request('POST', '/shah/rooms', g.token, { capacity: 4, ante: 1000 })).body;
+  const practice = (await request('POST', '/shah/rooms', g.token, { capacity: 4, ante: 10_000, matches: 1 })).body;
   const withBots = await request('POST', `/shah/rooms/${practice.id}/bots`, g.token);
   check('боты сели на 3 места, тренировка', [withBots.body.players.length, withBots.body.players.filter((p: any) => p.bot).length, withBots.body.practice], [4, 3, true]);
   check('команды через одного: места 0 и 2 — одна сторона', withBots.body.players.map((p: any) => p.side), [0, 1, 0, 1]);
   await wait(1300);
   await request('POST', `/shah/rooms/${practice.id}/ready`, g.token);
-  const practiceEnd = await playUntil(practice.id, [g], (x) => x.status === 'finished', 120_000);
-  check('боты доиграли матч с человеком', [practiceEnd.status, practiceEnd.result?.reason], ['finished', 'match_over']);
-  check('сыграно несколько партий', practiceEnd.game.history.length >= 2, true);
+  const practiceMatch = await playUntil(practice.id, [g], (x) => x.moreVote !== null && x.moreVote !== undefined, 120_000);
+  check('боты доиграли партию с человеком', [practiceMatch.status, practiceMatch.series[0]?.reason], ['started', 'match_over']);
+  check('сыграно несколько раздач', practiceMatch.game.history.length >= 2, true);
+  check('боты не голосуют — спрашивают одного человека', practiceMatch.moreVote.voterCount, 1);
+  let practiceEnd = practiceMatch;
+  for (let i = 0; i < 60 && practiceEnd.status !== 'finished'; i++) {
+    await wait(200);
+    practiceEnd = await stateOf(practice.id, g);
+  }
+  check('не ответил 4 с — стол закрыт', [practiceEnd.status, practiceEnd.result?.reason, practiceEnd.lastMoreVote?.result], ['finished', 'matches_done', 'expired']);
   check('тренировка: монеты не двигались', await balanceOf(g), 30_000);
   const gMe = (await request('GET', '/me/profile', g.token)).body;
-  check('тренировка: рейтинг ШАХ и матчи не изменились', [gMe.shah?.rating, gMe.shah?.matches, practiceEnd.players[0].ratingStart], [4, 0, null]);
+  check('тренировка: рейтинг ШАХ и партии не изменились', [gMe.shah?.rating, gMe.shah?.matches, practiceEnd.players[0].ratingStart], [4, 0, null]);
   check('тренировки нет в рейтинге ШАХ', (await request('GET', '/shah/rating?scope=all', g.token)).body.players.some((p: any) => p.code === g.code), false);
 
-  section('ШАХ: перезапуск сервера посреди матча');
+  section('ШАХ: перезапуск сервера; вторая партия — снова взнос; «нет» — стол закрыт');
   const h = await account('Хадиша');
   const k = await account('Канат');
-  const restartRoom = await startedRoom(h, k, 100);
+  const restartRoom = await startedRoom(h, k, 1000, { matches: 2 });
   let before = await stateOf(restartRoom, h);
   await request('POST', `/shah/rooms/${restartRoom}/deal`, (before.dealerId === h.id ? h : k).token);
   await step(restartRoom, [h, k]);
@@ -460,14 +478,28 @@ async function main() {
   await stopServer(server);
   server = await startServer();
   const after = await stateOf(restartRoom, h);
-  check('комната поднялась из базы: та же партия, та же рука', [after.status, after.game.party.number, after.game.myHand], ['started', before.game.party.number, before.game.myHand]);
-  check('взнос не списан второй раз', [await balanceOf(h), await balanceOf(k)], [29_900, 29_900]);
-  const restartEnd = await playUntil(restartRoom, [h, k], (x) => x.status === 'finished', 60_000);
-  const restartWinner = restartEnd.result.outcomes[h.id] === 'win' ? h : k;
-  check('доиграли после перезапуска — выплата один раз', [restartEnd.status, await balanceOf(restartWinner)], ['finished', 30_100]);
+  check('комната поднялась из базы: та же раздача, та же рука', [after.status, after.game.party.number, after.game.myHand], ['started', before.game.party.number, before.game.myHand]);
+  check('взнос не списан второй раз', [await balanceOf(h), await balanceOf(k)], [29_000, 29_000]);
+  const firstOver = await playUntil(restartRoom, [h, k], (x) => x.matchOver === true || x.status === 'finished', 60_000);
+  check('партия 1 из 2 окончена — вопроса нет, ждём раздачи', [firstOver.status, firstOver.series.length, firstOver.moreVote, firstOver.stage], ['started', 1, null, 'awaiting_deal']);
+  const r1 = firstOver.series[0];
+  check('банк партии 1 выплачен (±1 000)', [await balanceOf(h), await balanceOf(k), Math.abs(r1.deltas[h.id])], [30_000 + r1.deltas[h.id], 30_000 + r1.deltas[k.id], 1000]);
+  const nextDealer = firstOver.dealerId === h.id ? h : k;
+  for (let i = 0; i < 20 && (await stateOf(restartRoom, h)).partyShowLeftMs > 0; i++) await wait(100);
+  const dealt2 = await request('POST', `/shah/rooms/${restartRoom}/deal`, nextDealer.token);
+  check('сдающий раздал — партия 2: счёт с нуля, раздача 1', [dealt2.status, dealt2.body.matchNumber, dealt2.body.game?.totals, dealt2.body.game?.party?.number, dealt2.body.matchOver], [200, 2, [0, 0], 1, false]);
+  check('за партию 2 — снова взнос 1 000 с каждого', [await balanceOf(h), await balanceOf(k), dealt2.body.money.pot], [30_000 + r1.deltas[h.id] - 1000, 30_000 + r1.deltas[k.id] - 1000, 2000]);
+  const secondOver = await playUntil(restartRoom, [h, k], (x) => x.moreVote != null || x.status === 'finished', 60_000);
+  check('партия 2 из 2 окончена — вопрос «ещё 3?»', [secondOver.series.length, secondOver.moreVote?.add], [2, 3]);
+  const said = (await request('POST', `/shah/rooms/${restartRoom}/more-vote`, h.token, { choice: 'no' })).body;
+  check('одно «нет» — стол закрыт без проигрыша и бана', [said.status, said.result?.reason, said.lastMoreVote?.result, said.lastMoreVote?.byName], ['finished', 'matches_done', 'rejected', h.name]);
+  const totalH = said.series.reduce((sum: number, m: any) => sum + m.deltas[h.id], 0);
+  const totalK = said.series.reduce((sum: number, m: any) => sum + m.deltas[k.id], 0);
+  check('монеты за стол = сумма двух партий', [await balanceOf(h), await balanceOf(k), said.result.coins[h.id], said.result.coins[k.id]], [30_000 + totalH, 30_000 + totalK, totalH, totalK]);
+  check('за «нет» бана нет', (await request('GET', '/me', h.token)).body.leaveBan, null);
   await stopServer(server);
   server = await startServer();
-  check('после ещё одного перезапуска выплата не повторилась', await balanceOf(restartWinner), 30_100);
+  check('после ещё одного перезапуска выплаты не повторились', [await balanceOf(h), await balanceOf(k)], [30_000 + totalH, 30_000 + totalK]);
 }
 
 main()

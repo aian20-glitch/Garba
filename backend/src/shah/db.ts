@@ -1,9 +1,9 @@
 // Комнаты ШАХ в базе (этап 2, 04.11.2026). Отдельная таблица shah_rooms — комнаты Гарбы
 // (таблица rooms) её не видят, и наоборот. Комната целиком — одна строка JSON.
 //
-// Монеты ШАХ не лежат в комнате: взнос списывается со счёта при старте матча и выплачивается
-// в конце — каждый раз в одной транзакции с записью комнаты (флаги charged / settled в комнате),
-// поэтому после падения сервера ничего не спишется и не заплатится дважды.
+// Монеты ШАХ не лежат в комнате: взнос списывается со счёта в начале каждой партии и выплачивается
+// в её конце — каждый раз в одной транзакции с записью комнаты (флаги charged у комнаты и paid у
+// сыгранной партии), поэтому после падения сервера ничего не спишется и не заплатится дважды.
 
 import type { DatabaseSync } from 'node:sqlite';
 import { SHAH_START_SKILL } from './rating.js';
@@ -26,8 +26,10 @@ export function ensureShahTables(db: DatabaseSync) {
       updated_at  INTEGER NOT NULL
     )
   `);
-  // Итог каждого матча для каждого игрока (кроме тренировки): статистика профиля и история рейтинга.
-  // outcome — win | lose | none | draw; coins — монеты за матч (+/−).
+  // Итог стола для каждого игрока (кроме тренировки): статистика профиля и история рейтинга.
+  // С 05.11.2026 за столом несколько партий до −24: matches — сколько сыграно, wins / losses —
+  // сколько выиграл и проиграл; coins — монеты за стол (+/−); parties — раздачи; outcome — итог
+  // последней партии стола (win | lose | none | draw).
   db.exec(`
     CREATE TABLE IF NOT EXISTS shah_results (
       room_id       TEXT NOT NULL,
@@ -36,6 +38,9 @@ export function ensureShahTables(db: DatabaseSync) {
       outcome       TEXT NOT NULL,
       coins         INTEGER NOT NULL,
       parties       INTEGER NOT NULL,
+      matches       INTEGER NOT NULL DEFAULT 0,
+      wins          INTEGER NOT NULL DEFAULT 0,
+      losses        INTEGER NOT NULL DEFAULT 0,
       skill_before  REAL NOT NULL,
       skill_after   REAL NOT NULL,
       active_ms     INTEGER NOT NULL,
@@ -44,6 +49,16 @@ export function ensureShahTables(db: DatabaseSync) {
     )
   `);
   db.exec('CREATE INDEX IF NOT EXISTS shah_results_player ON shah_results (player_id)');
+  // Строки до 05.11.2026 — один матч на стол: matches = 1, победа или поражение — по outcome.
+  const columns = (db.prepare('PRAGMA table_info(shah_results)').all() as { name: string }[]).map((c) => c.name);
+  if (!columns.includes('matches')) {
+    db.exec(`
+      ALTER TABLE shah_results ADD COLUMN matches INTEGER NOT NULL DEFAULT 0;
+      ALTER TABLE shah_results ADD COLUMN wins INTEGER NOT NULL DEFAULT 0;
+      ALTER TABLE shah_results ADD COLUMN losses INTEGER NOT NULL DEFAULT 0;
+      UPDATE shah_results SET matches = 1, wins = (outcome = 'win'), losses = (outcome = 'lose');
+    `);
+  }
 }
 
 export function saveShahRoom(db: DatabaseSync, room: { id: string; status: string }) {
@@ -94,19 +109,37 @@ export type ShahResultRow = {
   outcome: string;
   coins: number;
   parties: number;
+  matches: number;
+  wins: number;
+  losses: number;
   skillBefore: number;
   skillAfter: number;
   activeMs: number;
   finishedAt: number;
 };
 
-// Итог матча игрока и его новое мастерство — вызывать в транзакции записи комнаты.
+// Итог стола игрока и его новое мастерство — вызывать в транзакции записи комнаты.
 export function writeShahResult(db: DatabaseSync, r: ShahResultRow) {
   db.prepare(
-    `INSERT INTO shah_results (room_id, player_id, format, outcome, coins, parties, skill_before, skill_after, active_ms, finished_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `INSERT INTO shah_results (room_id, player_id, format, outcome, coins, parties, matches, wins, losses,
+                               skill_before, skill_after, active_ms, finished_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
      ON CONFLICT(room_id, player_id) DO NOTHING`,
-  ).run(r.roomId, r.playerId, r.format, r.outcome, r.coins, r.parties, r.skillBefore, r.skillAfter, Math.round(r.activeMs), r.finishedAt);
+  ).run(
+    r.roomId,
+    r.playerId,
+    r.format,
+    r.outcome,
+    r.coins,
+    r.parties,
+    r.matches,
+    r.wins,
+    r.losses,
+    r.skillBefore,
+    r.skillAfter,
+    Math.round(r.activeMs),
+    r.finishedAt,
+  );
   db.prepare(
     `INSERT INTO shah_players (player_id, skill, updated_at) VALUES (?, ?, ?)
      ON CONFLICT(player_id) DO UPDATE SET skill = excluded.skill, updated_at = excluded.updated_at`,
@@ -115,13 +148,13 @@ export function writeShahResult(db: DatabaseSync, r: ShahResultRow) {
 
 export type ShahStats = { matches: number; wins: number; losses: number; parties: number; coins: number };
 
-// Статистика ШАХ за всё время — по матчам, не по тренировкам.
+// Статистика ШАХ за всё время — по партиям до −24 (matches), не по тренировкам.
 export function shahStatsOf(db: DatabaseSync, accountId: string): ShahStats {
   const row = db
     .prepare(
-      `SELECT COUNT(*) AS matches,
-              COALESCE(SUM(outcome = 'win'), 0) AS wins,
-              COALESCE(SUM(outcome = 'lose'), 0) AS losses,
+      `SELECT COALESCE(SUM(matches), 0) AS matches,
+              COALESCE(SUM(wins), 0) AS wins,
+              COALESCE(SUM(losses), 0) AS losses,
               COALESCE(SUM(parties), 0) AS parties,
               COALESCE(SUM(coins), 0) AS coins
        FROM shah_results WHERE player_id = ?`,
@@ -139,7 +172,7 @@ export function shahStatsOf(db: DatabaseSync, accountId: string): ShahStats {
 export type ShahLeader = { id: string; name: string; code: string; skill: number; matches: number; wins: number };
 
 // Рейтинг ШАХ: ids — только эти игроки (я и друзья; кто не играл — с мастерством 4.0); без ids —
-// все, кто сыграл хотя бы один матч. Боты сервера не участвуют. По убыванию мастерства.
+// все, кто сыграл хотя бы одну партию. Боты сервера не участвуют. По убыванию мастерства.
 export function shahLeaders(db: DatabaseSync, ids?: string[]): ShahLeader[] {
   if (ids && ids.length === 0) return [];
   const join = ids ? 'LEFT JOIN' : 'JOIN';
@@ -147,8 +180,8 @@ export function shahLeaders(db: DatabaseSync, ids?: string[]): ShahLeader[] {
   const rows = db
     .prepare(
       `SELECT a.id, a.name, a.code, s.skill,
-              (SELECT COUNT(*) FROM shah_results r WHERE r.player_id = a.id) AS matches,
-              (SELECT COUNT(*) FROM shah_results r WHERE r.player_id = a.id AND r.outcome = 'win') AS wins
+              (SELECT COALESCE(SUM(r.matches), 0) FROM shah_results r WHERE r.player_id = a.id) AS matches,
+              (SELECT COALESCE(SUM(r.wins), 0) FROM shah_results r WHERE r.player_id = a.id) AS wins
        FROM accounts a ${join} shah_players s ON s.player_id = a.id
        WHERE a.is_bot = 0 ${where}`,
     )

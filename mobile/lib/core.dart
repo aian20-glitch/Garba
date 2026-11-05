@@ -417,10 +417,16 @@ const _apiErrorMessages = <String, String>{
   'bad cards': 'Выберите карты.',
   'not time to deal': 'Сейчас не время раздавать.',
   'only dealer can deal': 'Раздаёт сдающий.',
-  'party result on show': 'Все смотрят итог партии — раздать можно через пару секунд.',
+  'party result on show': 'Все смотрят итог раздачи — раздать можно через пару секунд.',
   'personal pause in progress': 'Идёт пауза — раздать можно после неё.',
-  'time is up': 'Время стола вышло — матч окончен.',
-  'game not started': 'Матч ещё не начался.',
+  'time is up': 'Время стола вышло — игра окончена.',
+  'game not started': 'Игра ещё не началась.',
+  // ШАХ: партии стола и «ещё 3?» (ответы владельца 05.11.2026).
+  'more matches vote in progress': 'Решаем, играть ли ещё 3 партии, — дождитесь ответа всех.',
+  'no more matches vote': 'Вопрос «ещё 3 партии?» уже решён.',
+  'bad matches': 'Партий можно выбрать от 1 до 30.',
+  'not enough coins for next match': 'У кого-то за столом нет взноса на следующую партию.',
+  'all matches played': 'Все партии этого стола уже сыграны.',
   'already in this room': 'Этот игрок уже за столом.',
   'playing elsewhere': 'Вы сейчас в игре. Смотреть чужой стол можно, когда доиграете свою.',
   'shah disabled': 'ШАХ сейчас выключен на сервере.',
@@ -434,6 +440,10 @@ String userErrorMessage(Object error, {String fallback = 'Не удалось в
         return 'Вы уже за столом ШАХ #${details['roomId']}. Вернитесь к нему с главного экрана.';
       }
       return 'Вы уже в комнате #${details['roomId']}. Вернитесь в неё с главного экрана.';
+    }
+    // ШАХ: взнос за партию — в пределах формата (1×1, 1×1×1 — 1 000…10 000, команды — 10 000…20 000).
+    if (error.code == 'bad ante' && details['min'] is num && details['max'] is num) {
+      return 'Взнос за партию — от ${fmtCoins((details['min'] as num).toInt())} до ${fmtCoins((details['max'] as num).toInt())}.';
     }
     // ШАХ: сесть можно, если на счёте есть сколько можно проиграть (взнос).
     if (error.code == 'not enough coins to enter' && details['need'] is num && details['balance'] is num) {

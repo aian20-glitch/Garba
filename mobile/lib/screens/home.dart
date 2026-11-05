@@ -296,7 +296,7 @@ class _HomeScreenState extends State<HomeScreen> with RouteAware {
                                 FilledButton(
                                   onPressed: roomId != null || shahRoomId != null
                                       ? null
-                                      // Стол ШАХ — свои условия (взнос — ставка на матч), без суммы за стол.
+                                      // Стол ШАХ — свои условия (взнос — за каждую партию), без суммы за стол.
                                       : inv['kind'] == 'shah'
                                           ? () => joinShahTable(context, inv['roomId'].toString())
                                       // За турнирный стол — без суммы за стол, с турнирным балансом (§19.3).

@@ -1,6 +1,10 @@
 // Сервер игры ШАХ (SHAH_PLAN.md, этап 2, 04.11.2026): комнаты, лобби, «ГОТОВ», раздача, ходы,
-// время на ход, отключение и пауза, время стола и продление, личная пауза, смайлики,
-// боты-тренировка, монеты матча; с этапа 4 (05.11.2026) — рейтинг ШАХ (shah/rating.ts, SHAH_RULES.md §19).
+// время на ход, отключение и пауза, личная пауза, смайлики, боты-тренировка, монеты партии; с этапа 4
+// (05.11.2026) — рейтинг ШАХ (shah/rating.ts, SHAH_RULES.md §19).
+//
+// Ответы владельца 05.11.2026 (SHAH_RULES.md §18): за столом — несколько партий до −24 подряд (в коде
+// match — это партия, party — раздача); создатель выбирает 1…30, сыграли все — «ещё 3?»; времени стола
+// нет; взнос — за каждую партию; ушёл — его сторона проиграла партию, между партиями — тоже (и бан).
 //
 // Отдельно от комнат Гарбы: своя карта комнат, своя таблица shah_rooms, свои запросы /shah/...
 // и сокет-события watch_shah → shah_room. Общее с Гарбой — аккаунты, кошелёк, бан за выход,
@@ -47,7 +51,6 @@ import { markReady, readyOutcome, readySecondsLeft, startReadyCheck, READY_MS, t
 import { freeBotName } from '../serverBots.js';
 import { seatFor } from '../seats.js';
 import { liveRoomsFor as liveRoomsForList, spectateRefusal } from '../spectators.js';
-import { ask, cast, playedMs, remainingMs, roundDue, setRunning, settle, startClock, type TableClock } from '../tableTimer.js';
 import {
   addMiss,
   clockFor,
@@ -78,6 +81,7 @@ import {
   awaitedOf,
   createMatch,
   isTeamFormat,
+  nextMatch,
   sideOf,
   startParty,
   DEFAULT_SHAH_OPTIONS,
@@ -88,17 +92,25 @@ import {
   type ShahOptions,
 } from './engine.js';
 import {
+  anteRange,
   botAction,
+  castMoreVote,
   checkShahSettings,
+  forfeitSplit,
   matchDeltas,
   maxLoss,
+  moreVoteOutcome,
   potPayouts,
   resultByLeaver,
-  resultByTotals,
   seatOutcomes,
+  tableTotals,
   timeoutAction,
   DEFAULT_MONEY_MODE,
+  MORE_VOTE_MS,
+  QUICK_SHAH_MATCHES,
+  SHAH_EXTRA_MATCHES,
   type MoneyMode,
+  type MoreVote,
   type SeatOutcome,
   type ShahSettings,
 } from './rooms.js';
@@ -112,13 +124,33 @@ export type ShahPlayer = { id: string; name: string; seat: number; joinedAt: num
 // матч, реальное время игры (без лобби и пауз), итог — после конца матча.
 export type ShahRatingState = { start: number; pending: number; activeMs: number; end?: number };
 
-export type ShahCloseReason =
+// Почему кончилась партия (игра до −24).
+export type MatchEndReason =
   | 'match_over' // кто-то дошёл до −24
-  | 'time_limit' // время стола вышло (вопрос 18)
+  | 'player_left'; // ушёл или не вернулся — его сторона проиграла (вопрос 19)
+
+// Почему закрылся стол.
+export type ShahCloseReason =
+  | 'matches_done' // сыграли все договорённые партии, «ещё 3» не согласились (вопрос 18)
   | 'player_left' // ушёл или не вернулся (вопрос 19)
+  | 'not_enough_coins' // у кого-то нет взноса на следующую партию
   | 'lobby_timeout' // игра не началась за 10 минут
   | 'nobody_ready' // «ГОТОВ» не нажал никто
   | 'creator_left'; // создатель вышел из лобби
+
+// Сыгранная партия стола. paid — итог выплачен (в одной транзакции с записью комнаты).
+export type MatchRecord = {
+  number: number; // номер партии за столом, с 1
+  reason: MatchEndReason;
+  outcomes: Record<string, SeatOutcome>;
+  deltas: Record<string, number>; // монеты за партию (+/−)
+  leftIds: string[];
+  totals: number[] | null; // штрафы сторон в конце; null — партию не начинали (ушли между партиями)
+  parties: number; // сколько раздач сыграно
+  forfeit: boolean; // ушли между партиями — партия засчитана без игры, взносов не брали
+  charged: boolean; // взносы этой партии были списаны
+  paid: boolean;
+};
 
 export type ShahRoom = {
   id: string;
@@ -137,26 +169,33 @@ export type ShahRoom = {
   readyDroppedIds: string[];
   practice: boolean; // за столом боты — монеты не двигаются
   botIds: string[];
-  match: ShahMatch | null;
-  charged: boolean; // взносы списаны (moneyMode 'pot')
-  settled: boolean; // итог матча выплачен
+  match: ShahMatch | null; // идущая партия, а между партиями — последняя сыгранная
+  matchNumber: number; // номер идущей (или последней) партии за столом
+  matchLimit: number; // сколько партий договорились сыграть: settings.matches + 3 за каждое «ещё 3»
+  series: MatchRecord[]; // сыгранные партии
+  charged: boolean; // взносы идущей партии списаны (moneyMode 'pot')
+  moreVote: MoreVote | null; // «добавить 3 партии?» (вопрос 18)
+  lastMoreVote: { result: 'approved' | 'rejected' | 'expired'; byName: string | null } | null;
+  ratingWritten: boolean; // рейтинг стола записан в базу
   missed: Record<string, number>; // пропуски хода подряд (§13a)
   awayAt: Record<string, number>; // «ушёл» — два пропуска подряд
   absenceUsedMs: Record<string, number>;
   absenceFreeMs: Record<string, number>;
-  clock: TableClock | null; // время стола (§20), с первой раздачи
   personalPause: (PersonalPause & { name: string }) | null; // §20a
   lastPersonalPause: { playerId: string; name: string; early: boolean } | null;
   pausesUsed: Record<string, number>;
-  partyDoneAt: number | null; // когда кончилась последняя партия — итог на экране
-  partyDoneFor: number | null; // номер этой партии
+  partyDoneAt: number | null; // когда кончилась последняя раздача — итог на экране
+  partyDoneFor: number | null; // номер этой раздачи (в идущей партии)
   dealShownAt: number | null; // когда в приложении закончится анимация раздачи
+  // Итог стола (когда закрыт): монеты, выигранные и проигранные партии у каждого.
   result: {
     reason: ShahCloseReason;
-    outcomes: Record<string, SeatOutcome>;
-    deltas: Record<string, number>;
     leftIds: string[];
-    totals: number[] | null;
+    poorIds: string[];
+    matches: number;
+    coins: Record<string, number>;
+    wins: Record<string, number>;
+    losses: Record<string, number>;
   } | null;
   rating?: Record<string, ShahRatingState> | null; // §19; тренировка — null (рейтинг не меняется)
   reactions: ReactionEntry[];
@@ -187,11 +226,11 @@ const LOBBY_WAIT_MS = env('GARBA_LOBBY_MS', LOBBY_MS);
 const GRACE_MS = env('GARBA_GRACE_MS', OFFLINE_GRACE_MS);
 const TEST_ABSENCE_MS = process.env.GARBA_DISCONNECT_MS ? Number(process.env.GARBA_DISCONNECT_MS) : null;
 const TEST_TURN_MS = process.env.GARBA_TURN_MS ? Number(process.env.GARBA_TURN_MS) : null;
-const TABLE_MINUTE_MS = env('GARBA_TABLE_MINUTE_MS', 60_000);
+const MORE_VOTE_WAIT_MS = env('GARBA_SHAH_VOTE_MS', MORE_VOTE_MS); // «ещё 3 партии?» — 30 с
 const PAUSE_MS = env('GARBA_PERSONAL_PAUSE_MS', 10_000);
 // «Минута» для времени в рейтинге ШАХ (§19.3): в живых проверках матч идёт секунды — минута короче.
 const RATING_MINUTE_MS = env('GARBA_SHAH_RATING_MINUTE_MS', 60_000);
-// После партии 3 секунды все смотрят итог — раздать нельзя (как §10.8 Гарбы).
+// После раздачи 3 секунды все смотрят итог — раздать нельзя (как §10.8 Гарбы).
 export const PARTY_SHOW_MS = env('GARBA_SHAH_SHOW_MS', 3_000);
 const BOT_DELAY_MS = env('GARBA_SHAH_BOT_MS', 900);
 const BOT_TICK_MS = env('GARBA_SHAH_BOT_TICK_MS', 250); // как часто боты смотрят, не их ли ход
@@ -219,7 +258,7 @@ export function registerShah(ctx: ShahContext) {
 
   for (const room of loadUnfinishedShahRooms<ShahRoom>(db)) {
     room.readyCheck = null; // после перезапуска «ГОТОВ» — заново
-    rooms.set(room.id, room);
+    rooms.set(room.id, normalizeRoom(room));
   }
   if (rooms.size > 0) console.log(`[SHAH] restored ${rooms.size} unfinished room(s)`);
 
@@ -267,22 +306,28 @@ export function registerShah(ctx: ShahContext) {
 
   // ——— сохранение и рассылка ———
 
-  // Комната и деньги её итога — одной транзакцией. Ошибку только пишем в журнал: вызывается
+  // Комната и деньги её итогов — одной транзакцией: каждая сыгранная партия выплачивается один раз
+  // (paid), рейтинг стола пишется один раз (ratingWritten). Ошибку только пишем в журнал: вызывается
   // после ответа и из таймеров; комната цела в памяти, следующее сохранение запишет её целиком.
   function persist(room: ShahRoom) {
     room.version++;
-    const settling = room.status === 'finished' && !!room.result && !!room.match && !room.settled && !room.practice;
+    const unpaid = room.practice ? [] : room.series.filter((m) => !m.paid);
+    const rate = !room.practice && room.status === 'finished' && !room.ratingWritten && room.series.length > 0;
     try {
       transaction(db, () => {
-        if (settling) {
-          applySettlement(room);
+        for (const record of unpaid) {
+          applySettlement(room, record);
+          record.paid = true;
+        }
+        if (rate) {
           applyRating(room);
-          room.settled = true;
+          room.ratingWritten = true;
         }
         saveShahRoom(db, room);
       });
     } catch (e) {
-      if (settling) room.settled = false;
+      for (const record of unpaid) record.paid = false;
+      if (rate) room.ratingWritten = false;
       console.error(`[SHAH ${room.id}] save to database failed:`, e);
     }
   }
@@ -407,8 +452,9 @@ export function registerShah(ctx: ShahContext) {
 
   // ——— начало матча ———
 
+  // Первая партия стола — из лобби, с вскрытием на туза.
   function startMatch(room: ShahRoom) {
-    // «а» вопроса 17: взнос списывается при старте. Кому не хватает — выходит из лобби.
+    // Взнос первой партии списывается при старте (вопрос 17). Кому не хватает — выходит из лобби.
     if (!room.practice && room.moneyMode === 'pot') {
       const poor = humans(room).filter((p) => (getAccount(db, p.id)?.balance ?? 0) < room.settings.ante);
       if (poor.length > 0) {
@@ -423,8 +469,18 @@ export function registerShah(ctx: ShahContext) {
     }
     sortSeats(room);
     const now = Date.now();
-    const before = { status: room.status, match: room.match, charged: room.charged, readyCheck: room.readyCheck, rating: room.rating };
+    const before = {
+      status: room.status,
+      match: room.match,
+      charged: room.charged,
+      readyCheck: room.readyCheck,
+      rating: room.rating,
+      matchNumber: room.matchNumber,
+      matchLimit: room.matchLimit,
+    };
     room.match = createMatch(room.players.map((p) => p.id), shuffle(createShahDeck()), room.options);
+    room.matchNumber = 1;
+    room.matchLimit = room.settings.matches;
     room.status = 'started';
     room.startedAt = now;
     room.readyCheck = null;
@@ -451,7 +507,7 @@ export function registerShah(ctx: ShahContext) {
       return;
     }
     const dealer = room.players[room.match.dealerSeat];
-    log(room, `МАТЧ НАЧАЛСЯ, ${room.capacity} игроков, взнос ${room.settings.ante}, первый сдающий ${dealer.name}`);
+    log(room, `СТОЛ НАЧАЛСЯ, ${room.capacity} игроков, взнос ${room.settings.ante}, партий ${room.matchLimit}, первый сдающий ${dealer.name}`);
     broadcast(room.id).catch((e) => console.error(`[SHAH ${room.id}] broadcast failed:`, e));
   }
 
@@ -461,38 +517,55 @@ export function registerShah(ctx: ShahContext) {
     room.status = 'finished';
     room.finishedAt = Date.now();
     room.readyCheck = null;
-    room.result = { reason, outcomes: {}, deltas: {}, leftIds: [], totals: null };
+    room.result = { reason, leftIds: [], poorIds: [], matches: 0, coins: {}, wins: {}, losses: {} };
     log(room, `лобби закрыто: ${reason}`);
   }
 
-  // Конец матча: sides — итог сторон (null — ничья). Деньги пишутся в persist, одной транзакцией.
-  function finishMatch(room: ShahRoom, reason: ShahCloseReason, sides: SideResult[] | null, leftIds: string[] = []) {
-    if (room.status !== 'started' || !room.match) return;
-    const ids = room.match.players;
+  // Конец партии: sides — итог сторон (null — ничья). Монеты — в persist, одной транзакцией;
+  // рейтинг за партию (§19.2) копится до конца стола.
+  function endMatch(room: ShahRoom, reason: MatchEndReason, sides: SideResult[] | null, leftIds: string[] = [], forfeit = false) {
+    const ids = room.players.map((p) => p.id);
     const outcomes = seatOutcomes(room.capacity, sides);
     const deltas = matchDeltas(room.capacity, room.settings.ante, room.moneyMode, outcomes);
+    const record: MatchRecord = {
+      number: room.matchNumber,
+      reason,
+      outcomes: Object.fromEntries(ids.map((id, i) => [id, outcomes[i]])),
+      deltas: Object.fromEntries(ids.map((id, i) => [id, room.practice ? 0 : deltas[i]])),
+      leftIds,
+      totals: forfeit ? null : [...room.match!.totals],
+      parties: forfeit ? 0 : room.match!.history.length,
+      forfeit,
+      charged: room.charged,
+      paid: false,
+    };
+    room.series.push(record);
+    room.charged = false;
+    addPending(room, matchRatingDeltas(room.capacity, ratedPlayers(room), record.outcomes));
+    const text = ids.map((id, i) => `${nameOf(room, id)} ${outcomes[i]} ${deltas[i] >= 0 ? '+' : ''}${deltas[i]}`).join(', ');
+    log(room, `ПАРТИЯ ${record.number}/${room.matchLimit} ОКОНЧЕНА (${reason}${forfeit ? ', без игры' : ''}${room.practice ? ', тренировка' : ''}): ${text}`);
+  }
+
+  // Стол закрыт: итог по всем партиям, рейтинг стола (§19.3) — × время игры, потеря не больше 0.25.
+  function closeTable(room: ShahRoom, reason: ShahCloseReason, leftIds: string[] = [], poorIds: string[] = []) {
+    if (room.status !== 'started') return;
+    const totals = tableTotals(room.players.map((p) => p.id), room.series);
     room.status = 'finished';
     room.finishedAt = Date.now();
     room.personalPause = null;
-    room.result = {
-      reason,
-      outcomes: Object.fromEntries(ids.map((id, i) => [id, outcomes[i]])),
-      deltas: Object.fromEntries(ids.map((id, i) => [id, deltas[i]])),
-      leftIds,
-      totals: [...room.match.totals],
-    };
+    room.moreVote = null;
+    room.result = { reason, leftIds, poorIds, matches: room.series.length, ...totals };
     turnClocks.delete(room.id);
-    const text = ids.map((id, i) => `${nameOf(room, id)} ${outcomes[i]} ${deltas[i] >= 0 ? '+' : ''}${deltas[i]}`).join(', ');
-    log(room, `МАТЧ ОКОНЧЕН (${reason}${room.practice ? ', тренировка' : ''}): ${text}`);
+    const text = room.players.map((p) => `${p.name} ${totals.coins[p.id] >= 0 ? '+' : ''}${totals.coins[p.id]}`).join(', ');
+    log(room, `СТОЛ ЗАКРЫТ (${reason}), партий ${room.series.length}: ${text}`);
     settleRating(room);
   }
 
-  // Рейтинг в конце матча (§19.2, §19.3): + итог матча, всё накопленное × время игры, потеря не
+  // Рейтинг в конце стола (§19.3): всё накопленное за раздачи и партии × время игры, потеря не
   // больше 0.25. В базу — в persist, одной транзакцией с монетами (applyRating).
   function settleRating(room: ShahRoom) {
     const rated = ratedPlayers(room);
-    if (rated.length === 0 || !room.result) return;
-    addPending(room, matchRatingDeltas(room.capacity, rated, room.result.outcomes));
+    if (rated.length === 0 || room.series.length === 0) return;
     const text: string[] = [];
     for (const p of rated) {
       const r = ratingState(room, p.id)!;
@@ -503,46 +576,62 @@ export function registerShah(ctx: ShahContext) {
     log(room, `рейтинг ШАХ: ${text.join(', ')}`);
   }
 
-  // Итог матча и новое мастерство — в базу (внутри транзакции persist, один раз: room.settled).
+  // Итог стола и новое мастерство — в базу (внутри транзакции persist, один раз: room.ratingWritten).
   function applyRating(room: ShahRoom) {
     const r = room.result!;
     const now = room.finishedAt ?? Date.now();
-    for (const id of room.match!.players) {
-      const st = room.rating?.[id];
+    const last = room.series.at(-1);
+    const parties = room.series.reduce((sum, m) => sum + m.parties, 0);
+    for (const p of room.players) {
+      const st = room.rating?.[p.id];
       if (!st || st.end === undefined) continue;
       writeShahResult(db, {
         roomId: room.id,
-        playerId: id,
+        playerId: p.id,
         format: room.capacity,
-        outcome: r.outcomes[id] ?? 'none',
-        coins: r.deltas[id] ?? 0,
-        parties: room.match!.history.length,
+        outcome: last?.outcomes[p.id] ?? 'none',
+        coins: r.coins[p.id] ?? 0,
+        parties,
+        matches: room.series.length,
+        wins: r.wins[p.id] ?? 0,
+        losses: r.losses[p.id] ?? 0,
         skillBefore: st.start,
         skillAfter: st.end,
         activeMs: st.activeMs,
         finishedAt: now,
       });
       // Кеш — заново из базы: транзакция прошла — новое мастерство, откатилась — прежнее.
-      skills.delete(id);
+      skills.delete(p.id);
     }
   }
 
-  // Выплата итога (внутри транзакции persist). «а»: банк — победителям; «б»: проигравший платит
-  // каждому победителю, сколько есть (в минус счёт не уходит).
-  function applySettlement(room: ShahRoom) {
-    const r = room.result!;
-    const ids = room.match!.players;
+  // Выплата итога партии (внутри транзакции persist). Взносы списаны — банк выигравшим; ушли между
+  // партиями (взносов не брали) — проигравшие платят взнос, сколько есть, выигравшие делят
+  // (forfeitSplit). «б» вопроса 17 (не выбран): проигравший платит каждому победителю.
+  function applySettlement(room: ShahRoom, record: MatchRecord) {
+    const ids = room.players.map((p) => p.id);
     const ante = room.settings.ante;
-    if (room.moneyMode === 'pot') {
-      if (!room.charged) return;
-      const payouts = potPayouts(room.capacity, ante, ids.map((id) => r.outcomes[id]));
+    const outcomes = ids.map((id) => record.outcomes[id]);
+    if (room.moneyMode === 'pot' && record.charged) {
+      const payouts = potPayouts(room.capacity, ante, outcomes);
       ids.forEach((id, i) => {
         if (payouts[i] > 0) creditCoins(db, id, payouts[i]);
       });
       return;
     }
-    const winners = ids.filter((id) => r.outcomes[id] === 'win');
-    const losers = ids.filter((id) => r.outcomes[id] === 'lose');
+    if (room.moneyMode === 'pot' && !record.forfeit) return; // взносов не было — и платить нечего
+    if (room.moneyMode === 'pot') {
+      const taken = ids.map((id, i) => (outcomes[i] === 'lose' ? debitUpTo(db, id, ante) : 0));
+      const deltas = forfeitSplit(outcomes, taken);
+      ids.forEach((id, i) => {
+        if (deltas[i] > 0) creditCoins(db, id, deltas[i]);
+      });
+      record.deltas = Object.fromEntries(ids.map((id, i) => [id, deltas[i]]));
+      if (room.result) Object.assign(room.result, tableTotals(ids, room.series));
+      return;
+    }
+    const winners = ids.filter((id) => record.outcomes[id] === 'win');
+    const losers = ids.filter((id) => record.outcomes[id] === 'lose');
     if (winners.length === 0 || losers.length === 0) return;
     const actual: Record<string, number> = Object.fromEntries(ids.map((id) => [id, 0]));
     for (const loser of losers) {
@@ -554,10 +643,12 @@ export function registerShah(ctx: ShahContext) {
         actual[w] += each;
       }
     }
-    r.deltas = actual;
+    record.deltas = actual;
+    if (room.result) Object.assign(room.result, tableTotals(ids, room.series));
   }
 
-  // После любого изменения матча: партия кончилась — запомнить; матч окончен или время вышло — закрыть.
+  // После любого изменения партии: раздача кончилась — запомнить; партия окончена — итог, и если
+  // договорённые партии сыграны — вопрос «ещё 3?» (вопрос 18).
   function afterMatchChange(room: ShahRoom) {
     const match = room.match!;
     const party = match.party;
@@ -565,22 +656,63 @@ export function registerShah(ctx: ShahContext) {
       room.partyDoneFor = party.number;
       room.partyDoneAt = Date.now();
       const res = party.result!;
-      // Рейтинг за партию (§19.1) — копится до конца матча; partyDoneFor не даёт засчитать дважды.
+      // Рейтинг за раздачу (§19.1) — копится до конца стола; partyDoneFor не даёт засчитать дважды.
       addPending(room, partyDeltas(room.capacity, ratedPlayers(room), res));
-      log(room, `партия ${res.number}: очки ${res.points.join(':')}, штрафы ${res.penalties.join('/')}, счёт ${res.totals.join('/')}${res.draw ? ', ничья — следующая ×' + match.multiplier : ''}`);
+      log(room, `партия ${room.matchNumber}, раздача ${res.number}: очки ${res.points.join(':')}, штрафы ${res.penalties.join('/')}, счёт ${res.totals.join('/')}${res.draw ? ', ничья — следующая ×' + match.multiplier : ''}`);
     }
-    if (match.over) return finishMatch(room, 'match_over', match.result);
-    if (party?.phase === 'done' && room.clock?.reached) return finishMatch(room, 'time_limit', resultByTotals(match.totals));
+    if (!match.over || room.series.some((m) => m.number === room.matchNumber)) return;
+    endMatch(room, 'match_over', match.result);
+    if (room.series.length >= room.matchLimit) {
+      room.moreVote = { startedAt: Date.now(), yesIds: [], noIds: [] };
+      log(room, `сыграно ${room.series.length} из ${room.matchLimit} — вопрос «ещё ${SHAH_EXTRA_MATCHES} партии?»`);
+      settleMoreVote(room);
+    }
   }
 
-  // Ушёл (сам или кончился запас на отлучку): его сторона проиграла матч (вопрос 19 «а»).
+  // «Ещё 3 партии?»: все «да» — играем дальше, одно «нет» или 30 с — стол закрыт. true — что-то решилось.
+  function settleMoreVote(room: ShahRoom): boolean {
+    const vote = room.moreVote;
+    if (!vote) return false;
+    const voters = humans(room).map((p) => p.id);
+    const outcome = moreVoteOutcome(vote, voters, Date.now(), MORE_VOTE_WAIT_MS);
+    if (outcome === 'wait') return false;
+    const noNames = room.players.filter((p) => vote.noIds.includes(p.id)).map((p) => p.name);
+    room.moreVote = null;
+    room.lastMoreVote = { result: outcome, byName: noNames[0] ?? null };
+    if (outcome === 'approved') {
+      room.matchLimit += SHAH_EXTRA_MATCHES;
+      log(room, `все согласились — ещё ${SHAH_EXTRA_MATCHES} партии, всего ${room.matchLimit}`);
+      return true;
+    }
+    log(room, outcome === 'rejected' ? `${noNames.join(', ')} — «нет», стол закрывается` : 'ответили не все — стол закрывается');
+    closeTable(room, 'matches_done');
+    return true;
+  }
+
+  // Ушёл (сам или кончился запас на отлучку), вопрос 19 — владелец 05.11.2026:
+  // - посреди партии — его сторона проиграла эту партию (даже если выигрывала по штрафам);
+  // - между партиями — следующая партия засчитана проигранной его стороне (взносы — проигравшие
+  //   платят выигравшим), сам — бан;
+  // - договорённые партии сыграны, идёт «ещё 3?» — это «нет»: стол закрывается без проигрыша и бана.
+  // Без него играть некому — стол закрывается. Бан за выход — только тому, кто вышел сам.
   function leaveMatch(room: ShahRoom, leaverIds: string[], voluntary: boolean) {
-    const seats = leaverIds.map((id) => room.match!.players.indexOf(id)).filter((s) => s >= 0);
+    const names = leaverIds.map((id) => nameOf(room, id)).join(', ');
+    if (room.moreVote) {
+      room.moreVote = null;
+      room.lastMoreVote = { result: 'rejected', byName: nameOf(room, leaverIds[0]) };
+      log(room, `${names} ${voluntary ? 'вышел' : 'не вернулся'} во время вопроса «ещё 3?» — стол закрывается`);
+      closeTable(room, 'matches_done', leaverIds);
+      return;
+    }
+    const seats = leaverIds.map((id) => room.players.findIndex((p) => p.id === id)).filter((s) => s >= 0);
     if (voluntary && !room.practice) {
       for (const id of leaverIds) setLeaveRecord(db, id, nextLeaveBan(leaveRecordOf(db, id), Date.now()));
     }
-    log(room, `${leaverIds.map((id) => nameOf(room, id)).join(', ')} ${voluntary ? 'вышел' : 'не вернулся'} — его сторона проиграла`);
-    finishMatch(room, 'player_left', resultByLeaver(room.capacity, seats), leaverIds);
+    const between = room.match!.over;
+    log(room, `${names} ${voluntary ? 'вышел' : 'не вернулся'}${between ? ' между партиями' : ''} — его сторона проиграла партию`);
+    if (between) room.matchNumber++;
+    endMatch(room, 'player_left', resultByLeaver(room.capacity, seats), leaverIds, between);
+    closeTable(room, 'player_left', leaverIds);
   }
 
   // ——— ходы ———
@@ -591,16 +723,54 @@ export function registerShah(ctx: ShahContext) {
     if (stageOf(room) !== 'awaiting_deal') return { status: 409, body: { error: 'not time to deal' } };
     const dealer = dealerOf(room)!;
     if (dealer.id !== playerId) return { status: 403, body: { error: 'only dealer can deal', dealerId: dealer.id } };
+    if (room.moreVote) return { status: 409, body: { error: 'more matches vote in progress' } };
     const showLeft = (room.partyDoneAt ?? 0) + PARTY_SHOW_MS - Date.now();
     if (room.match!.party && showLeft > 0) return { status: 409, body: { error: 'party result on show', msLeft: showLeft } };
     if (room.personalPause) return { status: 409, body: { error: 'personal pause in progress' } };
-    if (room.clock?.reached) return { status: 409, body: { error: 'time is up' } };
+    if (room.match!.over) {
+      const started = startNextMatch(room);
+      if (started.status !== 200 || room.status !== 'started') return started;
+    }
     const now = Date.now();
     room.match = startParty(room.match!, shuffle(createShahDeck()));
     room.dealShownAt = now + dealAnimMs(room.capacity);
-    if (!room.clock && room.settings.timeLimitMinutes) room.clock = startClock(room.settings.timeLimitMinutes, now, TABLE_MINUTE_MS);
     const party = room.match.party!;
-    log(room, `партия ${party.number}: сдаёт ${dealer.name}, козырь ${party.trump}`);
+    log(room, `партия ${room.matchNumber}, раздача ${party.number}: сдаёт ${dealer.name}, козырь ${party.trump}`);
+    return { status: 200, body: {} };
+  }
+
+  // Следующая партия стола (сдающий нажал «РАЗДАТЬ» после конца партии): взнос — с каждого, одной
+  // транзакцией с записью комнаты. У кого нет взноса — стол закрывается (решено при реализации).
+  function startNextMatch(room: ShahRoom): Result {
+    if (room.series.length >= room.matchLimit) return { status: 409, body: { error: 'all matches played' } };
+    if (!room.practice && room.moneyMode === 'pot') {
+      const poor = humans(room).filter((p) => (getAccount(db, p.id)?.balance ?? 0) < room.settings.ante);
+      if (poor.length > 0) {
+        log(room, `нет взноса на следующую партию: ${poor.map((p) => p.name).join(', ')}`);
+        closeTable(room, 'not_enough_coins', [], poor.map((p) => p.id));
+        return { status: 200, body: {} };
+      }
+    }
+    const before = { match: room.match, matchNumber: room.matchNumber, charged: room.charged, partyDoneFor: room.partyDoneFor };
+    room.match = nextMatch(room.match!);
+    room.matchNumber++;
+    room.partyDoneFor = null;
+    try {
+      transaction(db, () => {
+        if (!room.practice && room.moneyMode === 'pot') {
+          for (const p of humans(room)) {
+            if (!chargeCoins(db, p.id, room.settings.ante)) throw new Error(`not enough coins: ${p.name}`);
+          }
+          room.charged = true;
+        }
+        saveShahRoom(db, room);
+      });
+    } catch (e) {
+      Object.assign(room, before);
+      console.error(`[SHAH ${room.id}] next match failed:`, e);
+      return { status: 409, body: { error: 'not enough coins for next match' } };
+    }
+    log(room, `ПАРТИЯ ${room.matchNumber}/${room.matchLimit} НАЧАЛАСЬ, взнос ${room.settings.ante}`);
     return { status: 200, body: {} };
   }
 
@@ -615,7 +785,7 @@ export function registerShah(ctx: ShahContext) {
 
   // Что сервер сейчас ждёт и от кого — для часов хода, таймера и ботов.
   function awaited(room: ShahRoom): { key: string; playerId: string; deal: boolean; startAt: number } | null {
-    if (room.status !== 'started' || !room.match || isPaused(room) || room.personalPause) return null;
+    if (room.status !== 'started' || !room.match || isPaused(room) || room.personalPause || room.moreVote) return null;
     const match = room.match;
     if (stageOf(room) === 'awaiting_deal') {
       const dealer = dealerOf(room)!;
@@ -623,12 +793,12 @@ export function registerShah(ctx: ShahContext) {
       const startAt = first
         ? (room.startedAt ?? 0) + revealMs(match.firstDealer.reveals.length)
         : (room.partyDoneAt ?? 0) + PARTY_SHOW_MS;
-      return { key: `deal:${match.history.length + 1}`, playerId: dealer.id, deal: true, startAt };
+      return { key: `deal:${room.matchNumber}:${match.history.length + 1}`, playerId: dealer.id, deal: true, startAt };
     }
     const aw = awaitedOf(match);
     if (!aw) return null;
     const p = match.party!;
-    const key = `move:${p.number}:${p.tricksPlayed}:${p.trick?.moves.length ?? 0}:${aw.seat}:${aw.awaiting}`;
+    const key = `move:${room.matchNumber}:${p.number}:${p.tricksPlayed}:${p.trick?.moves.length ?? 0}:${aw.seat}:${aw.awaiting}`;
     return { key, playerId: aw.playerId, deal: false, startAt: room.dealShownAt ?? 0 };
   }
 
@@ -661,7 +831,7 @@ export function registerShah(ctx: ShahContext) {
       : null;
     const avoid = viewerId ? ctx.avoidIds(viewerId) : new Set<string>();
     const voters = humans(room).map((p) => p.id);
-    const vote = room.clock?.vote ?? null;
+    const vote = room.moreVote;
     const showLeft = room.match?.party ? Math.max(0, (room.partyDoneAt ?? 0) + PARTY_SHOW_MS - now) : 0;
     const pauseUsed = viewerId ? (room.pausesUsed[viewerId] ?? 0) : 0;
 
@@ -691,7 +861,7 @@ export function registerShah(ctx: ShahContext) {
         side: sideOf(room.capacity, p.seat),
         bot: !!p.bot,
         ready: room.readyCheck?.readyIds.includes(p.id) ?? false,
-        // Рейтинг ШАХ (§19): за столом не меняется — на начало матча, после матча — итог;
+        // Рейтинг ШАХ (§19): за столом не меняется — на начало стола, после стола — итог;
         // ratingStart — для «4.0 → 4.1» в итогах. В лобби и на тренировке — как в базе.
         rating: shownRating(room.rating?.[p.id] ? (room.rating[p.id].end ?? room.rating[p.id].start) : skillOf(p.id)),
         ratingStart: room.rating?.[p.id] ? shownRating(room.rating[p.id].start) : null,
@@ -704,7 +874,7 @@ export function registerShah(ctx: ShahContext) {
       lobbySecondsLeft: room.status === 'lobby' ? lobbySecondsLeft(room.createdAt, now, LOBBY_WAIT_MS) : null,
       dealerId: dealerOf(room)?.id ?? null,
       partyShowLeftMs: showLeft,
-      // Вскрытие на туза в начале матча: сколько ещё идёт анимация (открыл стол позже — догоняет).
+      // Вскрытие на туза в начале стола: сколько ещё идёт анимация (открыл стол позже — догоняет).
       revealShowLeftMs:
         room.status === 'started' && room.match && !room.match.party
           ? Math.max(0, (room.startedAt ?? 0) + revealMs(room.match.firstDealer.reveals.length) - now)
@@ -713,23 +883,23 @@ export function registerShah(ctx: ShahContext) {
       awaitedIds: a ? [a.playerId] : [],
       turnSecondsLeft: turnLeft,
       pause: paused,
-      tableClock: room.clock
+      // Партии стола (вопрос 18): какая идёт, сколько договорились, сыгранные — с итогом каждой.
+      matchNumber: room.matchNumber,
+      matchLimit: room.matchLimit,
+      matchOver: room.status === 'started' && !!room.match?.over,
+      series: room.series.map(({ paid: _paid, charged: _charged, ...m }) => m),
+      moreVote: vote
         ? {
-            minutes: room.clock.minutes,
-            limitMs: room.clock.limitMs,
-            playedMs: playedMs(room.clock, now),
-            secondsLeft: Math.ceil(remainingMs(room.clock, now) / 1000),
-            paused: room.clock.runningSince === null,
-            extensions: room.clock.extensions,
-            reached: room.clock.reached,
-            vote: vote
-              ? { forEndsAt: vote.forEndsAt, round: vote.round, votedCount: vote.yes.length + vote.no.length, voterCount: voters.length }
-              : null,
-            lastVote: room.clock.lastVote,
+            add: SHAH_EXTRA_MATCHES,
+            secondsLeft: Math.max(0, Math.ceil((vote.startedAt + MORE_VOTE_WAIT_MS - now) / 1000)),
+            yesIds: vote.yesIds,
+            votedCount: vote.yesIds.length + vote.noIds.length,
+            voterCount: voters.length,
           }
         : null,
-      myExtendVote: vote && viewerId ? (vote.yes.includes(viewerId) ? 'yes' : vote.no.includes(viewerId) ? 'no' : null) : null,
-      myCanVoteExtend: !!vote && !!viewerId && voters.includes(viewerId) && !vote.yes.includes(viewerId) && !vote.no.includes(viewerId),
+      lastMoreVote: room.lastMoreVote,
+      myMoreVote: vote && viewerId ? (vote.yesIds.includes(viewerId) ? 'yes' : vote.noIds.includes(viewerId) ? 'no' : null) : null,
+      myCanVoteMore: !!vote && !!viewerId && voters.includes(viewerId) && !vote.yesIds.includes(viewerId) && !vote.noIds.includes(viewerId),
       personalPause: room.personalPause
         ? { playerId: room.personalPause.playerId, name: room.personalPause.name, secondsLeft: pauseSecondsLeft(room.personalPause, now) }
         : null,
@@ -764,8 +934,8 @@ export function registerShah(ctx: ShahContext) {
       gone: false,
       roomPaused: isPaused(room),
       activePause: !!room.personalPause,
-      voteActive: false,
-      timeUp: !!room.clock?.reached,
+      voteActive: !!room.moreVote,
+      timeUp: false,
       used: room.pausesUsed[playerId] ?? 0,
       tournament: false,
     });
@@ -830,13 +1000,17 @@ export function registerShah(ctx: ShahContext) {
       practice: false,
       botIds: [],
       match: null,
+      matchNumber: 0,
+      matchLimit: settings.matches,
+      series: [],
       charged: false,
-      settled: false,
+      moreVote: null,
+      lastMoreVote: null,
+      ratingWritten: false,
       missed: {},
       awayAt: {},
       absenceUsedMs: {},
       absenceFreeMs: {},
-      clock: null,
       personalPause: null,
       lastPersonalPause: null,
       pausesUsed: {},
@@ -849,7 +1023,7 @@ export function registerShah(ctx: ShahContext) {
       finishedAt: null,
     };
     rooms.set(room.id, room);
-    log(room, `создана: ${capacity} игроков, взнос ${settings.ante}${isPublic ? ', открытая' : ''}`);
+    log(room, `создана: ${capacity} игроков, взнос ${settings.ante}, партий ${settings.matches}${isPublic ? ', открытая' : ''}`);
     return room;
   }
 
@@ -959,6 +1133,8 @@ export function registerShah(ctx: ShahContext) {
       settings: room.settings,
       practice: room.practice,
       partyNumber: room.match?.party?.number ?? 0,
+      matchNumber: room.matchNumber,
+      matchLimit: room.matchLimit,
       totals: room.match?.totals ?? [],
       spectators,
     }));
@@ -997,7 +1173,7 @@ export function registerShah(ctx: ShahContext) {
   });
 
   // «Быстрая игра»: сесть в самую заполненную открытую комнату (того же размера, если прислали),
-  // нет такой — создать открытую: capacity (без него — 4), взнос 100.
+  // нет такой — создать открытую: capacity (без него — 4), самый маленький взнос формата, 1 партия.
   app.post('/shah/rooms/quick', (req, res) => {
     const account = me(res);
     const raw = req.body?.capacity;
@@ -1007,7 +1183,8 @@ export function registerShah(ctx: ShahContext) {
     if (busy) return send(res, busy);
     const open = openRoomsFor(account, capacity)[0];
     if (open) return send(res, join(open, account));
-    const check = checkShahSettings({ capacity: capacity ?? 4, ante: 100, isPublic: true });
+    const size = (capacity ?? 4) as ShahFormat;
+    const check = checkShahSettings({ capacity: size, ante: anteRange(size).min, matches: QUICK_SHAH_MATCHES, isPublic: true });
     if (!check.ok) return res.status(500).json(check);
     const poor = moneyError(account, { capacity: check.capacity, settings: check.settings, moneyMode: DEFAULT_MONEY_MODE });
     if (poor) return send(res, poor);
@@ -1074,7 +1251,7 @@ export function registerShah(ctx: ShahContext) {
       if (id === room.creatorId || humans(room).length === 0) closeLobby(room, 'creator_left');
       return res.json({ left: true });
     }
-    // Начатый матч — только между партиями (как в Гарбе §13b); сторона ушедшего проигрывает.
+    // Начатый стол — только между раздачами (как в Гарбе §13b); сторона ушедшего проигрывает партию.
     if (stageOf(room) !== 'awaiting_deal') return res.status(409).json({ error: 'can leave only between deals' });
     leaveMatch(room, [id], true);
     return res.json({ left: true });
@@ -1143,17 +1320,15 @@ export function registerShah(ctx: ShahContext) {
     return res.json(publicRoom(room, me(res).id));
   });
 
-  app.post('/shah/rooms/:id/extend-vote', (req, res) => {
+  // «Добавить 3 партии?» (вопрос 18): yes | no — все люди за столом; одно «нет» — стол закрывается.
+  app.post('/shah/rooms/:id/more-vote', (req, res) => {
     const room = roomFor(req, res);
     if (!room || !seatedOrRefuse(room, res)) return;
-    if (!room.clock) return res.status(409).json({ error: 'no extension vote' });
-    const choice = req.body?.choice;
-    if (choice !== 'yes' && choice !== 'no') return res.status(400).json({ error: 'bad choice' });
-    const round = req.body?.round === undefined ? undefined : Number(req.body.round);
-    const voters = humans(room).map((p) => p.id);
-    const r = cast(room.clock, voters, me(res).id, choice, Number(req.body?.forEndsAt), Date.now(), round);
-    if (!r.ok) return res.status(409).json({ error: r.error });
-    room.clock = settle(r.clock, voters, Date.now());
+    if (!room.moreVote) return res.status(409).json({ error: 'no more matches vote' });
+    const r = castMoreVote(room.moreVote, humans(room).map((p) => p.id), me(res).id, req.body?.choice);
+    if (!r.ok) return res.status(r.error === 'bad choice' ? 400 : 409).json({ error: r.error });
+    room.moreVote = r.vote;
+    settleMoreVote(room);
     return res.json(publicRoom(room, me(res).id));
   });
 
@@ -1283,7 +1458,7 @@ export function registerShah(ctx: ShahContext) {
     }
   }), 1000);
 
-  // Присутствие (§13), запас на отлучку, личная пауза, время стола (§20).
+  // Присутствие (§13), запас на отлучку, личная пауза, «ещё 3 партии?».
   setInterval(guarded('presence', () => {
     const now = Date.now();
     for (const room of rooms.values()) {
@@ -1313,18 +1488,7 @@ export function registerShah(ctx: ShahContext) {
         endPersonalPause(room, false);
         dirty = true;
       }
-      if (room.clock) {
-        const before = JSON.stringify(room.clock);
-        let c = setRunning(room.clock, !isPaused(room) && !room.personalPause, now);
-        if (roundDue(c, now)) c = ask(c, now);
-        c = settle(c, humans(room).map((p) => p.id), now);
-        room.clock = c;
-        if (JSON.stringify(c) !== before) dirty = true; // вопрос, итог голоса, пауза часов, время вышло
-        if (c.reached && stageOf(room) === 'awaiting_deal') {
-          finishMatch(room, 'time_limit', resultByTotals(room.match!.totals));
-          dirty = true;
-        }
-      }
+      if (settleMoreVote(room)) dirty = true;
       if (dirty) changed(room);
     }
   }), 1000);
@@ -1458,3 +1622,21 @@ export function registerShah(ctx: ShahContext) {
 }
 
 const SHAH_SIZES: readonly number[] = [2, 3, 4, 6];
+
+// Комната из базы, сохранённая до 05.11.2026 (один матч, время стола): поля серии партий — по
+// умолчанию; идущая игра — первая и единственная партия стола. На сервере ШАХ тогда был выключен,
+// так что это только локальные базы.
+function normalizeRoom(room: ShahRoom): ShahRoom {
+  const old = room as ShahRoom & { clock?: unknown; settled?: unknown; settings: ShahSettings & { timeLimitMinutes?: unknown } };
+  old.settings.matches ??= 1;
+  delete old.settings.timeLimitMinutes;
+  delete old.clock;
+  delete old.settled;
+  room.matchNumber ??= room.match ? 1 : 0;
+  room.matchLimit ??= room.settings.matches;
+  room.series ??= [];
+  room.moreVote ??= null;
+  room.lastMoreVote ??= null;
+  room.ratingWritten ??= false;
+  return room;
+}

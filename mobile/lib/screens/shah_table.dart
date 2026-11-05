@@ -44,36 +44,36 @@ class _ShahTableScreenState extends State<ShahTableScreen> {
   int seenMovesParty = -1;
   int seenMovesTotal = 0;
 
-  // Вскрытие на туза в начале матча: сколько карт уже открыто.
+  // Вскрытие на туза в начале стола: сколько карт уже открыто.
   bool revealStarted = false;
   bool revealDone = false;
   int revealCount = 0;
   Timer? revealTimer;
 
-  // Раздача по одной карте: какую партию показываем и сколько карт уже роздано.
+  // Раздача по одной карте: какую раздачу показываем (партия × 1000 + раздача) и сколько карт уже роздано.
   int? dealNumber;
   int dealProgress = 0;
   int dealTotal = 0;
   Timer? dealTimer;
   bool get dealing => dealProgress < dealTotal;
 
-  // Итог партии — окно; закрытое нажатием больше не показываем.
+  // Итог раздачи — окно; закрытое нажатием больше не показываем.
   int? partyDoneNumber;
-  // Окно итога партии — снимок на момент конца партии: держится 7 с или до нажатия, даже если
-  // сдающий (бот) уже раздал следующую партию.
+  // Окно итога раздачи — снимок на момент конца раздачи: держится 7 с или до нажатия, даже если
+  // сдающий (бот) уже раздал следующую.
   Map<String, dynamic>? partyPopupData;
   Timer? partyTimer;
   Timer? partyHideTimer;
 
-  // Итог матча — окно после окна партии; закрыто — итоги под столом.
+  // Итог партии (до −24) и итог стола — окно после окна раздачи; закрыто — итоги под столом.
   bool matchHeld = true;
-  bool matchClosed = false;
-  bool matchSeen = false;
+  bool matchClosed = true;
+  String? matchKey;
   Timer? matchTimer;
 
-  // Время стола (§20): итог голосования за продление — надпись на несколько секунд.
-  String? clockVoteKey;
-  DateTime? clockVoteAt;
+  // «Ещё 3 партии?»: итог голосования — надпись на несколько секунд.
+  String? moreVoteKey;
+  DateTime? moreVoteAt;
 
   String get myId => Session.id;
   String get base => '$apiBase/shah/rooms/${widget.roomCode}';
@@ -143,7 +143,7 @@ class _ShahTableScreenState extends State<ShahTableScreen> {
     if (!mounted || isStaleRoom(room, data)) return;
     final first = room == null;
     applyReactions((data['reactions'] as List?) ?? const []);
-    noteClockVote(data, first);
+    noteMoreVote(data, first);
     final game = gameOf(data);
     final party = partyOf(game);
     setState(() {
@@ -178,14 +178,17 @@ class _ShahTableScreenState extends State<ShahTableScreen> {
     firstReactions = false;
   }
 
-  void noteClockVote(Map<String, dynamic> data, bool first) {
-    final clock = data['tableClock'];
-    final last = clock is Map ? clock['lastVote'] : null;
-    final key = last is Map ? '${last['forEndsAt']}:${last['round']}:${last['result']}' : null;
-    if (key == clockVoteKey) return;
-    clockVoteKey = key;
-    clockVoteAt = first || key == null ? null : DateTime.now();
+  void noteMoreVote(Map<String, dynamic> data, bool first) {
+    final last = data['lastMoreVote'];
+    final key = last is Map ? '${data['matchLimit']}:${last['result']}' : null;
+    if (key == moreVoteKey) return;
+    moreVoteKey = key;
+    moreVoteAt = first || key == null ? null : DateTime.now();
   }
+
+  // Номер раздачи вместе с номером партии: в новой партии раздачи снова с 1.
+  int dealKey(Map<String, dynamic> data, Map<String, dynamic> party) =>
+      ((data['matchNumber'] as num?)?.toInt() ?? 1) * 1000 + (party['number'] as num).toInt();
 
   // Вскрытие на туза (§5): карты по кругу, 0,9 с на карту, потом 1,6 с — как в Гарбе.
   // Открыл стол позже — догоняем по revealShowLeftMs от сервера.
@@ -231,7 +234,7 @@ class _ShahTableScreenState extends State<ShahTableScreen> {
   // карту — те же числа, что у сервера (turnTimer.ts): пока идёт анимация, часы хода стоят.
   void updateDeal(Map<String, dynamic> data, Map<String, dynamic>? party) {
     if (party == null) return;
-    final number = (party['number'] as num).toInt();
+    final number = dealKey(data, party);
     if (number == dealNumber) return;
     dealNumber = number;
     dealTimer?.cancel();
@@ -283,7 +286,7 @@ class _ShahTableScreenState extends State<ShahTableScreen> {
   // «ШАХ!», смена козыря, звук хода.
   void applyAnnouncements(Map<String, dynamic> data, Map<String, dynamic>? game, Map<String, dynamic>? party, bool first) {
     if (party == null) return;
-    final number = (party['number'] as num).toInt();
+    final number = dealKey(data, party);
     final trick = party['trick'] is Map ? party['trick'] as Map : null;
     final played = (party['tricksPlayed'] as num?)?.toInt() ?? 0;
     final moves = ((trick?['moves'] as List?) ?? const []).length;
@@ -319,16 +322,16 @@ class _ShahTableScreenState extends State<ShahTableScreen> {
     lastTrump = trump;
   }
 
-  // Партия сыграна — через 1,2 с окно итога (сначала видно, кто забрал последнюю взятку).
-  // Открыл стол давно после партии — старое окно не показываем.
+  // Раздача сыграна — через 1,2 с окно итога (сначала видно, кто забрал последнюю взятку).
+  // Открыл стол давно после раздачи — старое окно не показываем.
   void updatePartyPopup(Map<String, dynamic> data, Map<String, dynamic>? game, Map<String, dynamic>? party, bool first) {
     if (game == null || party == null || party['phase'] != 'done' || party['result'] == null) return;
-    final number = (party['number'] as num).toInt();
+    final number = dealKey(data, party);
     if (number == partyDoneNumber) return;
     partyDoneNumber = number;
     partyTimer?.cancel();
     final showLeft = (data['partyShowLeftMs'] as num?)?.toInt() ?? 0;
-    // Открыл стол позже: партия давно сыграна или матч уже окончен — сразу без окна партии.
+    // Открыл стол позже: раздача давно сыграна или стол уже закрыт — сразу без окна раздачи.
     if (first && (showLeft <= 0 || data['status'] == 'finished')) return;
     final players = ((data['players'] as List?) ?? const []).map((e) => Map<String, dynamic>.from(e as Map)).toList();
     final result = Map<String, dynamic>.from(party['result'] as Map);
@@ -354,7 +357,7 @@ class _ShahTableScreenState extends State<ShahTableScreen> {
     });
   }
 
-  // Окно итога партии закрыто (нажатием или через 7 с) — если матч окончен, пора его итогу.
+  // Окно итога раздачи закрыто (нажатием или через 7 с) — если партия окончена, пора её итогу.
   void hidePartyPopup() {
     partyHideTimer?.cancel();
     if (!mounted) return;
@@ -364,15 +367,24 @@ class _ShahTableScreenState extends State<ShahTableScreen> {
     });
   }
 
-  // Матч окончен: если только что кончилась партия — сначала её окно, потом итог матча
-  // (hidePartyPopup); иначе (вышел, не вернулся, время между партиями) — через 1,5 с.
+  // Партия окончена (новая запись в series) или стол закрыт: если только что кончилась раздача —
+  // сначала её окно, потом итог партии (hidePartyPopup); иначе (вышел, не вернулся) — через 1,5 с.
+  // Открыл стол позже — старый итог партии не показываем, а итог закрытого стола — показываем.
   void updateMatchOver(Map<String, dynamic> data, bool first) {
-    if (data['status'] != 'finished' || matchSeen || data['game'] == null) return;
-    matchSeen = true;
+    if (data['game'] == null) return;
+    final finished = data['status'] == 'finished';
+    final count = ((data['series'] as List?) ?? const []).length;
+    final key = '$count:$finished';
+    if (key == matchKey) return;
+    matchKey = key;
+    if (count == 0 && !finished) return;
+    matchTimer?.cancel();
     if (first) {
       matchHeld = false;
+      matchClosed = !finished;
       return;
     }
+    matchClosed = false;
     matchHeld = true;
     matchTimer = Timer(const Duration(milliseconds: 1500), () {
       if (!mounted || partyPopupData != null || (partyTimer?.isActive ?? false)) return;
@@ -426,18 +438,25 @@ class _ShahTableScreenState extends State<ShahTableScreen> {
     } catch (_) {}
   }
 
-  // Выйти из матча между партиями (§18 SHAH_RULES.md): сторона проиграла, бан за выход.
+  // Выйти из-за стола между раздачами (§18 SHAH_RULES.md, вопрос 19): сторона проиграла партию,
+  // между партиями — следующую; бан за выход.
   Future<void> leaveMatch(Map<String, dynamic> data) async {
     final practice = data['practice'] == true;
     final teams = data['teams'] == true;
+    final between = data['matchOver'] == true;
+    final ante = ((data['settings'] as Map?)?['ante'] as num?)?.toInt() ?? 0;
+    final side = teams ? 'Ваша команда проиграет' : 'Вы проиграете';
     final ok = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
-        title: const Text('Выйти из матча?'),
+        title: const Text('Выйти из-за стола?'),
         content: Text(practice
             ? 'Тренировка закончится.'
-            : '${teams ? 'Ваша команда проиграет' : 'Вы проиграете'} матч — взнос не вернётся. '
-                'Выход из начатой игры — бан на вход за стол от 10 минут (каждый следующий дольше, до часа).'),
+            : between
+                ? '$side следующую партию — ${teams ? 'каждый заплатит' : 'заплатите'} взнос ${fmtCoins(ante)}. '
+                    'Выход из начатой игры — бан на вход за стол от 10 минут (каждый следующий дольше, до часа).'
+                : '$side эту партию — взнос не вернётся, даже если по штрафам вы впереди. '
+                    'Выход из начатой игры — бан на вход за стол от 10 минут (каждый следующий дольше, до часа).'),
         actions: [
           FilledButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('ОСТАТЬСЯ')),
           TextButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('ВЫЙТИ')),
@@ -464,118 +483,76 @@ class _ShahTableScreenState extends State<ShahTableScreen> {
 
   int secondsSince(DateTime t) => DateTime.now().difference(t).inSeconds;
 
-  Widget tableClockBar(Map<String, dynamic> data, Map<String, dynamic> clock, bool finished) {
-    if (finished) return const SizedBox.shrink();
-    final clockPaused = clock['paused'] == true;
-    final left = math.max(0, ((clock['secondsLeft'] as num?)?.toInt() ?? 0) - (clockPaused ? 0 : secondsSince(receivedAt)));
-    final reached = clock['reached'] == true || left == 0;
-    final vote = clock['vote'] is Map ? Map<String, dynamic>.from(clock['vote'] as Map) : null;
-    final canVote = data['myCanVoteExtend'] == true;
-    final myVote = data['myExtendVote']?.toString();
-    final last = clock['lastVote'] is Map ? Map<String, dynamic>.from(clock['lastVote'] as Map) : null;
-    final showResult = last != null && clockVoteAt != null && DateTime.now().difference(clockVoteAt!) < const Duration(seconds: 8);
-    final warn = !reached && left <= 60;
-    const gold = Color(0xFFE6B74F);
-    final lines = <Widget>[];
-    void line(String text, Color color) => lines.add(Padding(
-          padding: const EdgeInsets.only(top: 2),
-          child: Text(text, textAlign: TextAlign.center, style: TextStyle(fontSize: 12, color: color)),
-        ));
-    if (reached) {
-      line('Время стола вышло — доигрываем партию, потом итог по штрафам', Colors.orangeAccent);
-    } else if (clockPaused) {
-      line('⏸ Время стола остановлено — игра на паузе', Colors.white70);
-    } else if (warn && vote == null) {
-      line('До окончания стола осталась 1 минута', Colors.orangeAccent);
-    }
-    if (showResult) {
-      line(
-        switch (last['result']) {
-          'approved' => 'Все согласились — время игры продлено на 10 минут.',
-          'rejected' => 'Продление отклонено.',
-          _ => 'Ответили не все — время не продлено.',
-        },
-        last['result'] == 'approved' ? Colors.greenAccent : Colors.white70,
-      );
-    }
+  // Итог «ещё 3 партии?» — строкой на несколько секунд (вопрос 18).
+  Widget? moreVoteResultLine(Map<String, dynamic> data) {
+    final last = data['lastMoreVote'] is Map ? Map<String, dynamic>.from(data['lastMoreVote'] as Map) : null;
+    if (last == null || moreVoteAt == null || DateTime.now().difference(moreVoteAt!) > const Duration(seconds: 8)) return null;
+    final approved = last['result'] == 'approved';
     return Padding(
       padding: const EdgeInsets.only(top: 4),
+      child: Text(
+        switch (last['result']) {
+          'approved' => 'Все согласились — ещё 3 партии, всего ${data['matchLimit']}.',
+          'rejected' => last['byName'] != null ? '${last['byName']} — «хватит». Стол закрывается.' : 'Ещё партии не играем.',
+          _ => 'Ответили не все — стол закрывается.',
+        },
+        textAlign: TextAlign.center,
+        style: TextStyle(fontSize: 12, color: approved ? Colors.greenAccent : Colors.white70),
+      ),
+    );
+  }
+
+  // «Добавить 3 партии?» — договорённые партии сыграны, решают все (только единогласно).
+  Widget moreVoteBar(Map<String, dynamic> data, Map<String, dynamic> vote) {
+    const gold = Color(0xFFE6B74F);
+    final canVote = data['myCanVoteMore'] == true;
+    final myVote = data['myMoreVote']?.toString();
+    final left = math.max(0, ((vote['secondsLeft'] as num?)?.toInt() ?? 0) - secondsSince(receivedAt));
+    final played = ((data['series'] as List?) ?? const []).length;
+    return Container(
+      padding: const EdgeInsets.fromLTRB(10, 8, 10, 8),
+      decoration: BoxDecoration(
+        color: const Color(0xFF13232E),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: gold.withValues(alpha: 0.7)),
+      ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          Center(
-            child: Container(
-              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 2),
-              decoration: BoxDecoration(
-                color: Colors.black.withValues(alpha: 0.35),
-                borderRadius: BorderRadius.circular(10),
-                border: Border.all(color: (warn || reached ? Colors.orangeAccent : gold).withValues(alpha: 0.6)),
-              ),
-              child: Text(
-                '${clockPaused ? '⏸' : '⏱'} ${fmtTableClock(left)}',
-                style: TextStyle(
-                  fontSize: 13,
-                  fontWeight: FontWeight.w900,
-                  fontFeatures: const [FontFeature.tabularFigures()],
-                  color: warn || reached ? Colors.orangeAccent : gold,
-                ),
-              ),
-            ),
+          Text(
+            canVote
+                ? 'Сыграли партий: $played. Играем ещё ${vote['add']}?'
+                : myVote == 'yes'
+                    ? 'Вы — за ещё ${vote['add']} партии. Ждём остальных.'
+                    : 'Игроки решают, играть ли ещё ${vote['add']} партии.',
+            textAlign: TextAlign.center,
+            style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w800),
           ),
-          ...lines,
-          if (vote != null && !reached)
-            Container(
-              margin: const EdgeInsets.only(top: 4),
-              padding: const EdgeInsets.fromLTRB(10, 6, 10, 6),
-              decoration: BoxDecoration(
-                color: const Color(0xFF13232E),
-                borderRadius: BorderRadius.circular(12),
-                border: Border.all(color: gold.withValues(alpha: 0.6)),
-              ),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.stretch,
-                children: [
-                  Text(
-                    canVote
-                        ? 'До окончания стола ${math.max(1, (left / 60).ceil())} мин. Продлить матч ещё на 10 минут?'
-                        : myVote == 'yes'
-                            ? 'Вы за продление на 10 минут. Ждём остальных.'
-                            : 'Игроки решают, продлить ли матч на 10 минут.',
-                    textAlign: TextAlign.center,
-                    style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w700),
+          Text(
+            'Ответили: ${vote['votedCount']} из ${vote['voterCount']} · только если согласны все · $left с',
+            textAlign: TextAlign.center,
+            style: const TextStyle(fontSize: 11, color: Colors.white60),
+          ),
+          if (canVote) ...[
+            const SizedBox(height: 6),
+            Row(
+              children: [
+                Expanded(
+                  child: FilledButton(
+                    onPressed: sending ? null : () => post('more-vote', {'choice': 'yes'}),
+                    child: FittedBox(child: Text('ЕЩЁ ${vote['add']} ПАРТИИ')),
                   ),
-                  Text(
-                    'Проголосовали: ${vote['votedCount']} из ${vote['voterCount']} · продлим, только если согласны все',
-                    textAlign: TextAlign.center,
-                    style: const TextStyle(fontSize: 11, color: Colors.white60),
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: OutlinedButton(
+                    onPressed: sending ? null : () => post('more-vote', {'choice': 'no'}),
+                    child: const FittedBox(child: Text('ХВАТИТ')),
                   ),
-                  if (canVote) ...[
-                    const SizedBox(height: 4),
-                    Row(
-                      children: [
-                        Expanded(
-                          child: FilledButton(
-                            onPressed: sending
-                                ? null
-                                : () => post('extend-vote', {'choice': 'yes', 'forEndsAt': vote['forEndsAt'], 'round': vote['round']}),
-                            child: const FittedBox(child: Text('ПРОДЛИТЬ +10 МИН')),
-                          ),
-                        ),
-                        const SizedBox(width: 8),
-                        Expanded(
-                          child: OutlinedButton(
-                            onPressed: sending
-                                ? null
-                                : () => post('extend-vote', {'choice': 'no', 'forEndsAt': vote['forEndsAt'], 'round': vote['round']}),
-                            child: const FittedBox(child: Text('НЕ ПРОДЛЕВАТЬ')),
-                          ),
-                        ),
-                      ],
-                    ),
-                  ],
-                ],
-              ),
+                ),
+              ],
             ),
+          ],
         ],
       ),
     );
@@ -685,7 +662,7 @@ class _ShahTableScreenState extends State<ShahTableScreen> {
       );
     }
     if (notFound) {
-      return const RoomClosedScreen(title: 'Матч закончился', text: 'Этот стол ШАХ уже закрыт.');
+      return const RoomClosedScreen(title: 'Стол закрыт', text: 'Этот стол ШАХ уже закрыт.');
     }
     final data = room;
     if (data == null) {
@@ -693,7 +670,7 @@ class _ShahTableScreenState extends State<ShahTableScreen> {
     }
     final game = gameOf(data);
     if (game == null) {
-      return Scaffold(appBar: backOnlyAppBar(), body: const Center(child: Text('Матч ещё не начался')));
+      return Scaffold(appBar: backOnlyAppBar(), body: const Center(child: Text('Игра ещё не началась')));
     }
     final party = partyOf(game);
     final players = ((data['players'] as List?) ?? const []).map((e) => Map<String, dynamic>.from(e as Map)).toList();
@@ -723,6 +700,10 @@ class _ShahTableScreenState extends State<ShahTableScreen> {
     final revealing = party == null && !revealDone;
     final showingDeal = party != null && dealing;
     final spectators = (data['spectators'] as num?)?.toInt() ?? 0;
+    final matchNumber = (data['matchNumber'] as num?)?.toInt() ?? 1;
+    final matchLimit = (data['matchLimit'] as num?)?.toInt() ?? 1;
+    final matchOver = data['matchOver'] == true;
+    final moreVote = data['moreVote'] is Map ? Map<String, dynamic>.from(data['moreVote'] as Map) : null;
     Map<String, dynamic>? playerAt(int seat) => players.where((p) => (p['seat'] as num?)?.toInt() == seat).firstOrNull;
     String seatName(int seat) => playerAt(seat)?['name']?.toString() ?? 'Игрок';
     int sideOfSeat(int seat) => seat < infos.length ? ((infos[seat]['side'] as num?)?.toInt() ?? seat) : seat;
@@ -730,15 +711,17 @@ class _ShahTableScreenState extends State<ShahTableScreen> {
     // Шапка: что сейчас происходит.
     final String headline;
     if (finished) {
-      headline = 'Матч окончен';
+      headline = 'Стол закрыт';
     } else if (paused) {
       headline = 'Пауза';
+    } else if (moreVote != null) {
+      headline = 'Ещё ${moreVote['add']} партии?';
     } else if (stage == 'awaiting_deal') {
       headline = revealing
           ? 'Ищем сдающего…'
           : data['dealerId']?.toString() == myId
-              ? 'Ваша раздача'
-              : 'Сдаёт ${nameOf(data, data['dealerId'])}';
+              ? (matchOver ? 'Новая партия — ваша раздача' : 'Ваша раздача')
+              : '${matchOver ? 'Новую партию сдаёт' : 'Сдаёт'} ${nameOf(data, data['dealerId'])}';
     } else if (showingDeal) {
       headline = 'Раздача…';
     } else if (myAwaiting == 'lead') {
@@ -981,7 +964,7 @@ class _ShahTableScreenState extends State<ShahTableScreen> {
               status = 'Сверху — ${seatName((trick['topSeat'] as num).toInt())}${n > 1 ? ' · бьют по $n' : ''}';
               statusColor = const Color(0xFFE6B74F);
             } else if (party['phase'] == 'done') {
-              status = 'Партия сыграна';
+              status = matchOver ? 'Партия окончена' : 'Раздача сыграна';
               statusColor = const Color(0xFFE6B74F);
             } else if (lastTrick != null) {
               final total = ShahTrickView.columnsOf(lastTrick).fold<int>(0, (s, c) => s + c.length) +
@@ -1072,8 +1055,8 @@ class _ShahTableScreenState extends State<ShahTableScreen> {
               party == null
                   ? 'Карты ещё не розданы'
                   : party['phase'] == 'done'
-                      ? 'Партия сыграна'
-                      : 'Ваши карты кончились — ждём конца партии',
+                      ? (matchOver ? 'Партия окончена' : 'Раздача сыграна')
+                      : 'Ваши карты кончились — ждём конца раздачи',
               style: const TextStyle(color: Colors.white70),
             ),
           ),
@@ -1159,13 +1142,20 @@ class _ShahTableScreenState extends State<ShahTableScreen> {
           ],
         );
       }
+      if (stage == 'awaiting_deal' && moreVote != null) return moreVoteBar(data, moreVote);
       if (stage == 'awaiting_deal') {
         final iDeal = data['dealerId']?.toString() == myId;
         final showLeftMs = math.max(0, ((data['partyShowLeftMs'] as num?)?.toInt() ?? 0) - DateTime.now().difference(receivedAt).inMilliseconds);
         final blocked = revealing || showLeftMs > 0 || data['personalPause'] is Map || paused || sending;
+        final ante = ((data['settings'] as Map?)?['ante'] as num?)?.toInt() ?? 0;
+        // Партия окончена — сдающий начинает следующую: взнос за неё — с каждого (вопрос 17).
+        final nextLine = 'Партия ${matchNumber + 1} из $matchLimit'
+            '${data['practice'] == true ? '' : ' · взнос ${fmtCoins(ante)} с каждого'}';
+        final dealLabel = matchOver ? 'НОВАЯ ПАРТИЯ' : 'РАЗДАТЬ';
         return Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
+            if (matchOver) hintText(nextLine, color: const Color(0xFFE6B74F)),
             if (iDeal)
               SizedBox(
                 height: 52,
@@ -1173,7 +1163,7 @@ class _ShahTableScreenState extends State<ShahTableScreen> {
                   onPressed: blocked ? null : () => post('deal'),
                   style: FilledButton.styleFrom(backgroundColor: const Color(0xFFD4A94F), foregroundColor: Colors.black),
                   child: Text(
-                    turnLeft != null && !blocked ? 'РАЗДАТЬ · $turnLeft' : 'РАЗДАТЬ',
+                    turnLeft != null && !blocked ? '$dealLabel · $turnLeft' : dealLabel,
                     style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w900),
                   ),
                 ),
@@ -1181,7 +1171,7 @@ class _ShahTableScreenState extends State<ShahTableScreen> {
             else
               hintText(revealing
                   ? 'Ищем первого сдающего: кому первым выпадет туз — тот сдаёт'
-                  : 'Ждём, пока ${nameOf(data, data['dealerId'])} раздаст'),
+                  : 'Ждём, пока ${nameOf(data, data['dealerId'])} ${matchOver ? 'начнёт новую партию' : 'раздаст'}'),
             Row(
               children: [
                 if (data['myCanPause'] == true)
@@ -1195,7 +1185,7 @@ class _ShahTableScreenState extends State<ShahTableScreen> {
                 Expanded(
                   child: TextButton(
                     onPressed: () => leaveMatch(data),
-                    child: const FittedBox(child: Text('ВЫЙТИ ИЗ МАТЧА')),
+                    child: const FittedBox(child: Text('ВЫЙТИ ИЗ-ЗА СТОЛА')),
                   ),
                 ),
               ],
@@ -1318,8 +1308,10 @@ class _ShahTableScreenState extends State<ShahTableScreen> {
         onClose: hidePartyPopup,
       );
     }
+    // Итог партии — пока партия окончена и новую не сдали; итог стола — когда стол закрыт.
     Widget? matchPopup;
-    if (finished && data['result'] is Map && !matchHeld && !matchClosed && partyPopup == null) {
+    final hasSeries = ((data['series'] as List?) ?? const []).isNotEmpty;
+    if ((finished || matchOver) && hasSeries && !matchHeld && !matchClosed && partyPopup == null) {
       matchPopup = ShahMatchOverPopup(room: data, myId: myId, onClose: () => setState(() => matchClosed = true));
     }
 
@@ -1335,8 +1327,8 @@ class _ShahTableScreenState extends State<ShahTableScreen> {
           builder: (ctx) => AlertDialog(
             title: const Text('Уйти от стола?'),
             content: Text(
-              'Матч не остановится: пока вас нет, за вас ходит таймер. Два пропуска подряд — стол на паузе, '
-              'тратится ваш запас $absenceMinutes мин. Кончится запас — ваша сторона проиграет матч.',
+              'Игра не остановится: пока вас нет, за вас ходит таймер. Два пропуска подряд — стол на паузе, '
+              'тратится ваш запас $absenceMinutes мин. Кончится запас — ваша сторона проиграет партию.',
             ),
             actions: [
               FilledButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('ОСТАТЬСЯ')),
@@ -1378,7 +1370,7 @@ class _ShahTableScreenState extends State<ShahTableScreen> {
                       Flexible(
                         flex: 2,
                         child: Text(
-                          party != null ? '${shahFormatName(capacity)} · партия ${party['number']}' : 'ШАХ ${shahFormatName(capacity)}',
+                          'партия $matchNumber/$matchLimit',
                           overflow: TextOverflow.ellipsis,
                           maxLines: 1,
                           style: const TextStyle(color: Color(0xFFD4A94F), fontSize: 13, fontWeight: FontWeight.w800),
@@ -1408,10 +1400,13 @@ class _ShahTableScreenState extends State<ShahTableScreen> {
                     ],
                   ),
                   const SizedBox(height: 4),
-                  ShahScoreBoard(game: game, players: players, onTap: () => showShahHistory(context, game, players)),
+                  ShahScoreBoard(
+                    game: game,
+                    players: players,
+                    onTap: () => showShahHistory(context, data, game, players, myId),
+                  ),
                   if (deckTrumpBar(game, party, capacity, back) case final bar?) bar,
-                  if (data['tableClock'] is Map)
-                    tableClockBar(data, Map<String, dynamic>.from(data['tableClock'] as Map), finished),
+                  if (moreVoteResultLine(data) case final line?) line,
                   if (personalPause != null && !finished) personalPauseBar(personalPause),
                   const SizedBox(height: 4),
                   Expanded(
@@ -1447,7 +1442,7 @@ class _ShahTableScreenState extends State<ShahTableScreen> {
                                     ),
                                     const SizedBox(height: 5),
                                     const Text(
-                                      'Не вернётся — его сторона проиграет матч.',
+                                      'Не вернётся — его сторона проиграет партию.',
                                       textAlign: TextAlign.center,
                                       style: TextStyle(color: Colors.white70, fontSize: 11),
                                     ),

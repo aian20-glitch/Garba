@@ -11,6 +11,8 @@
 `finished`): взносы матча уже списаны со счетов, а выплата будет, только когда ШАХ снова включат.
 Откатить ШАХ целиком — `git revert -m 1 74f57b5` (коммит слияния); Гарба до ШАХ — метка `garba-before-shah`.
 `deploy.sh` выкладывает только с `main` (с другой ветки отказывается).
+**Слова ШАХ (владелец 05.11.2026):** ПАРТИЯ — игра до −24 (в коде `match`), РАЗДАЧА — сдали по 6 и сыграли
+(в коде `party`), СТОЛ — несколько партий подряд. В приложении и с владельцем — только эти слова.
 
 ---
 
@@ -79,9 +81,9 @@
 | `shah/engine.ts` | **ШАХ, этап 1.** Матч и партия: сдающий через туза, раздача, козырь и его смена при доборе, перебивание кругами, рубашки, ШАХ, добор, конец партии, сдающий следующей. `act` возвращает новое состояние. Нерешённые правила — `ShahOptions` (сейчас «а»). |
 | `shah/score.ts` | **ШАХ, этап 1.** Штрафы 2/4/6 и 3, ничья ×2, конец матча на −24. Чистые функции. |
 | `shah/view.ts` | **ШАХ, этап 1.** Что видит каждый: своя рука, у других — число карт, рубашки — только числом. С этапа 3 — подсказки тому, чей ход: `leadOptions` (чем можно зайти), `beatOptions` (чем побить, от дешёвых). |
-| `shah/rooms.ts` | **ШАХ, этап 2** (04.11.2026). Настройки комнаты, монеты матча (`MoneyMode`: «а» `pot` — ставка на матч, «б» `loserPays`), итог по времени и при уходе, ход за игрока по таймеру, бот-тренировка. Чистые функции. |
-| `shah/server.ts` | **ШАХ, этап 2.** `registerShah(ctx)` — комнаты ШАХ на сервере: свои карта комнат, запросы `/shah/...`, сокет `watch_shah`, таймеры (лобби, «ГОТОВ», присутствие, ход, время стола, личная пауза, боты). Включается `GARBA_SHAH=1` (index.ts). |
-| `shah/db.ts` | **ШАХ, этап 2.** Таблица `shah_rooms`; взнос и выплата — в одной транзакции с записью комнаты (`charged`, `settled`). С этапа 4 — `shah_players` (мастерство ШАХ), `shah_results` (итог матча каждого игрока), рейтинг-лист `shahLeaders`, `shahStatsOf`, `deleteShahData` (удаление аккаунта). |
+| `shah/rooms.ts` | **ШАХ, этап 2** (04.11.2026). Настройки комнаты (с 05.11.2026: взнос `anteRange` по формату, партий 1…30), монеты партии (`MoneyMode`: `pot` — взнос за каждую партию, банк выигравшим; `loserPays` не выбран), итог при уходе (`resultByLeaver`, между партиями — `forfeitSplit`), «ещё 3 партии?» (`moreVoteOutcome`), итог стола (`tableTotals`), ход за игрока по таймеру, бот-тренировка. Чистые функции. |
+| `shah/server.ts` | **ШАХ, этап 2.** `registerShah(ctx)` — комнаты ШАХ на сервере: свои карта комнат, запросы `/shah/...`, сокет `watch_shah`, таймеры (лобби, «ГОТОВ», присутствие, ход, «ещё 3 партии?», личная пауза, боты). С 05.11.2026 за столом серия партий (`series`, `matchNumber`, `matchLimit`), времени стола нет. Включается `GARBA_SHAH=1` (index.ts). |
+| `shah/db.ts` | **ШАХ, этап 2.** Таблица `shah_rooms`; взнос и выплата каждой партии — в одной транзакции с записью комнаты (`charged` у комнаты, `paid` у партии в `series`). С этапа 4 — `shah_players` (мастерство ШАХ), `shah_results` (итог стола каждого игрока: `matches`, `wins`, `losses`, монеты), рейтинг-лист `shahLeaders`, `shahStatsOf`, `deleteShahData` (удаление аккаунта). |
 | `shah/rating.ts` | **ШАХ, этап 4** (05.11.2026). Рейтинг ШАХ (SHAH_RULES.md §19, вопросы 21–22 «а»): отдельный от Гарбы, 0…8 с 4.0; за партию +0.03 / −0.01 / −0.02 / −0.04, за матч +0.10 / −0.06, формат ×0.8…×1.4, время ×0…×1.0 (с часа), лимит −0.25, сила соперника и стабильность — функции Гарбы. Чистые функции. |
 | `rules.ts` | **Используются** `canPlayCard`, `trickWinner` (этап 3) и `isGarba` (этап 6) — сверены с RULES.md. `specialKind`, `canDeclareMain` — ещё не проверены. |
 
@@ -144,11 +146,12 @@ cd ~/Garba/mobile && flutter analyze
 - `tests/live-shah.ts` — порт 3090 (и 3089 без `GARBA_SHAH`; 04.11.2026): игра ШАХ — выключатель, одна комната
   за раз вместе с Гарбой, «ГОТОВ», взнос при старте, матч до −24 и банк победителю, чужие карты не уходят (и по сокету, и
   зрителю), выход между партиями и бан, таймер хода и «ушёл», отключение — сторона проиграла, личная пауза, время стола
-  (продление «да», два «нет», время вышло — итог по штрафам; «минута» 0,4 с), тренировка с ботами, перезапуск сервера
-  посреди матча (выплата один раз); с этапа 3 — shahEnabled, код игрока, приглашение друга, «ИДУТ СЕЙЧАС», нельзя смотреть
-  из своей начатой игры, подсказки захода, страница /r/:id; с этапа 4 — рейтинг ШАХ после матча сверяется с расчётом по
-  истории партий, /shah/rating, профиль, тренировка рейтинг не меняет («минута» рейтинга — 10 мс,
-  `GARBA_SHAH_RATING_MINUTE_MS`) (99 проверок);
+  тренировка с ботами, перезапуск сервера посреди партии (выплата один раз); с этапа 3 — shahEnabled, код игрока,
+  приглашение друга, «ИДУТ СЕЙЧАС», нельзя смотреть из своей начатой игры, подсказки захода, страница /r/:id; с этапа 4 —
+  рейтинг ШАХ сверяется с расчётом по истории раздач, /shah/rating, профиль, тренировка рейтинг не меняет («минута»
+  рейтинга — 10 мс, `GARBA_SHAH_RATING_MINUTE_MS`); с 05.11.2026 — взносы по формату, партий 1…30, «ещё 3?» (да / «нет» /
+  молчание, `GARBA_SHAH_VOTE_MS`), вторая партия — снова взнос, выход посреди партии и между партиями, 1×1×1 — пополам
+  (120 проверок);
 - `tests/live-table.ts` — порт 3093 (22.10.2026): докупка с согласия всех (§9.1c), 3 секунды открытых
   карт после раздачи (§10.8), часть выигрыша другому (§11.8) — четверо играют логикой ботов сервера;
   с 23.10.2026 — бан за выход (§13d), рейтинг по монетам и ТОП-3 недели (§16.8);
@@ -601,36 +604,50 @@ POST /admin/tournament/start     только с этого компьютера
 
 — игра ШАХ (04.11.2026, в main с 05.11.2026; SHAH_RULES.md; включается GARBA_SHAH=1, без неё /shah/* → 404 shah disabled) —
 Всё с токеном. Комнаты ШАХ — отдельно от Гарбы (таблица shah_rooms), номер — 5 цифр, с номерами Гарбы не совпадает.
-POST /shah/rooms                 { capacity: 2|3|4|6, ante: 100..1000 кратно 100, absenceMinutes?: 1..5 (1), turnSeconds?:
-                                 20|40 (20), timeLimitMinutes?: 15..180 | null, isPublic? } → 201 состояние; 400 bad capacity |
-                                 bad ante { min, max } | bad absenceMinutes | bad turnSeconds | time limit…; 409 already in another
-                                 room { roomId, kind: garba|shah }; 403 banned for leaving | not enough coins to enter { need, balance }
+POST /shah/rooms                 { capacity: 2|3|4|6, ante — взнос за партию, кратно 1 000: 2|3 — 1 000..10 000, 4|6 — 10 000..20 000,
+                                 matches?: 1..30 (3) — сколько партий до −24, absenceMinutes?: 1..5 (1), turnSeconds?: 20|40 (20),
+                                 isPublic? } → 201 состояние; времени игры нет (timeLimitMinutes не читается); 400 bad capacity |
+                                 bad ante { min, max } | bad matches { min, max } | bad absenceMinutes | bad turnSeconds; 409 already
+                                 in another room { roomId, kind: garba|shah }; 403 banned for leaving | not enough coins to enter { need, balance }
 GET  /shah/rooms/open            → { rooms: [{ id, capacity, players, creatorName, settings, money }] } — открытые лобби, куда хватает;
                                  live (этап 3): [{ id, capacity, players, names, creatorName, settings, practice, partyNumber, totals,
                                  spectators }] — идущие матчи, кроме моих и тех, где игрок с блоком («ИДУТ СЕЙЧАС», §18 Гарбы)
-POST /shah/rooms/quick           { capacity? } → сесть в открытую (того же размера) или создать открытую (без capacity — 4, взнос 100)
+POST /shah/rooms/quick           { capacity? } → сесть в открытую (того же размера) или создать открытую (без capacity — 4; самый
+                                 маленький взнос формата, 1 партия)
 GET  /shah/rooms/:id             → состояние; не за столом — без руки (зритель); 403 blocked | playing elsewhere (сам сидит за
                                  начатым столом Гарбы или ШАХ — как §18 Гарбы; и в сокете, и при каждой рассылке)
 POST /shah/rooms/:id/invite      { code } (этап 3) — позвать друга из лобби со свободным местом: 403 not a friend; 409 no free seat |
                                  already in this room; 404 player not found. У друга — /me → roomInvites [{ roomId, kind: 'shah', … }]
 POST /shah/rooms/:id/join        { seat? } — только в лобби: 409 game already started | room is full | seat taken; 400 bad seat
-POST /shah/rooms/:id/seat | visibility | ready | bots | back | react | pause | pause/end | extend-vote — как в Гарбе
-POST /shah/rooms/:id/leave       лобби — выйти (создатель — комната закрыта); матч — только между партиями (409 can leave only
-                                 between deals): сторона ушедшего проиграла, бан за выход (§13d)
-POST /shah/rooms/:id/deal        только сдающий (dealerId), между партиями: 403 only dealer can deal; 409 party result on show
-                                 { msLeft } (3 с после партии) | personal pause in progress | time is up | game paused
+POST /shah/rooms/:id/seat | visibility | ready | bots | back | react | pause | pause/end — как в Гарбе
+POST /shah/rooms/:id/leave       лобби — выйти (создатель — комната закрыта); стол — только между раздачами (409 can leave only
+                                 between deals): посреди партии — сторона ушедшего проиграла её; между партиями — следующая
+                                 засчитана проигранной (проигравшие платят взнос, сколько есть); стол закрыт, бан за выход (§13d);
+                                 во время «ещё 3?» — это «нет», без бана
+POST /shah/rooms/:id/deal        только сдающий (dealerId), между раздачами: 403 only dealer can deal; 409 more matches vote in
+                                 progress | party result on show { msLeft } (3 с после раздачи) | personal pause in progress |
+                                 game paused. Партия окончена (matchOver) — раздача начинает следующую: взнос с каждого одной
+                                 транзакцией; у кого нет — стол закрыт (result.reason not_enough_coins, poorIds)
+POST /shah/rooms/:id/more-vote   { choice: yes | no } — «добавить 3 партии?» (договорённые сыграны): все люди «да» — matchLimit + 3;
+                                 одно «нет» или 30 с — стол закрыт (matches_done); 409 no more matches vote | already voted;
+                                 400 bad choice. Боты не голосуют
 POST /shah/rooms/:id/move        { type: lead | beat | closed, cardIds, targetIds? } — всё проверяет движок: 409 not your turn |
                                  wrong move | game paused; 400 bad move type | bad cards | card not in hand | bad lead | lead too
                                  big { max } | wrong card count { need } | cannot beat
 состояние ШАХ                    { kind: 'shah', id, capacity, teams, status, stage: lobby|awaiting_deal|playing|finished, creatorId,
+                                 matchNumber, matchLimit, matchOver (партия окончена, следующую не сдали), series: [{ number, reason:
+                                 match_over|player_left, outcomes, deltas, leftIds, totals | null, parties, forfeit }], moreVote:
+                                 { add: 3, secondsLeft, yesIds, votedCount, voterCount } | null, lastMoreVote { result, byName },
+                                 myMoreVote, myCanVoteMore,
                                  isPublic, practice, settings, options (варианты правил), money: { mode, ante, pot, maxLoss },
                                  players: [{ id, name, code, seat, side, bot, ready, rating, avatar, frame, cardBack }], readyCheck,
                                  readyDroppedIds, lobbySecondsLeft, dealerId, partyShowLeftMs, revealShowLeftMs (вскрытие на туза в
                                  начале матча — сколько ещё идёт), dealShowLeftMs, awaitedIds,
-                                 turnSecondsLeft, pause, tableClock, myExtendVote, myCanVoteExtend, personalPause, lastPersonalPause,
-                                 pauseLimit, myPausesLeft, myCanPause, game (shah/view.ts: рука только своя), result: { reason:
-                                 match_over|time_limit|player_left|lobby_timeout|nobody_ready|creator_left, outcomes, deltas,
-                                 leftIds, totals }, reactions, spectators, version, lobbyTimedOut }
+                                 turnSecondsLeft, pause, personalPause, lastPersonalPause, pauseLimit, myPausesLeft, myCanPause,
+                                 game (shah/view.ts: идущая партия, а между партиями — последняя; рука только своя), result (стол
+                                 закрыт): { reason: matches_done|player_left|not_enough_coins|lobby_timeout|nobody_ready|creator_left,
+                                 leftIds, poorIds, matches, coins, wins, losses } — за весь стол, reactions, spectators, version,
+                                 lobbyTimedOut }
                                  game.myLeadOptions / game.myBeatOptions (этап 3) — наборы id карт, которыми сейчас можно зайти /
                                  побить, только тому, чей ход (beat — от дешёвых к дорогим); приложение включает «ЗАЙТИ» и «ПОБИТЬ»
                                  только по ним. targetIds приложение не шлёт — накрытия подбирает движок (на игру не влияет)
@@ -642,16 +659,18 @@ POST /shah/rooms/:id/move        { type: lead | beat | closed, cardIds, targetId
 Рейтинг ШАХ (этап 4, 05.11.2026, SHAH_RULES.md §19) — свой, accounts.skill (Гарба) не трогает:
 GET  /shah/rating?scope=friends|all → { scope, total, myPlace, myRating, myMatches, players: [{ place, code, name, avatar,
                                  frame, rating, matches, wins, me }] }   friends — я и друзья (не игравшие — 4.0); all — кто сыграл
-                                 хотя бы один матч (не тренировку), первые 50
+                                 хотя бы одну партию (не тренировку), первые 50. matches / wins — партии до −24
 /me                              → ещё shahRating (без ШАХ — null); /me/profile, /players/:code → shah: { rating, matches, wins,
                                  losses, parties, coins } | null
-состояние ШАХ                    players[].rating — рейтинг ШАХ (за столом — на начало матча, после матча — итог), ratingStart — на
-                                 начало матча (лобби, тренировка — null). Изменения копятся в room.rating[id] { start, pending,
-                                 activeMs, end }, в базу — в persist одной транзакцией с монетами (applyRating)
-Монеты ШАХ не лежат в комнате: взнос списывается со счёта при старте, банк выплачивается в конце — каждый раз одной транзакцией
-с записью комнаты (флаги charged / settled — после перезапуска ничего не дважды). Тренировка (боты) — монеты не двигаются.
-Для проверок: GARBA_SHAH_SHOW_MS, GARBA_SHAH_BOT_MS, GARBA_SHAH_BOT_TICK_MS, GARBA_SHAH_ANIM_MS, GARBA_SHAH_RATING_MINUTE_MS и общие GARBA_TURN_MS,
-GARBA_GRACE_MS, GARBA_DISCONNECT_MS, GARBA_READY_MS, GARBA_LOBBY_MS, GARBA_TABLE_MINUTE_MS, GARBA_PERSONAL_PAUSE_MS.
+состояние ШАХ                    players[].rating — рейтинг ШАХ (за столом — на начало стола, после стола — итог), ratingStart — на
+                                 начало стола (лобби, тренировка — null). Изменения копятся в room.rating[id] { start, pending,
+                                 activeMs, end }, в базу — один раз, когда стол закрыт, в persist одной транзакцией (applyRating)
+Монеты ШАХ не лежат в комнате: взнос каждой партии списывается со счёта при её начале, банк выплачивается в её конце — каждый раз
+одной транзакцией с записью комнаты (charged у комнаты, paid у партии в series — после перезапуска ничего не дважды). Тренировка
+(боты) — монеты не двигаются.
+Для проверок: GARBA_SHAH_SHOW_MS, GARBA_SHAH_BOT_MS, GARBA_SHAH_BOT_TICK_MS, GARBA_SHAH_ANIM_MS, GARBA_SHAH_RATING_MINUTE_MS,
+GARBA_SHAH_VOTE_MS («ещё 3 партии?», 30 с) и общие GARBA_TURN_MS, GARBA_GRACE_MS, GARBA_DISCONNECT_MS, GARBA_READY_MS,
+GARBA_LOBBY_MS, GARBA_PERSONAL_PAUSE_MS.
 
 — служебное, только с этого компьютера (23.09.2026) —
 POST /admin/coins                { code | id, amount }  → { name, amount, balance }; через moveCoins;
@@ -1032,7 +1051,9 @@ PowerShell 5.1 срезает кавычки в `-d`. Файл сохранён 
 
 - с 05.11.2026 — **вторая игра ШАХ в `main`, на сервере выключена** (этап 5, `SHAH_PLAN.md`): сервер, приложение и
   веб/Telegram уже с кодом ШАХ, но без `GARBA_SHAH=1` его не видно никому. Включение — только по слову владельца
-  (раздел вверху). 24 вопроса по правилам ШАХ без ответа — везде вариант «а» (`SHAH_RULES.md`, таблица в конце);
+  (раздел вверху). Владелец ответил на 17–19 (05.11.2026): за столом партии до −24 подряд (1…30, потом «ещё 3?»), времени
+  нет, взнос за каждую партию (1×1, 1×1×1 — 1 000…10 000; команды — 10 000…20 000), ушёл — его сторона проиграла партию
+  (между партиями — следующую), бан. Остальные вопросы без ответа — вариант «а» (`SHAH_RULES.md`, таблица в конце);
 - с 04.11.2026 — **часы стола стоят на паузах** (ждём отключившегося §13, личная пауза), не продлили за 5 минут —
   второй вопрос за 1 минуту; **личная пауза** (RULES.md §20a): «ПАУЗА 3/3 · 10 с» между раздачами, в турнире
   «ТУРНИРНАЯ ПАУЗА 1/1» на весь турнир; у турнирного стола те же часы и продление +10 минут. Выложено 04.11.2026.
