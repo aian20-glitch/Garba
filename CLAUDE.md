@@ -287,6 +287,14 @@ Xcode 27 **не содержит Simulator.app** — окна симулятор
   - iOS-плагины (image_picker, share_plus, app_links, shared_preferences) ставятся через
     CocoaPods: `pod install` делает `flutter run` сам, если CocoaPods установлен.
 
+### Переезд на другой компьютер (06.11.2026)
+
+Чего нет в git (ключ подписи, SSH-ключ сервера, копии базы, токены ботов, память Claude) — одним
+зашифрованным архивом: на Mac `./tools/pack-for-new-pc.sh` (в обычном Терминале, спросит пароль),
+на Windows — в WSL (Ubuntu) `bash setup-wsl.sh <архив>`: ставит Node 26, Flutter 3.47.4, rsync,
+клонирует проект, раскладывает ключи, гоняет `npm test`, `flutter analyze`, вход на сервер.
+`deploy.sh` — bash + rsync, поэтому на Windows только из WSL. iPhone/App Store — только с Mac.
+
 ### Старый Windows-ПК (история)
 
 Там было 3,8 ГБ памяти — эмулятор падал, живьём проверить этапы 7–9.7 не удалось.
