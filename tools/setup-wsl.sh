@@ -48,6 +48,10 @@ sed -i "s#^storeFile=.*#storeFile=$HOME/garba-keys/garba-upload.jks#" "$HOME/gar
 cp "$HOME/garba-keys/key.properties" "$HOME/Garba/mobile/android/key.properties"
 
 [ -f "$M/bots.json" ] && cp "$M/bots.json" "$HOME/Garba/tools/.bots.json"
+[ -f "$M/tour-bots.json" ] && cp "$M/tour-bots.json" "$HOME/Garba/tools/.tour-bots.json"
+[ -f "$M/settings.local.json" ] && mkdir -p "$HOME/Garba/.claude" && cp "$M/settings.local.json" "$HOME/Garba/.claude/"
+[ -d "$M/backend-data" ] && mkdir -p "$HOME/Garba/backend/data" && cp -R "$M/backend-data/." "$HOME/Garba/backend/data/"
+[ -d "$M/store/android" ] && mkdir -p "$HOME/Garba/store/android" && cp -R "$M/store/android/." "$HOME/Garba/store/android/"
 [ -d "$M/garba-backups" ] && mkdir -p "$HOME/garba-backups" && cp -R "$M/garba-backups/." "$HOME/garba-backups/"
 if [ -d "$M/memory" ]; then
   MEM="$HOME/.claude/projects/$(echo "$HOME/Garba" | sed 's#/#-#g')/memory"
